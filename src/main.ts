@@ -9,53 +9,28 @@ import { PresenceClient } from "./presence";
 import { drawBoard, drawPanel } from "./render";
 
 type Winner = "human" | "ai";
-type AutoUploadStatus = "idle" | "uploading" | "uploaded" | "failed" | "skipped";
+type GameMode = "human_vs_ai" | "ai_vs_ai";
+type AutoUploadStatus = "idle" | "uploading" | "uploaded" | "failed" | "skipped" | "disabled";
 
-interface AiLike {
-  choose(engine: TetrisEngine): AiChoice | null;
-}
+interface AiLike { choose(engine: TetrisEngine): AiChoice | null; }
 
 interface KeyBindings {
-  left: string[];
-  right: string[];
-  softDrop: string[];
-  rotateCw: string[];
-  rotateCcw: string[];
-  rotate180: string[];
-  hold: string[];
-  hardDrop: string[];
-  nextRound: string[];
-  reset: string[];
+  left: string[]; right: string[]; softDrop: string[]; rotateCw: string[]; rotateCcw: string[];
+  rotate180: string[]; hold: string[]; hardDrop: string[]; nextRound: string[]; reset: string[];
 }
 
 interface GameSettings {
-  aiPps: number;
-  dasMs: number;
-  arrMs: number;
-  sdfCellsPerSecond: number;
-  gravityCellsPerSecond: number;
-  lockDelayMs: number;
-  keys: KeyBindings;
+  aiPps: number; dasMs: number; arrMs: number; sdfCellsPerSecond: number;
+  gravityCellsPerSecond: number; lockDelayMs: number; keys: KeyBindings;
 }
 
 const DEFAULT_SETTINGS: GameSettings = {
-  aiPps: 1.4,
-  dasMs: 130,
-  arrMs: 10,
-  sdfCellsPerSecond: 30,
-  gravityCellsPerSecond: 1,
-  lockDelayMs: 500,
+  aiPps: 1.4, dasMs: 130, arrMs: 10, sdfCellsPerSecond: 30,
+  gravityCellsPerSecond: 1, lockDelayMs: 500,
   keys: {
-    left: ["ArrowLeft"],
-    right: ["ArrowRight"],
-    softDrop: ["ArrowDown"],
-    hardDrop: [" "],
-    rotateCcw: ["Control", "z"],
-    rotateCw: ["ArrowUp", "x"],
-    rotate180: ["a"],
-    hold: ["Shift", "c"],
-    nextRound: ["Enter"],
-    reset: ["r"],
+    left: ["ArrowLeft"], right: ["ArrowRight"], softDrop: ["ArrowDown"], hardDrop: [" "],
+    rotateCcw: ["Control", "z"], rotateCw: ["ArrowUp", "x"], rotate180: ["a"],
+    hold: ["Shift", "c"], nextRound: ["Enter"], reset: ["r"],
   },
 };
 
@@ -67,6 +42,7 @@ const statusEl = document.querySelector<HTMLParagraphElement>("#status")!;
 
 const newMatchBtn = document.querySelector<HTMLButtonElement>("#newMatch")!;
 const nextRoundBtn = document.querySelector<HTMLButtonElement>("#nextRound")!;
+const toggleModeBtn = document.querySelector<HTMLButtonElement>("#toggleMode")!;
 const downloadBtn = document.querySelector<HTMLButtonElement>("#downloadLogs")!;
 const uploadBtn = document.querySelector<HTMLButtonElement>("#uploadLogs")!;
 const copyBtn = document.querySelector<HTMLButtonElement>("#copyLogs")!;
@@ -99,13 +75,8 @@ const keyInputs = {
   reset: document.querySelector<HTMLInputElement>("#keyReset")!,
 } satisfies Record<keyof KeyBindings, HTMLInputElement>;
 
-function setStatus(text: string): void {
-  statusEl.textContent = text;
-}
-
-function cloneSettings(s: GameSettings): GameSettings {
-  return JSON.parse(JSON.stringify(s)) as GameSettings;
-}
+function setStatus(text: string): void { statusEl.textContent = text; }
+function cloneSettings(s: GameSettings): GameSettings { return JSON.parse(JSON.stringify(s)) as GameSettings; }
 
 let settings: GameSettings = loadSettings();
 
@@ -123,34 +94,22 @@ function loadSettings(): GameSettings {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return cloneSettings(DEFAULT_SETTINGS);
     const parsed = JSON.parse(raw) as Partial<GameSettings>;
-
-    const defaultKeys = DEFAULT_SETTINGS.keys;
-    const parsedKeys = (parsed.keys ?? {}) as Partial<Record<keyof KeyBindings, unknown>>;
-
+    const dk = DEFAULT_SETTINGS.keys;
+    const pk = (parsed.keys ?? {}) as Partial<Record<keyof KeyBindings, unknown>>;
     return {
-      ...cloneSettings(DEFAULT_SETTINGS),
-      ...parsed,
+      ...cloneSettings(DEFAULT_SETTINGS), ...parsed,
       keys: {
-        left: asKeyArray(parsedKeys.left, defaultKeys.left),
-        right: asKeyArray(parsedKeys.right, defaultKeys.right),
-        softDrop: asKeyArray(parsedKeys.softDrop, defaultKeys.softDrop),
-        rotateCw: asKeyArray(parsedKeys.rotateCw, defaultKeys.rotateCw),
-        rotateCcw: asKeyArray(parsedKeys.rotateCcw, defaultKeys.rotateCcw),
-        rotate180: asKeyArray(parsedKeys.rotate180, defaultKeys.rotate180),
-        hold: asKeyArray(parsedKeys.hold, defaultKeys.hold),
-        hardDrop: asKeyArray(parsedKeys.hardDrop, defaultKeys.hardDrop),
-        nextRound: asKeyArray(parsedKeys.nextRound, defaultKeys.nextRound),
-        reset: asKeyArray(parsedKeys.reset, defaultKeys.reset),
+        left: asKeyArray(pk.left, dk.left), right: asKeyArray(pk.right, dk.right),
+        softDrop: asKeyArray(pk.softDrop, dk.softDrop), rotateCw: asKeyArray(pk.rotateCw, dk.rotateCw),
+        rotateCcw: asKeyArray(pk.rotateCcw, dk.rotateCcw), rotate180: asKeyArray(pk.rotate180, dk.rotate180),
+        hold: asKeyArray(pk.hold, dk.hold), hardDrop: asKeyArray(pk.hardDrop, dk.hardDrop),
+        nextRound: asKeyArray(pk.nextRound, dk.nextRound), reset: asKeyArray(pk.reset, dk.reset),
       },
     };
-  } catch {
-    return cloneSettings(DEFAULT_SETTINGS);
-  }
+  } catch { return cloneSettings(DEFAULT_SETTINGS); }
 }
 
-function saveSettingsToStorage(): void {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-}
+function saveSettingsToStorage(): void { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }
 
 function keyLabel(key: string): string {
   if (key === " ") return "Space";
@@ -178,24 +137,13 @@ function keyValue(label: string): string {
   return s;
 }
 
-function keysLabel(keys: string[]): string {
-  return keys.map(keyLabel).join(", ");
-}
+function keysLabel(keys: string[]): string { return keys.map(keyLabel).join(", "); }
 
 function parseKeyList(text: string, fallback: string[]): string[] {
-  const parts = text
-    .split(",")
-    .map((x) => keyValue(x))
-    .filter((x) => x.length > 0);
-
+  const parts = text.split(",").map((x) => keyValue(x)).filter((x) => x.length > 0);
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const p of parts) {
-    if (!seen.has(p)) {
-      seen.add(p);
-      out.push(p);
-    }
-  }
+  for (const p of parts) if (!seen.has(p)) { seen.add(p); out.push(p); }
   return out.length ? out : [...fallback];
 }
 
@@ -211,10 +159,7 @@ function applySettingsToDom(): void {
   sdfInput.value = String(settings.sdfCellsPerSecond);
   gravityInput.value = String(settings.gravityCellsPerSecond);
   lockDelayInput.value = String(settings.lockDelayMs);
-
-  for (const [k, input] of Object.entries(keyInputs) as Array<[keyof KeyBindings, HTMLInputElement]>) {
-    input.value = keysLabel(settings.keys[k]);
-  }
+  for (const [k, input] of Object.entries(keyInputs) as Array<[keyof KeyBindings, HTMLInputElement]>) input.value = keysLabel(settings.keys[k]);
 }
 
 function readSettingsFromDom(): void {
@@ -224,101 +169,42 @@ function readSettingsFromDom(): void {
   settings.sdfCellsPerSecond = Math.max(1, Math.min(240, numInput(sdfInput, DEFAULT_SETTINGS.sdfCellsPerSecond)));
   settings.gravityCellsPerSecond = Math.max(0, Math.min(60, numInput(gravityInput, DEFAULT_SETTINGS.gravityCellsPerSecond)));
   settings.lockDelayMs = Math.max(0, Math.min(3000, numInput(lockDelayInput, DEFAULT_SETTINGS.lockDelayMs)));
-
-  for (const [k, input] of Object.entries(keyInputs) as Array<[keyof KeyBindings, HTMLInputElement]>) {
-    settings.keys[k] = parseKeyList(input.value, DEFAULT_SETTINGS.keys[k]);
-  }
-
+  for (const [k, input] of Object.entries(keyInputs) as Array<[keyof KeyBindings, HTMLInputElement]>) settings.keys[k] = parseKeyList(input.value, DEFAULT_SETTINGS.keys[k]);
   saveSettingsToStorage();
 }
 
-function openSettings(): void {
-  applySettingsToDom();
-  settingsModal.classList.remove("hidden");
-  settingsModal.setAttribute("aria-hidden", "false");
-}
-
-function closeSettings(): void {
-  settingsModal.classList.add("hidden");
-  settingsModal.setAttribute("aria-hidden", "true");
-}
+function openSettings(): void { applySettingsToDom(); settingsModal.classList.remove("hidden"); settingsModal.setAttribute("aria-hidden", "false"); }
+function closeSettings(): void { settingsModal.classList.add("hidden"); settingsModal.setAttribute("aria-hidden", "true"); }
 
 function bindSettingsUi(): void {
-  for (const input of Object.values(keyInputs)) {
-    input.addEventListener("keydown", (e) => {
-      e.preventDefault();
-      input.value = keyLabel(e.key);
-    });
-  }
-
+  for (const input of Object.values(keyInputs)) input.addEventListener("keydown", (e) => { e.preventDefault(); input.value = keyLabel(e.key); });
   settingsBtn.addEventListener("click", openSettings);
   closeSettingsBtn.addEventListener("click", closeSettings);
-  settingsModal.addEventListener("click", (e) => {
-    if (e.target === settingsModal) closeSettings();
-  });
-
-  saveSettingsBtn.addEventListener("click", () => {
-    readSettingsFromDom();
-    closeSettings();
-    setStatus("Settings saved.");
-  });
-
-  resetSettingsBtn.addEventListener("click", () => {
-    settings = cloneSettings(DEFAULT_SETTINGS);
-    saveSettingsToStorage();
-    applySettingsToDom();
-    setStatus("Settings reset.");
-  });
+  settingsModal.addEventListener("click", (e) => { if (e.target === settingsModal) closeSettings(); });
+  saveSettingsBtn.addEventListener("click", () => { readSettingsFromDom(); closeSettings(); setStatus("Settings saved."); });
+  resetSettingsBtn.addEventListener("click", () => { settings = cloneSettings(DEFAULT_SETTINGS); saveSettingsToStorage(); applySettingsToDom(); setStatus("Settings reset."); });
 }
 
-function seedNow(): number {
-  return (Date.now() ^ Math.floor(Math.random() * 1_000_000_000)) >>> 0;
-}
+function seedNow(): number { return (Date.now() ^ Math.floor(Math.random() * 1_000_000_000)) >>> 0; }
+function short(text: unknown, max = 86): string { const s = String(text ?? ""); return s.length <= max ? s : `${s.slice(0, max - 1)}…`; }
+function isBound(e: KeyboardEvent, keys: string[]): boolean { return keys.includes(e.key); }
+function gameKeys(): Set<string> { return new Set(Object.values(settings.keys).flat()); }
 
-function short(text: unknown, max = 86): string {
-  const s = String(text ?? "");
-  return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
-}
-
-function isBound(e: KeyboardEvent, keys: string[]): boolean {
-  return keys.includes(e.key);
-}
-
-function gameKeys(): Set<string> {
-  return new Set(Object.values(settings.keys).flat());
-}
-
-interface GarbageResolveResult {
-  rawAttack: number;
-  canceled: number;
-  sent: number;
-  remainingIncoming: number;
-}
-
-function applyAttack(sender: TetrisEngine, receiver: TetrisEngine, amount: number): GarbageResolveResult {
-  const rawAttack = Math.max(0, Math.floor(amount));
-  let atk = rawAttack;
-
+function applyAttack(sender: TetrisEngine, receiver: TetrisEngine, amount: number): void {
+  let atk = Math.max(0, Math.floor(amount));
   const canceled = Math.min(sender.pendingGarbage, atk);
   sender.pendingGarbage -= canceled;
   atk -= canceled;
-
-  const sent = atk;
-  if (sent > 0) receiver.queueGarbage(sent);
-
-  return { rawAttack, canceled, sent, remainingIncoming: sender.pendingGarbage };
-}
-
-function shouldMaterializeGarbageAfterLock(result: { rawAttack: number; linesCleared: number }): boolean {
-  return result.rawAttack <= 0 && result.linesCleared <= 0;
+  if (atk > 0) receiver.queueGarbage(atk);
 }
 
 function applyRemainingGarbageAfterCounter(engine: TetrisEngine, result: { rawAttack: number; linesCleared: number }): void {
-  if (shouldMaterializeGarbageAfterLock(result)) engine.applyPendingGarbage();
+  if (result.rawAttack <= 0 && result.linesCleared <= 0) engine.applyPendingGarbage();
 }
 
 class Ft5Trainer {
   firstTo = 5;
+  mode: GameMode = "human_vs_ai";
   baseSeed = seedNow();
   roundIndex = 0;
   stepIndex = 0;
@@ -330,12 +216,21 @@ class Ft5Trainer {
 
   human!: TetrisEngine;
   aiEngine!: TetrisEngine;
+
   ai: AiLike = new HeuristicAI();
   aiName = "HeuristicAI";
   aiDetails: string[] = ["No model JSON found, fallback"];
+
+  battleLeftAi: AiLike = new HeuristicAI();
+  battleLeftName = "HybridAI";
+  battleRightAi: AiLike = new HeuristicAI();
+  battleRightName = "HeuristicAI";
+
   logger = new MatchLogger();
   input!: MovementInput;
   aiAccumulatorMs = 0;
+  battleLeftAccumulatorMs = 0;
+  battleRightAccumulatorMs = 0;
 
   autoUploadStatus: AutoUploadStatus = "idle";
   autoUploadDetail = "match end upload enabled";
@@ -353,20 +248,28 @@ class Ft5Trainer {
     this.presence.start();
   }
 
-  setAi(ai: AiLike, name: string, details: string[] = []): void {
+  setLoadedAi(ai: AiLike, name: string, details: string[] = []): void {
     this.ai = ai;
     this.aiName = name;
     this.aiDetails = details;
+    this.battleLeftAi = ai;
+    this.battleLeftName = name;
+    this.battleRightAi = new HeuristicAI();
+    this.battleRightName = "HeuristicAI";
     setStatus(`AI loaded: ${name}`);
   }
 
-  inputSettings() {
-    return {
-      dasMs: settings.dasMs,
-      arrMs: settings.arrMs,
-      sdfCellsPerSecond: settings.sdfCellsPerSecond,
-    };
+  setMode(mode: GameMode): void {
+    if (this.mode === mode) return;
+    this.mode = mode;
+    this.resetMatch();
   }
+
+  toggleMode(): void { this.setMode(this.mode === "human_vs_ai" ? "ai_vs_ai" : "human_vs_ai"); }
+  modeLabel(): string { return this.mode === "human_vs_ai" ? "Human vs AI" : "AI Battle"; }
+  updateModeButton(): void { toggleModeBtn.textContent = `Mode: ${this.modeLabel()}`; }
+
+  inputSettings() { return { dasMs: settings.dasMs, arrMs: settings.arrMs, sdfCellsPerSecond: settings.sdfCellsPerSecond }; }
 
   resetMatch(): void {
     this.baseSeed = seedNow();
@@ -377,15 +280,16 @@ class Ft5Trainer {
     this.matchOver = false;
     this.roundWinner = null;
     this.logger = new MatchLogger();
-    this.presence.stop();
+    this.presence?.stop();
     this.presence = new PresenceClient(this.logger.anonymousPlayerId);
     this.presence.start();
-    this.autoUploadStatus = "idle";
-    this.autoUploadDetail = "match end upload enabled";
+    this.autoUploadStatus = this.mode === "human_vs_ai" ? "idle" : "disabled";
+    this.autoUploadDetail = this.mode === "human_vs_ai" ? "match end upload enabled" : "AI Battle does not upload logs";
     this.autoUploadInFlight = false;
     this.autoUploadedMatchId = null;
     this.resetRound();
-    setStatus("New FT5 match started.");
+    this.updateModeButton();
+    setStatus(this.mode === "human_vs_ai" ? "New Human vs AI FT5 started." : "New AI Battle FT5 started.");
   }
 
   resetRound(): void {
@@ -394,12 +298,16 @@ class Ft5Trainer {
     this.aiEngine = new TetrisEngine(seed, seed + 31);
     this.input = new MovementInput(this.human, () => this.inputSettings());
     this.aiAccumulatorMs = 0;
+    this.battleLeftAccumulatorMs = 0;
+    this.battleRightAccumulatorMs = 0;
     this.humanGravityCarry = 0;
     this.humanGroundedSince = null;
     this.roundOver = false;
     this.roundWinner = null;
     this.stepIndex = 0;
-    this.message = `Round ${this.roundIndex + 1}: async play.`;
+    this.message = this.mode === "human_vs_ai"
+      ? `Round ${this.roundIndex + 1}: play against AI.`
+      : `Round ${this.roundIndex + 1}: ${this.battleLeftName} vs ${this.battleRightName}.`;
   }
 
   finishRound(winner: Winner): void {
@@ -407,25 +315,38 @@ class Ft5Trainer {
     this.roundOver = true;
     this.roundWinner = winner;
     this.score[winner] += 1;
-    this.logger.finishRound(winner, this.score);
+    if (this.mode === "human_vs_ai") this.logger.finishRound(winner, this.score);
 
     if (this.score.human >= this.firstTo || this.score.ai >= this.firstTo) {
       this.matchOver = true;
-      this.message = `Match over: ${winner} wins FT${this.firstTo}. Auto-uploading logs...`;
-      this.autoUploadFinishedMatch();
+      if (this.mode === "ai_vs_ai") {
+        this.message = `AI Battle over: ${this.winnerDisplay(winner)} wins FT${this.firstTo}.`;
+        this.autoUploadStatus = "disabled";
+        this.autoUploadDetail = "AI Battle logs are not uploaded";
+      } else {
+        this.message = `Match over: ${winner} wins FT${this.firstTo}. Auto-uploading logs...`;
+        this.autoUploadFinishedMatch();
+      }
     } else {
-      this.message = `Round winner: ${winner}. Press ${keysLabel(settings.keys.nextRound)} or Next Round.`;
+      this.message = `Round winner: ${this.winnerDisplay(winner)}. Press ${keysLabel(settings.keys.nextRound)} or Next Round.`;
     }
   }
 
-  private autoUploadFinishedMatch(): void {
-    const matchId = this.logger.matchId;
-    if (this.autoUploadInFlight) return;
-    if (this.autoUploadedMatchId === matchId) return;
+  winnerDisplay(winner: Winner): string {
+    if (this.mode === "ai_vs_ai") return winner === "human" ? this.battleLeftName : this.battleRightName;
+    return winner;
+  }
 
+  private autoUploadFinishedMatch(): void {
+    if (this.mode !== "human_vs_ai") {
+      this.autoUploadStatus = "disabled";
+      this.autoUploadDetail = "AI Battle does not upload logs";
+      return;
+    }
+    const matchId = this.logger.matchId;
+    if (this.autoUploadInFlight || this.autoUploadedMatchId === matchId) return;
     const jsonl = this.logger.toJsonl(false);
     const rows = jsonl.trim() ? jsonl.trim().split(/\r?\n/).length : 0;
-
     if (!jsonl.trim()) {
       this.autoUploadStatus = "skipped";
       this.autoUploadDetail = "no completed logs to upload";
@@ -433,12 +354,10 @@ class Ft5Trainer {
       setStatus(this.message);
       return;
     }
-
     this.autoUploadInFlight = true;
     this.autoUploadStatus = "uploading";
     this.autoUploadDetail = `${rows} rows, match ${matchId.slice(0, 8)}...`;
     setStatus(`Auto-uploading ${rows} rows...`);
-
     void uploadLogs(jsonl)
       .then((res) => {
         this.autoUploadInFlight = false;
@@ -457,53 +376,29 @@ class Ft5Trainer {
       });
   }
 
-  nextRound(): void {
-    if (!this.roundOver || this.matchOver) return;
-    this.roundIndex++;
-    this.resetRound();
-  }
-
-  private resetHumanGroundTimer(): void {
-    this.humanGroundedSince = null;
-  }
-
-  private isHumanGrounded(): boolean {
-    return this.human.hardDropDistance(this.human.active) <= 0;
-  }
+  nextRound(): void { if (this.roundOver && !this.matchOver) { this.roundIndex++; this.resetRound(); } }
+  private resetHumanGroundTimer(): void { this.humanGroundedSince = null; }
+  private isHumanGrounded(): boolean { return this.human.hardDropDistance(this.human.active) <= 0; }
 
   private updateHumanGravity(dtMs: number, now: number): void {
-    if (this.roundOver || this.matchOver || this.human.dead) return;
-
+    if (this.mode !== "human_vs_ai" || this.roundOver || this.matchOver || this.human.dead) return;
     const gravity = Math.max(0, settings.gravityCellsPerSecond);
     if (gravity > 0) {
       this.humanGravityCarry += (dtMs / 1000) * gravity;
       const steps = Math.min(20, Math.floor(this.humanGravityCarry));
       if (steps > 0) this.humanGravityCarry -= steps;
-
       for (let i = 0; i < steps; i++) {
         const moved = this.human.move(0, 1);
-        if (moved) this.resetHumanGroundTimer();
-        else break;
+        if (moved) this.resetHumanGroundTimer(); else break;
       }
     }
-
     if (this.isHumanGrounded()) {
       if (this.humanGroundedSince === null) this.humanGroundedSince = now;
       if (now - this.humanGroundedSince >= settings.lockDelayMs) this.humanLockCurrent(now);
-    } else {
-      this.humanGroundedSince = null;
-    }
+    } else this.humanGroundedSince = null;
   }
 
-  private humanLockCurrent(now: number): void {
-    if (this.roundOver || this.matchOver || this.human.dead) return;
-
-    const stateBefore = this.human.stateDict();
-    const aiStateBefore = this.aiEngine.stateDict();
-    const activeBefore: PieceState = { ...this.human.active };
-    const usedHold = this.human.holdUsedForCurrentPiece;
-
-    const result = this.human.lockPiece();
+  private logHumanAction(activeBefore: PieceState, usedHold: boolean, stateBefore: ReturnType<TetrisEngine["stateDict"]>, aiStateBefore: ReturnType<TetrisEngine["stateDict"]>, result: ReturnType<TetrisEngine["hardDrop"]>): void {
     const rot = ((activeBefore.rot % 4) + 4) % 4;
     const action: PlacementAction = {
       piece: activeBefore.kind,
@@ -512,170 +407,128 @@ class Ft5Trainer {
       hold: usedHold,
       key: `${usedHold ? "H:" : ""}${activeBefore.kind}:${activeBefore.x}:${rot}`,
     };
+    this.logger.logHumanMove({ roundIndex: this.roundIndex, stepIndex: this.stepIndex, state: stateBefore, aiState: aiStateBefore, action, result });
+  }
 
-    this.logger.logHumanMove({
-      roundIndex: this.roundIndex,
-      stepIndex: this.stepIndex,
-      state: stateBefore,
-      aiState: aiStateBefore,
-      action,
-      result,
-    });
-
+  private humanLockCurrent(now: number): void {
+    if (this.roundOver || this.matchOver || this.human.dead || this.mode !== "human_vs_ai") return;
+    const stateBefore = this.human.stateDict();
+    const aiStateBefore = this.aiEngine.stateDict();
+    const activeBefore: PieceState = { ...this.human.active };
+    const usedHold = this.human.holdUsedForCurrentPiece;
+    const result = this.human.lockPiece();
+    this.logHumanAction(activeBefore, usedHold, stateBefore, aiStateBefore, result);
     applyAttack(this.human, this.aiEngine, result.attackSent);
     applyRemainingGarbageAfterCounter(this.human, result);
-
     this.humanGravityCarry = 0;
     this.humanGroundedSince = null;
-
-    if (this.human.dead || result.topout) {
-      this.finishRound("ai");
-      return;
-    }
-
+    if (this.human.dead || result.topout) { this.finishRound("ai"); return; }
     this.input.resetRepeatAfterPieceChange(now);
   }
 
   humanHardDrop(): void {
-    if (this.roundOver || this.matchOver || this.human.dead) return;
-
+    if (this.roundOver || this.matchOver || this.human.dead || this.mode !== "human_vs_ai") return;
     const stateBefore = this.human.stateDict();
     const aiStateBefore = this.aiEngine.stateDict();
     const activeBefore: PieceState = { ...this.human.active };
     const usedHold = this.human.holdUsedForCurrentPiece;
-
     const result = this.human.hardDrop();
-    const rot = ((activeBefore.rot % 4) + 4) % 4;
-    const action: PlacementAction = {
-      piece: activeBefore.kind,
-      x: activeBefore.x,
-      rot,
-      hold: usedHold,
-      key: `${usedHold ? "H:" : ""}${activeBefore.kind}:${activeBefore.x}:${rot}`,
-    };
-
-    this.logger.logHumanMove({
-      roundIndex: this.roundIndex,
-      stepIndex: this.stepIndex,
-      state: stateBefore,
-      aiState: aiStateBefore,
-      action,
-      result,
-    });
-
+    this.logHumanAction(activeBefore, usedHold, stateBefore, aiStateBefore, result);
     applyAttack(this.human, this.aiEngine, result.attackSent);
     applyRemainingGarbageAfterCounter(this.human, result);
-
     this.humanGravityCarry = 0;
     this.humanGroundedSince = null;
-
-    if (this.human.dead || result.topout) {
-      this.finishRound("ai");
-      return;
-    }
-
+    if (this.human.dead || result.topout) { this.finishRound("ai"); return; }
     this.input.resetRepeatAfterPieceChange(performance.now());
   }
 
-  aiTurn(): void {
-    if (this.roundOver || this.matchOver || this.aiEngine.dead) return;
-
-    const action = this.ai.choose(this.aiEngine);
-    if (!action) {
-      this.finishRound("human");
-      return;
-    }
-
-    const result = this.aiEngine.applyAction(action);
-    applyAttack(this.aiEngine, this.human, result.attackSent);
-    applyRemainingGarbageAfterCounter(this.aiEngine, result);
+  private aiAction(engine: TetrisEngine, opponent: TetrisEngine, ai: AiLike): boolean {
+    if (this.roundOver || this.matchOver || engine.dead) return false;
+    const action = ai.choose(engine);
+    if (!action) return false;
+    const result = engine.applyAction(action);
+    applyAttack(engine, opponent, result.attackSent);
+    applyRemainingGarbageAfterCounter(engine, result);
     this.stepIndex++;
+    return !(engine.dead || result.topout);
+  }
 
-    if (this.aiEngine.dead || result.topout) {
-      this.finishRound("human");
-      return;
-    }
-
+  aiTurn(): void {
+    if (this.mode !== "human_vs_ai" || this.roundOver || this.matchOver || this.aiEngine.dead) return;
+    const alive = this.aiAction(this.aiEngine, this.human, this.ai);
+    if (!alive) { this.finishRound("human"); return; }
     if (this.human.dead) this.finishRound("ai");
+  }
+
+  battleTurn(side: "left" | "right"): void {
+    if (this.mode !== "ai_vs_ai" || this.roundOver || this.matchOver) return;
+    if (side === "left") {
+      const alive = this.aiAction(this.human, this.aiEngine, this.battleLeftAi);
+      if (!alive) { this.finishRound("ai"); return; }
+      if (this.aiEngine.dead) this.finishRound("human");
+    } else {
+      const alive = this.aiAction(this.aiEngine, this.human, this.battleRightAi);
+      if (!alive) { this.finishRound("human"); return; }
+      if (this.human.dead) this.finishRound("ai");
+    }
   }
 
   update(dtMs: number, now: number): void {
     if (this.roundOver || this.matchOver) return;
-
-    this.input.update(now);
-    this.updateHumanGravity(dtMs, now);
-
     const pps = Math.max(0.1, Math.min(20, settings.aiPps));
     const interval = 1000 / pps;
-    this.aiAccumulatorMs += dtMs;
-
-    let guard = 0;
-    while (this.aiAccumulatorMs >= interval && guard < 5 && !this.roundOver && !this.matchOver) {
-      this.aiTurn();
-      this.aiAccumulatorMs -= interval;
-      guard++;
+    if (this.mode === "human_vs_ai") {
+      this.input.update(now);
+      this.updateHumanGravity(dtMs, now);
+      this.aiAccumulatorMs += dtMs;
+      let guard = 0;
+      while (this.aiAccumulatorMs >= interval && guard < 5 && !this.roundOver && !this.matchOver) {
+        this.aiTurn(); this.aiAccumulatorMs -= interval; guard++;
+      }
+    } else {
+      this.battleLeftAccumulatorMs += dtMs;
+      this.battleRightAccumulatorMs += dtMs;
+      let guard = 0;
+      while (this.battleLeftAccumulatorMs >= interval && guard < 5 && !this.roundOver && !this.matchOver) {
+        this.battleTurn("left"); this.battleLeftAccumulatorMs -= interval; guard++;
+      }
+      guard = 0;
+      while (this.battleRightAccumulatorMs >= interval && guard < 5 && !this.roundOver && !this.matchOver) {
+        this.battleTurn("right"); this.battleRightAccumulatorMs -= interval; guard++;
+      }
     }
   }
 
   handleKeyDown(e: KeyboardEvent): void {
-    if (settingsModal.classList.contains("hidden") === false) return;
-
+    if (!settingsModal.classList.contains("hidden")) return;
     if (gameKeys().has(e.key)) e.preventDefault();
-
-    if (isBound(e, settings.keys.reset)) {
-      this.resetMatch();
-      return;
-    }
-
-    if (this.roundOver) {
-      if (isBound(e, settings.keys.nextRound)) this.nextRound();
-      return;
-    }
-
-    if (this.matchOver) return;
-
+    if (isBound(e, settings.keys.reset)) { this.resetMatch(); return; }
+    if (this.roundOver) { if (isBound(e, settings.keys.nextRound)) this.nextRound(); return; }
+    if (this.matchOver || this.mode !== "human_vs_ai") return;
     const now = performance.now();
-
     let logical: LogicalMoveKey | null = null;
     if (isBound(e, settings.keys.left)) logical = "left";
     else if (isBound(e, settings.keys.right)) logical = "right";
     else if (isBound(e, settings.keys.softDrop)) logical = "down";
-
-    if (logical) {
-      this.input.keyDown(logical, now);
-      this.resetHumanGroundTimer();
-      return;
-    }
-
+    if (logical) { this.input.keyDown(logical, now); this.resetHumanGroundTimer(); return; }
     if (isBound(e, settings.keys.rotateCw)) {
-      if (this.human.rotateCw()) {
-        this.input.notifyTransform(now);
-        this.resetHumanGroundTimer();
-      }
+      if (this.human.rotateCw()) { this.input.notifyTransform(now); this.resetHumanGroundTimer(); }
     } else if (isBound(e, settings.keys.rotateCcw)) {
-      if (this.human.rotateCcw()) {
-        this.input.notifyTransform(now);
-        this.resetHumanGroundTimer();
-      }
+      if (this.human.rotateCcw()) { this.input.notifyTransform(now); this.resetHumanGroundTimer(); }
     } else if (isBound(e, settings.keys.rotate180)) {
-      if (this.human.rotate180()) {
-        this.input.notifyTransform(now);
-        this.resetHumanGroundTimer();
-      }
+      if (this.human.rotate180()) { this.input.notifyTransform(now); this.resetHumanGroundTimer(); }
     } else if (isBound(e, settings.keys.hold)) {
       const beforeKind = this.human.active.kind;
       const beforeHold = this.human.hold;
       const ok = this.human.holdPiece();
       if (ok && (this.human.active.kind !== beforeKind || this.human.hold !== beforeHold)) {
-        this.input.resetRepeatAfterPieceChange(now);
-        this.resetHumanGroundTimer();
+        this.input.resetRepeatAfterPieceChange(now); this.resetHumanGroundTimer();
       }
-    } else if (isBound(e, settings.keys.hardDrop)) {
-      this.humanHardDrop();
-    }
+    } else if (isBound(e, settings.keys.hardDrop)) this.humanHardDrop();
   }
 
   handleKeyUp(e: KeyboardEvent): void {
+    if (this.mode !== "human_vs_ai") return;
     let logical: LogicalMoveKey | null = null;
     if (isBound(e, settings.keys.left)) logical = "left";
     else if (isBound(e, settings.keys.right)) logical = "right";
@@ -689,8 +542,8 @@ const trainer = new Ft5Trainer();
 async function loadAiModel(): Promise<void> {
   const modelUrl = `${import.meta.env.BASE_URL}models/web_policy.json`;
   const ai = await WebPolicyAI.load(modelUrl);
-  if (ai) trainer.setAi(ai, ai.displayName(), ai.infoLines());
-  else trainer.setAi(new HeuristicAI(), "HeuristicAI fallback", [`No model JSON found at ${modelUrl}`]);
+  if (ai) trainer.setLoadedAi(ai, ai.displayName(), ai.infoLines());
+  else trainer.setLoadedAi(new HeuristicAI(), "HeuristicAI fallback", [`No model JSON found at ${modelUrl}`]);
 }
 
 function resizeCanvasForDisplay(): void {
@@ -698,55 +551,45 @@ function resizeCanvasForDisplay(): void {
   const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
   const ww = Math.floor(rect.width * dpr);
   const hh = Math.floor(rect.height * dpr);
-  if (canvas.width !== ww || canvas.height !== hh) {
-    canvas.width = ww;
-    canvas.height = hh;
-  }
+  if (canvas.width !== ww || canvas.height !== hh) { canvas.width = ww; canvas.height = hh; }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
 function render(): void {
   const playingText = `playing ${trainer.presence.online || "?"}`;
   presenceBadge.textContent = playingText;
-
+  trainer.updateModeButton();
   resizeCanvasForDisplay();
   const rect = canvas.getBoundingClientRect();
   const w = rect.width;
   const h = rect.height;
-
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = "#070b14";
   ctx.fillRect(0, 0, w, h);
-
   ctx.fillStyle = "#e5e7eb";
   ctx.font = "bold 30px Consolas";
   ctx.fillText("TetraFlux Web FT5 Trainer", 26, 42);
-
   ctx.font = "16px Consolas";
   ctx.fillStyle = "#34d399";
-  ctx.fillText(
-    `FT${trainer.firstTo}   Human ${trainer.score.human} - ${trainer.score.ai} AI   |   ${trainer.aiName}   |   ${playingText}`,
-    26,
-    70
-  );
-
+  const leftName = trainer.mode === "ai_vs_ai" ? trainer.battleLeftName : "Human";
+  const rightName = trainer.mode === "ai_vs_ai" ? trainer.battleRightName : "AI";
+  ctx.fillText(`FT${trainer.firstTo}   ${leftName} ${trainer.score.human} - ${trainer.score.ai} ${rightName}   |   ${trainer.modeLabel()}   |   ${playingText}`, 26, 70);
   ctx.fillStyle = trainer.roundOver ? "#fbbf24" : "#94a3b8";
   ctx.fillText(trainer.message, 26, 94);
-
   const boardY = 180;
   const cell = Math.max(15, Math.min(20, Math.floor((h - boardY - 120) / 20)));
-
-  drawBoard(ctx, trainer.human, { x: 24, y: boardY, cell, title: "Human", showGhost: true, active: true });
-  drawBoard(ctx, trainer.aiEngine, { x: 540, y: boardY, cell, title: "AI", showGhost: false, active: true });
-
+  drawBoard(ctx, trainer.human, { x: 24, y: boardY, cell, title: leftName, showGhost: trainer.mode === "human_vs_ai", active: true });
+  drawBoard(ctx, trainer.aiEngine, { x: 540, y: boardY, cell, title: rightName, showGhost: false, active: true });
   const panelX = 1068;
   const panelY = boardY;
   const panelW = Math.max(300, w - panelX - 26);
   const panelH = Math.max(420, h - panelY - 18);
-
   const lines: Array<[string, string?]> = [
+    ["Mode", "#38bdf8"],
+    [trainer.modeLabel()],
+    trainer.mode === "ai_vs_ai" ? [`${trainer.battleLeftName} vs ${trainer.battleRightName}`, "#94a3b8"] : [`Human vs ${trainer.aiName}`, "#94a3b8"],
+    [""],
     ["AI", "#38bdf8"],
-    [`${trainer.aiName}`],
     ...trainer.aiDetails.slice(0, 6).map((line) => [line, "#94a3b8"] as [string, string]),
     [""],
     ["Upload", "#38bdf8"],
@@ -764,11 +607,9 @@ function render(): void {
     [`ID: ${trainer.logger.anonymousPlayerId.slice(0, 8)}...`, "#94a3b8"]
   ];
   drawPanel(ctx, panelX, panelY, panelW, panelH, "Status", lines);
-
   ctx.fillStyle = "#94a3b8";
   ctx.font = "13px Consolas";
-  ctx.fillText("This is a local web trainer. It does not connect to TETR.IO.", 26, h - 18);
-
+  ctx.fillText("AI Battle is evaluation-only and does not upload training logs.", 26, h - 18);
   requestAnimationFrame(render);
 }
 
@@ -782,37 +623,23 @@ function tick(ts: number): void {
 
 bindSettingsUi();
 applySettingsToDom();
-
 window.addEventListener("keydown", (e) => trainer.handleKeyDown(e));
 window.addEventListener("keyup", (e) => trainer.handleKeyUp(e));
 window.addEventListener("blur", () => trainer.input.clearAllHeld());
-
 newMatchBtn.addEventListener("click", () => trainer.resetMatch());
 nextRoundBtn.addEventListener("click", () => trainer.nextRound());
-downloadBtn.addEventListener("click", () => {
-  trainer.logger.download();
-  setStatus("Downloaded current match log.");
-});
-copyBtn.addEventListener("click", async () => {
-  await navigator.clipboard.writeText(trainer.logger.toJsonl(true));
-  setStatus("Copied logs to clipboard.");
-});
-clearBtn.addEventListener("click", () => {
-  trainer.logger.clearLocal();
-  setStatus("Cleared local saved log copy. Current in-memory match remains.");
-});
+toggleModeBtn.addEventListener("click", () => trainer.toggleMode());
+downloadBtn.addEventListener("click", () => { trainer.logger.download(); setStatus("Downloaded current match log."); });
+copyBtn.addEventListener("click", async () => { await navigator.clipboard.writeText(trainer.logger.toJsonl(true)); setStatus("Copied logs to clipboard."); });
+clearBtn.addEventListener("click", () => { trainer.logger.clearLocal(); setStatus("Cleared local saved log copy. Current in-memory match remains."); });
 uploadBtn.addEventListener("click", async () => {
   try {
+    if (trainer.mode !== "human_vs_ai") { setStatus("AI Battle logs are not uploaded to avoid dataset contamination."); return; }
     const text = trainer.logger.toJsonl(true);
-    if (!text.trim()) {
-      setStatus("No logs to upload.");
-      return;
-    }
+    if (!text.trim()) { setStatus("No logs to upload."); return; }
     const res = await uploadLogs(text);
     setStatus(`Uploaded logs: ${res.slice(0, 120)}`);
-  } catch (err) {
-    setStatus(err instanceof Error ? err.message : String(err));
-  }
+  } catch (err) { setStatus(err instanceof Error ? err.message : String(err)); }
 });
 
 loadAiModel();
