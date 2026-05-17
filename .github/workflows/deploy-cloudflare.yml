@@ -110,7 +110,7 @@ jobs:
       - name: Install Python deps for model sync
         shell: bash
         run: |
-          uv pip install --python "$PY" boto3>=1.34.0
+          uv pip install --python "$PY" "boto3>=1.34.0"
 
       - name: Sync latest model from R2 before build
         shell: bash
@@ -126,6 +126,13 @@ jobs:
             rm -f public/models/web_policy.json
           fi
 
+      - name: Inspect model before build
+        run: |
+          "$PY" tools/inspect_web_policy_json.py \
+            --file public/models/web_policy.json \
+            --label "PUBLIC MODEL BEFORE BUILD" \
+            --allow-missing
+
       - name: Install frontend dependencies
         shell: bash
         run: |
@@ -137,21 +144,11 @@ jobs:
         run: npm run build
 
       - name: Inspect model in dist
-        shell: bash
         run: |
-          if [ -f dist/models/web_policy.json ]; then
-            "$PY" - <<'PY'
-            import json, pathlib
-            p = pathlib.Path("dist/models/web_policy.json")
-            data = json.loads(p.read_text(encoding="utf-8"))
-            print("DEPLOY MODEL:")
-            for k in ["model_id", "model_name", "exported_at", "checkpoint_mtime_utc", "checkpoint_sha256_12"]:
-                print(f"  {k}: {data.get(k)}")
-            print("  size:", p.stat().st_size)
-            PY
-          else
-            echo "No dist/models/web_policy.json; Web will use HeuristicAI fallback."
-          fi
+          "$PY" tools/inspect_web_policy_json.py \
+            --file dist/models/web_policy.json \
+            --label "DEPLOY MODEL IN DIST" \
+            --allow-missing
 
       - name: Deploy Pages with Wrangler
         run: |

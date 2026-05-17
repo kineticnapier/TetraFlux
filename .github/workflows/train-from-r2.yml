@@ -88,7 +88,6 @@ jobs:
       - name: Validate settings
         shell: bash
         run: |
-          set -e
           test -n "$CLOUDFLARE_API_TOKEN" || (echo "Missing secret: CLOUDFLARE_API_TOKEN" && exit 1)
           test -n "$CLOUDFLARE_ACCOUNT_ID" || (echo "Missing secret: CLOUDFLARE_ACCOUNT_ID" && exit 1)
           test -n "$R2_ACCESS_KEY_ID" || (echo "Missing secret: R2_ACCESS_KEY_ID" && exit 1)
@@ -175,33 +174,18 @@ jobs:
 
       - name: Inspect exported model before build
         run: |
-          "$PY" - <<'PY'
-          import json, pathlib
-          p = pathlib.Path("public/models/web_policy.json")
-          data = json.loads(p.read_text(encoding="utf-8"))
-          print("PUBLIC MODEL:")
-          for k in ["model_id", "model_name", "exported_at", "checkpoint_mtime_utc", "checkpoint_sha256_12"]:
-              print(f"  {k}: {data.get(k)}")
-          print("  size:", p.stat().st_size)
-          PY
+          "$PY" tools/inspect_web_policy_json.py \
+            --file public/models/web_policy.json \
+            --label "PUBLIC MODEL BEFORE BUILD"
 
       - name: Build frontend with trained model
         run: npm run build
 
       - name: Inspect dist model before deploy
         run: |
-          "$PY" - <<'PY'
-          import json, pathlib, sys
-          p = pathlib.Path("dist/models/web_policy.json")
-          if not p.exists():
-              print("ERROR: dist/models/web_policy.json does not exist")
-              sys.exit(1)
-          data = json.loads(p.read_text(encoding="utf-8"))
-          print("DIST MODEL:")
-          for k in ["model_id", "model_name", "exported_at", "checkpoint_mtime_utc", "checkpoint_sha256_12"]:
-              print(f"  {k}: {data.get(k)}")
-          print("  size:", p.stat().st_size)
-          PY
+          "$PY" tools/inspect_web_policy_json.py \
+            --file dist/models/web_policy.json \
+            --label "DIST MODEL BEFORE DEPLOY"
 
       - name: Deploy Cloudflare Pages with trained model
         run: |
