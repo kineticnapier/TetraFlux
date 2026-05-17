@@ -2,9 +2,7 @@
 """
 Download TetraFlux JSONL logs from Cloudflare R2 using Wrangler.
 
-This script is intended for GitHub Actions, but also works locally.
-
-Required auth:
+Required auth in environment:
   CLOUDFLARE_API_TOKEN
   CLOUDFLARE_ACCOUNT_ID
 
@@ -14,15 +12,15 @@ Example:
     --prefix raw/ ^
     --out-dir collected_logs_r2
 
-It calls:
-  npx wrangler@latest r2 object list ...
-  npx wrangler@latest r2 object get ...
+This version prints Wrangler stdout/stderr on failure, so GitHub Actions
+will show the real reason instead of only CalledProcessError.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -32,22 +30,50 @@ from typing import Any
 
 def run(cmd: list[str], *, capture: bool = False) -> str:
     print("+ " + " ".join(cmd), flush=True)
+
     if capture:
-        p = subprocess.run(cmd, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p = subprocess.run(
+            cmd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=os.environ.copy(),
+        )
+        if p.stdout.strip():
+            print("----- stdout -----", flush=True)
+            print(p.stdout, flush=True)
         if p.stderr.strip():
-            print(p.stderr, file=sys.stderr)
+            print("----- stderr -----", file=sys.stderr, flush=True)
+            print(p.stderr, file=sys.stderr, flush=True)
+        if p.returncode != 0:
+            raise SystemExit(f"Command failed with exit code {p.returncode}: {' '.join(cmd)}")
         return p.stdout
-    subprocess.run(cmd, check=True)
+
+    p = subprocess.run(cmd, text=True, env=os.environ.copy())
+    if p.returncode != 0:
+        raise SystemExit(f"Command failed with exit code {p.returncode}: {' '.join(cmd)}")
     return ""
 
 
 def parse_objects(raw: str) -> list[dict[str, Any]]:
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print("Wrangler output was not JSON.", file=sys.stderr)
+        print(raw, file=sys.stderr)
+        raise SystemExit(f"Failed to parse JSON from wrangler: {e}") from e
 
     if isinstance(data, list):
         objects = data
     elif isinstance(data, dict):
-        objects = data.get("objects") or data.get("items") or data.get("result") or []
+        # Wrangler versions have varied JSON wrappers.
+        objects = (
+            data.get("objects")
+            or data.get("items")
+            or data.get("result")
+            or data.get("objects_truncated")
+            or []
+        )
     else:
         objects = []
 
@@ -72,19 +98,39 @@ def safe_relpath(key: str) -> Path:
     return Path(*parts) if parts else Path("unknown.jsonl")
 
 
+def wrangler_cmd(raw: str) -> list[str]:
+    # Accept:
+    #   "npx wrangler@latest"
+    #   "npx --yes wrangler@latest"
+    #   "wrangler"
+    return raw.split()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--bucket", required=True)
     ap.add_argument("--prefix", default="raw/")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--max-objects", type=int, default=0, help="0 means unlimited")
-    ap.add_argument("--wrangler", default="npx wrangler@latest")
+    ap.add_argument("--wrangler", default="npx --yes wrangler@latest")
+    ap.add_argument("--skip-list-debug", action="store_true")
     args = ap.parse_args()
+
+    if not os.environ.get("CLOUDFLARE_API_TOKEN"):
+        raise SystemExit("CLOUDFLARE_API_TOKEN is not set")
+    if not os.environ.get("CLOUDFLARE_ACCOUNT_ID"):
+        raise SystemExit("CLOUDFLARE_ACCOUNT_ID is not set")
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    wrangler = args.wrangler.split()
+    wrangler = wrangler_cmd(args.wrangler)
+
+    # Debug commands make permission/bucket/auth errors visible in Actions logs.
+    if not args.skip_list_debug:
+        run([*wrangler, "--version"], capture=True)
+        run([*wrangler, "whoami"], capture=True)
+        run([*wrangler, "r2", "bucket", "list"], capture=True)
 
     list_cmd = [
         *wrangler,
@@ -113,6 +159,21 @@ def main() -> int:
     if args.max_objects > 0:
         jsonl_objects = jsonl_objects[-args.max_objects:]
 
+    if not jsonl_objects:
+        summary = {
+            "bucket": args.bucket,
+            "prefix": args.prefix,
+            "out_dir": str(out_dir),
+            "objects_seen": len(objects),
+            "jsonl_objects": 0,
+            "downloaded": 0,
+            "skipped": 0,
+            "note": "No .jsonl objects found. Check prefix and whether Upload Logs has succeeded.",
+        }
+        (out_dir / "_download_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
+
     downloaded = []
     skipped = []
 
@@ -135,7 +196,7 @@ def main() -> int:
             "--file",
             str(dest),
         ]
-        run(get_cmd)
+        run(get_cmd, capture=True)
         downloaded.append({"key": key, "path": str(dest), "bytes": dest.stat().st_size if dest.exists() else 0})
 
     summary = {

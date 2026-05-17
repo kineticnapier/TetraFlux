@@ -78,6 +78,7 @@ jobs:
       - name: Validate settings
         shell: bash
         run: |
+          set -e
           if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
             echo "Missing secret: CLOUDFLARE_API_TOKEN"
             exit 1
@@ -97,7 +98,6 @@ jobs:
       - name: Install frontend dependencies
         shell: bash
         run: |
-          # Avoid npm/Rollup optional dependency lockfile issue on Linux runner.
           rm -rf node_modules package-lock.json
           npm install --include=optional --no-audit --no-fund
           node -e "require('@rollup/rollup-linux-x64-gnu'); console.log('rollup native optional package OK')"
