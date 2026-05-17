@@ -8,6 +8,7 @@ import { MatchLogger, uploadLogs } from "./logging";
 import { drawBoard, drawPanel } from "./render";
 
 type Winner = "human" | "ai";
+type AutoUploadStatus = "idle" | "uploading" | "uploaded" | "failed" | "skipped";
 
 interface AiLike {
   choose(engine: TetrisEngine): AiChoice | null;
@@ -42,6 +43,11 @@ function seedNow(): number {
   return (Date.now() ^ Math.floor(Math.random() * 1_000_000_000)) >>> 0;
 }
 
+function short(text: unknown, max = 86): string {
+  const s = String(text ?? "");
+  return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
+}
+
 interface GarbageResolveResult {
   rawAttack: number;
   canceled: number;
@@ -69,6 +75,10 @@ function applyAttack(sender: TetrisEngine, receiver: TetrisEngine, amount: numbe
 }
 
 function applyRemainingGarbageAfterCounter(engine: TetrisEngine): void {
+  // TETR.IO-like flow:
+  // 1. Lock piece and calculate attack.
+  // 2. Outgoing attack cancels this player's visible incoming garbage first.
+  // 3. Any remaining incoming garbage materializes after the lock.
   engine.applyPendingGarbage();
 }
 
@@ -91,6 +101,11 @@ class Ft5Trainer {
   logger = new MatchLogger();
   input!: MovementInput;
   aiAccumulatorMs = 0;
+
+  autoUploadStatus: AutoUploadStatus = "idle";
+  autoUploadDetail = "match end upload enabled";
+  private autoUploadInFlight = false;
+  private autoUploadedMatchId: string | null = null;
 
   constructor() {
     this.resetRound();
@@ -120,6 +135,10 @@ class Ft5Trainer {
     this.matchOver = false;
     this.roundWinner = null;
     this.logger = new MatchLogger();
+    this.autoUploadStatus = "idle";
+    this.autoUploadDetail = "match end upload enabled";
+    this.autoUploadInFlight = false;
+    this.autoUploadedMatchId = null;
     this.resetRound();
     setStatus("New FT5 match started.");
   }
@@ -145,10 +164,51 @@ class Ft5Trainer {
 
     if (this.score.human >= this.firstTo || this.score.ai >= this.firstTo) {
       this.matchOver = true;
-      this.message = `Match over: ${winner} wins FT${this.firstTo}. Download or upload logs.`;
+      this.message = `Match over: ${winner} wins FT${this.firstTo}. Auto-uploading logs...`;
+      this.autoUploadFinishedMatch();
     } else {
       this.message = `Round winner: ${winner}. Press Enter or Next Round.`;
     }
+  }
+
+  private autoUploadFinishedMatch(): void {
+    const matchId = this.logger.matchId;
+
+    if (this.autoUploadInFlight) return;
+    if (this.autoUploadedMatchId === matchId) return;
+
+    const jsonl = this.logger.toJsonl(false);
+    const rows = jsonl.trim() ? jsonl.trim().split(/\r?\n/).length : 0;
+
+    if (!jsonl.trim()) {
+      this.autoUploadStatus = "skipped";
+      this.autoUploadDetail = "no completed logs to upload";
+      this.message = "Match over. Auto-upload skipped: no logs.";
+      setStatus(this.message);
+      return;
+    }
+
+    this.autoUploadInFlight = true;
+    this.autoUploadStatus = "uploading";
+    this.autoUploadDetail = `${rows} rows, match ${matchId.slice(0, 8)}...`;
+    setStatus(`Auto-uploading ${rows} rows...`);
+
+    void uploadLogs(jsonl)
+      .then((res) => {
+        this.autoUploadInFlight = false;
+        this.autoUploadedMatchId = matchId;
+        this.autoUploadStatus = "uploaded";
+        this.autoUploadDetail = short(res, 110);
+        this.message = `Match over. Logs auto-uploaded (${rows} rows).`;
+        setStatus(this.message);
+      })
+      .catch((err) => {
+        this.autoUploadInFlight = false;
+        this.autoUploadStatus = "failed";
+        this.autoUploadDetail = short(err instanceof Error ? err.message : String(err), 110);
+        this.message = "Match over. Auto-upload failed; use Download Logs or Upload Logs.";
+        setStatus(`${this.message} ${this.autoUploadDetail}`);
+      });
   }
 
   nextRound(): void {
@@ -331,12 +391,16 @@ function render(): void {
   const panelX = 1068;
   const panelY = boardY;
   const panelW = Math.max(300, w - panelX - 26);
-  const panelH = Math.max(520, Math.min(760, h - panelY - 36));
+  const panelH = Math.max(560, Math.min(800, h - panelY - 36));
   const sdf = numInput(sdfInput, 30);
   const lines: Array<[string, string?]> = [
     ["AI", "#38bdf8"],
     [`${trainer.aiName}`],
     ...trainer.aiDetails.slice(0, 12).map((line) => [line, "#94a3b8"] as [string, string]),
+    [""],
+    ["Auto upload", "#38bdf8"],
+    [`status: ${trainer.autoUploadStatus}`],
+    [short(trainer.autoUploadDetail, 52), trainer.autoUploadStatus === "failed" ? "#f87171" : "#94a3b8"],
     [""],
     ["Input", "#38bdf8"],
     [`DAS=${numInput(dasInput, 130)}ms ARR=${numInput(arrInput, 10)}ms`],
