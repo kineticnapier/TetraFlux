@@ -16,16 +16,16 @@ interface AiLike {
 }
 
 interface KeyBindings {
-  left: string;
-  right: string;
-  softDrop: string;
-  rotateCw: string;
-  rotateCcw: string;
-  rotate180: string;
-  hold: string;
-  hardDrop: string;
-  nextRound: string;
-  reset: string;
+  left: string[];
+  right: string[];
+  softDrop: string[];
+  rotateCw: string[];
+  rotateCcw: string[];
+  rotate180: string[];
+  hold: string[];
+  hardDrop: string[];
+  nextRound: string[];
+  reset: string[];
 }
 
 interface GameSettings {
@@ -46,20 +46,20 @@ const DEFAULT_SETTINGS: GameSettings = {
   gravityCellsPerSecond: 1,
   lockDelayMs: 500,
   keys: {
-    left: "ArrowLeft",
-    right: "ArrowRight",
-    softDrop: "ArrowDown",
-    rotateCw: "x",
-    rotateCcw: "z",
-    rotate180: "a",
-    hold: "c",
-    hardDrop: " ",
-    nextRound: "Enter",
-    reset: "r",
+    left: ["ArrowLeft"],
+    right: ["ArrowRight"],
+    softDrop: ["ArrowDown"],
+    hardDrop: [" "],
+    rotateCcw: ["Control", "z"],
+    rotateCw: ["ArrowUp", "x"],
+    rotate180: ["a"],
+    hold: ["Shift", "c"],
+    nextRound: ["Enter"],
+    reset: ["r"],
   },
 };
 
-const SETTINGS_KEY = "tetraflux_settings_v1";
+const SETTINGS_KEY = "tetraflux_settings_v2_multikey";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#game")!;
 const ctx = canvas.getContext("2d")!;
@@ -109,17 +109,38 @@ function cloneSettings(s: GameSettings): GameSettings {
 
 let settings: GameSettings = loadSettings();
 
+function asKeyArray(value: unknown, fallback: string[]): string[] {
+  if (Array.isArray(value)) {
+    const out = value.filter((x): x is string => typeof x === "string" && x.length > 0);
+    return out.length ? out : [...fallback];
+  }
+  if (typeof value === "string" && value.length > 0) return [value];
+  return [...fallback];
+}
+
 function loadSettings(): GameSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return cloneSettings(DEFAULT_SETTINGS);
     const parsed = JSON.parse(raw) as Partial<GameSettings>;
+
+    const defaultKeys = DEFAULT_SETTINGS.keys;
+    const parsedKeys = (parsed.keys ?? {}) as Partial<Record<keyof KeyBindings, unknown>>;
+
     return {
       ...cloneSettings(DEFAULT_SETTINGS),
       ...parsed,
       keys: {
-        ...DEFAULT_SETTINGS.keys,
-        ...(parsed.keys ?? {}),
+        left: asKeyArray(parsedKeys.left, defaultKeys.left),
+        right: asKeyArray(parsedKeys.right, defaultKeys.right),
+        softDrop: asKeyArray(parsedKeys.softDrop, defaultKeys.softDrop),
+        rotateCw: asKeyArray(parsedKeys.rotateCw, defaultKeys.rotateCw),
+        rotateCcw: asKeyArray(parsedKeys.rotateCcw, defaultKeys.rotateCcw),
+        rotate180: asKeyArray(parsedKeys.rotate180, defaultKeys.rotate180),
+        hold: asKeyArray(parsedKeys.hold, defaultKeys.hold),
+        hardDrop: asKeyArray(parsedKeys.hardDrop, defaultKeys.hardDrop),
+        nextRound: asKeyArray(parsedKeys.nextRound, defaultKeys.nextRound),
+        reset: asKeyArray(parsedKeys.reset, defaultKeys.reset),
       },
     };
   } catch {
@@ -133,12 +154,49 @@ function saveSettingsToStorage(): void {
 
 function keyLabel(key: string): string {
   if (key === " ") return "Space";
+  if (key === "ArrowLeft") return "Left";
+  if (key === "ArrowRight") return "Right";
+  if (key === "ArrowDown") return "Down";
+  if (key === "ArrowUp") return "Up";
+  if (key === "Control") return "Ctrl";
+  if (key.length === 1) return key.toUpperCase();
   return key;
 }
 
 function keyValue(label: string): string {
-  if (label === "Space") return " ";
-  return label;
+  const s = label.trim();
+  const lower = s.toLowerCase();
+  if (lower === "space") return " ";
+  if (lower === "left") return "ArrowLeft";
+  if (lower === "right") return "ArrowRight";
+  if (lower === "down") return "ArrowDown";
+  if (lower === "up") return "ArrowUp";
+  if (lower === "ctrl" || lower === "control") return "Control";
+  if (lower === "shift") return "Shift";
+  if (lower === "enter") return "Enter";
+  if (s.length === 1) return s.toLowerCase();
+  return s;
+}
+
+function keysLabel(keys: string[]): string {
+  return keys.map(keyLabel).join(", ");
+}
+
+function parseKeyList(text: string, fallback: string[]): string[] {
+  const parts = text
+    .split(",")
+    .map((x) => keyValue(x))
+    .filter((x) => x.length > 0);
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of parts) {
+    if (!seen.has(p)) {
+      seen.add(p);
+      out.push(p);
+    }
+  }
+  return out.length ? out : [...fallback];
 }
 
 function numInput(input: HTMLInputElement, fallback: number): number {
@@ -155,7 +213,7 @@ function applySettingsToDom(): void {
   lockDelayInput.value = String(settings.lockDelayMs);
 
   for (const [k, input] of Object.entries(keyInputs) as Array<[keyof KeyBindings, HTMLInputElement]>) {
-    input.value = keyLabel(settings.keys[k]);
+    input.value = keysLabel(settings.keys[k]);
   }
 }
 
@@ -168,7 +226,7 @@ function readSettingsFromDom(): void {
   settings.lockDelayMs = Math.max(0, Math.min(3000, numInput(lockDelayInput, DEFAULT_SETTINGS.lockDelayMs)));
 
   for (const [k, input] of Object.entries(keyInputs) as Array<[keyof KeyBindings, HTMLInputElement]>) {
-    settings.keys[k] = keyValue(input.value || keyLabel(DEFAULT_SETTINGS.keys[k]));
+    settings.keys[k] = parseKeyList(input.value, DEFAULT_SETTINGS.keys[k]);
   }
 
   saveSettingsToStorage();
@@ -222,12 +280,12 @@ function short(text: unknown, max = 86): string {
   return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
 }
 
-function isBound(e: KeyboardEvent, key: string): boolean {
-  return e.key === key;
+function isBound(e: KeyboardEvent, keys: string[]): boolean {
+  return keys.includes(e.key);
 }
 
 function gameKeys(): Set<string> {
-  return new Set(Object.values(settings.keys));
+  return new Set(Object.values(settings.keys).flat());
 }
 
 interface GarbageResolveResult {
@@ -252,9 +310,6 @@ function applyAttack(sender: TetrisEngine, receiver: TetrisEngine, amount: numbe
 }
 
 function shouldMaterializeGarbageAfterLock(result: { rawAttack: number; linesCleared: number }): boolean {
-  // TETR.IO-like: continuous line clears / attacks keep the visible garbage queue
-  // counterable. Garbage materializes when the player locks without clearing or
-  // sending attack.
   return result.rawAttack <= 0 && result.linesCleared <= 0;
 }
 
@@ -359,7 +414,7 @@ class Ft5Trainer {
       this.message = `Match over: ${winner} wins FT${this.firstTo}. Auto-uploading logs...`;
       this.autoUploadFinishedMatch();
     } else {
-      this.message = `Round winner: ${winner}. Press ${keyLabel(settings.keys.nextRound)} or Next Round.`;
+      this.message = `Round winner: ${winner}. Press ${keysLabel(settings.keys.nextRound)} or Next Round.`;
     }
   }
 
@@ -427,19 +482,14 @@ class Ft5Trainer {
 
       for (let i = 0; i < steps; i++) {
         const moved = this.human.move(0, 1);
-        if (moved) {
-          this.resetHumanGroundTimer();
-        } else {
-          break;
-        }
+        if (moved) this.resetHumanGroundTimer();
+        else break;
       }
     }
 
     if (this.isHumanGrounded()) {
       if (this.humanGroundedSince === null) this.humanGroundedSince = now;
-      if (now - this.humanGroundedSince >= settings.lockDelayMs) {
-        this.humanLockCurrent(now);
-      }
+      if (now - this.humanGroundedSince >= settings.lockDelayMs) this.humanLockCurrent(now);
     } else {
       this.humanGroundedSince = null;
     }
@@ -707,11 +757,11 @@ function render(): void {
     [short(trainer.autoUploadDetail, 52), trainer.autoUploadStatus === "failed" ? "#f87171" : "#94a3b8"],
     [""],
     ["Controls", "#38bdf8"],
-    [`${keyLabel(settings.keys.left)}/${keyLabel(settings.keys.right)} : move`],
-    [`${keyLabel(settings.keys.softDrop)} : soft drop`],
-    [`${keyLabel(settings.keys.rotateCcw)}/${keyLabel(settings.keys.rotateCw)}/${keyLabel(settings.keys.rotate180)} : rotate`],
-    [`${keyLabel(settings.keys.hold)} : hold`],
-    [`${keyLabel(settings.keys.hardDrop)} : hard drop`],
+    [`${keysLabel(settings.keys.left)}/${keysLabel(settings.keys.right)} : move`],
+    [`${keysLabel(settings.keys.softDrop)} : soft drop`],
+    [`${keysLabel(settings.keys.rotateCcw)}/${keysLabel(settings.keys.rotateCw)}/${keysLabel(settings.keys.rotate180)} : rotate`],
+    [`${keysLabel(settings.keys.hold)} : hold`],
+    [`${keysLabel(settings.keys.hardDrop)} : hard drop`],
     [""],
     [`Logs: ${trainer.logger.records.length + trainer.logger.roundBuffer.length} moves`, "#94a3b8"],
     [`ID: ${trainer.logger.anonymousPlayerId.slice(0, 8)}...`, "#94a3b8"]
