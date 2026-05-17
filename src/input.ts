@@ -3,28 +3,13 @@ import type { TetrisEngine } from "./engine/tetris";
 export interface InputSettings {
   dasMs: number;
   arrMs: number;
-  /**
-   * Soft drop speed in cells per second.
-   *
-   * This is intentionally exposed as "SDF cells/s" in the UI.
-   * Example:
-   *   30  => one downward move every 33.3ms
-   *   120 => one downward move every 8.3ms
-   */
   sdfCellsPerSecond: number;
 }
 
+export type LogicalMoveKey = "left" | "right" | "down";
+
 type Dir = -1 | 1;
 
-/**
- * Handles DAS/ARR style horizontal movement and configurable SDF soft drop.
- *
- * Important:
- * - Browser key repeat is ignored.
- * - Horizontal held state is kept separately from repeat state.
- * - When a piece changes by hold / lock / spawn, call resetRepeatAfterPieceChange().
- *   This prevents ARR/charged state from leaking from the previous piece.
- */
 export class MovementInput {
   leftHeld = false;
   rightHeld = false;
@@ -41,15 +26,15 @@ export class MovementInput {
 
   private softDropToBottom(): void {
     let guard = 0;
-    while (this.engine.move(0, 1) && guard < 40) {
-      guard++;
-    }
+    while (this.engine.move(0, 1) && guard < 40) guard++;
   }
 
   constructor(private engine: TetrisEngine, private settings: () => InputSettings) {}
 
-  keyDown(key: string, now: number): boolean {
-    if (key === "ArrowLeft") {
+  keyDown(key: LogicalMoveKey | string, now: number): boolean {
+    const logical = this.normalizeKey(key);
+
+    if (logical === "left") {
       if (!this.leftHeld) {
         this.leftHeld = true;
         this.leftAt = now;
@@ -62,7 +47,7 @@ export class MovementInput {
       return true;
     }
 
-    if (key === "ArrowRight") {
+    if (logical === "right") {
       if (!this.rightHeld) {
         this.rightHeld = true;
         this.rightAt = now;
@@ -75,7 +60,7 @@ export class MovementInput {
       return true;
     }
 
-    if (key === "ArrowDown") {
+    if (logical === "down") {
       if (!this.downHeld) {
         this.downHeld = true;
         this.lastSoftDrop = now;
@@ -90,13 +75,13 @@ export class MovementInput {
     return false;
   }
 
-  keyUp(key: string, now: number): boolean {
-    if (key === "ArrowLeft") {
+  keyUp(key: LogicalMoveKey | string, now: number): boolean {
+    const logical = this.normalizeKey(key);
+
+    if (logical === "left") {
       this.leftHeld = false;
 
-      if (this.lastPressedDir === -1) {
-        this.lastPressedDir = this.rightHeld ? 1 : null;
-      }
+      if (this.lastPressedDir === -1) this.lastPressedDir = this.rightHeld ? 1 : null;
 
       if (this.activeDir === -1) {
         this.activeDir = this.rightHeld ? 1 : null;
@@ -106,12 +91,10 @@ export class MovementInput {
       return true;
     }
 
-    if (key === "ArrowRight") {
+    if (logical === "right") {
       this.rightHeld = false;
 
-      if (this.lastPressedDir === 1) {
-        this.lastPressedDir = this.leftHeld ? -1 : null;
-      }
+      if (this.lastPressedDir === 1) this.lastPressedDir = this.leftHeld ? -1 : null;
 
       if (this.activeDir === 1) {
         this.activeDir = this.leftHeld ? -1 : null;
@@ -121,7 +104,7 @@ export class MovementInput {
       return true;
     }
 
-    if (key === "ArrowDown") {
+    if (logical === "down") {
       this.downHeld = false;
       this.softDropCarry = 0;
       return true;
@@ -139,16 +122,12 @@ export class MovementInput {
         if (s.arrMs <= 0) {
           if (!this.arrCharged) {
             let guard = 0;
-            while (this.engine.move(this.activeDir) && guard < 20) {
-              guard++;
-            }
+            while (this.engine.move(this.activeDir) && guard < 20) guard++;
             this.arrCharged = true;
           }
         } else if (now - this.lastRepeat >= s.arrMs) {
           const repeats = Math.max(1, Math.floor((now - this.lastRepeat) / s.arrMs));
-          for (let i = 0; i < repeats; i++) {
-            this.engine.move(this.activeDir);
-          }
+          for (let i = 0; i < repeats; i++) this.engine.move(this.activeDir);
           this.lastRepeat = now;
         }
       }
@@ -170,35 +149,22 @@ export class MovementInput {
         this.softDropCarry = cellsFloat - cells;
 
         const capped = Math.min(cells, 20);
-        for (let i = 0; i < capped; i++) {
-          this.engine.move(0, 1);
-        }
+        for (let i = 0; i < capped; i++) this.engine.move(0, 1);
       }
     }
   }
 
-  /**
-   * Rebind to a new engine instance.
-   * Used on round reset.
-   */
   rebind(engine: TetrisEngine): void {
     this.engine = engine;
     this.clearAllHeld();
   }
 
-  /**
-   * Called after a successful rotation/transform while a horizontal key is held.
-   *
-   * This fixes ARR=0 wall-charge getting "spent" at the wall, then failing to
-   * re-apply after rotation changes the piece's collision box.
-   */
   notifyTransform(now: number): void {
     this.arrCharged = false;
     this.lastRepeat = now;
 
-    if (this.leftHeld && this.rightHeld) {
-      this.activeDir = this.lastPressedDir;
-    } else if (this.leftHeld) {
+    if (this.leftHeld && this.rightHeld) this.activeDir = this.lastPressedDir;
+    else if (this.leftHeld) {
       this.activeDir = -1;
       this.lastPressedDir = -1;
     } else if (this.rightHeld) {
@@ -210,24 +176,14 @@ export class MovementInput {
     }
   }
 
-  /**
-   * Called when active piece changes but keys may still be physically held.
-   *
-   * This fixes:
-   * - ARR leaking from previous piece into held piece after hold.
-   * - ARR=0 wall-charge causing the next piece to stop because arrCharged stayed true.
-   * - stale lastRepeat causing weird edge behavior.
-   * - SDF fractional carry leaking into the next piece.
-   */
   resetRepeatAfterPieceChange(now: number): void {
     this.arrCharged = false;
     this.lastRepeat = now;
     this.lastSoftDrop = now;
     this.softDropCarry = 0;
 
-    if (this.leftHeld && this.rightHeld) {
-      this.activeDir = this.lastPressedDir;
-    } else if (this.leftHeld) {
+    if (this.leftHeld && this.rightHeld) this.activeDir = this.lastPressedDir;
+    else if (this.leftHeld) {
       this.activeDir = -1;
       this.lastPressedDir = -1;
     } else if (this.rightHeld) {
@@ -242,9 +198,6 @@ export class MovementInput {
     if (this.rightHeld) this.rightAt = now;
   }
 
-  /**
-   * Emergency full reset, used on round reset / focus loss.
-   */
   clearAllHeld(): void {
     this.leftHeld = false;
     this.rightHeld = false;
@@ -257,5 +210,12 @@ export class MovementInput {
     this.arrCharged = false;
     this.lastSoftDrop = 0;
     this.softDropCarry = 0;
+  }
+
+  private normalizeKey(key: LogicalMoveKey | string): LogicalMoveKey | null {
+    if (key === "left" || key === "ArrowLeft") return "left";
+    if (key === "right" || key === "ArrowRight") return "right";
+    if (key === "down" || key === "ArrowDown") return "down";
+    return null;
   }
 }

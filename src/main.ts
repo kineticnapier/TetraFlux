@@ -3,8 +3,9 @@ import { HeuristicAI } from "./ai/heuristic";
 import type { AiChoice } from "./ai/heuristic";
 import { WebPolicyAI } from "./ai/webPolicy";
 import { TetrisEngine, type PlacementAction, type PieceState } from "./engine/tetris";
-import { MovementInput } from "./input";
+import { MovementInput, type LogicalMoveKey } from "./input";
 import { MatchLogger, uploadLogs } from "./logging";
+import { PresenceClient } from "./presence";
 import { drawBoard, drawPanel } from "./render";
 
 type Winner = "human" | "ai";
@@ -13,6 +14,52 @@ type AutoUploadStatus = "idle" | "uploading" | "uploaded" | "failed" | "skipped"
 interface AiLike {
   choose(engine: TetrisEngine): AiChoice | null;
 }
+
+interface KeyBindings {
+  left: string;
+  right: string;
+  softDrop: string;
+  rotateCw: string;
+  rotateCcw: string;
+  rotate180: string;
+  hold: string;
+  hardDrop: string;
+  nextRound: string;
+  reset: string;
+}
+
+interface GameSettings {
+  aiPps: number;
+  dasMs: number;
+  arrMs: number;
+  sdfCellsPerSecond: number;
+  gravityCellsPerSecond: number;
+  lockDelayMs: number;
+  keys: KeyBindings;
+}
+
+const DEFAULT_SETTINGS: GameSettings = {
+  aiPps: 1.4,
+  dasMs: 130,
+  arrMs: 10,
+  sdfCellsPerSecond: 30,
+  gravityCellsPerSecond: 1,
+  lockDelayMs: 500,
+  keys: {
+    left: "ArrowLeft",
+    right: "ArrowRight",
+    softDrop: "ArrowDown",
+    rotateCw: "x",
+    rotateCcw: "z",
+    rotate180: "a",
+    hold: "c",
+    hardDrop: " ",
+    nextRound: "Enter",
+    reset: "r",
+  },
+};
+
+const SETTINGS_KEY = "tetraflux_settings_v1";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#game")!;
 const ctx = canvas.getContext("2d")!;
@@ -24,19 +71,146 @@ const downloadBtn = document.querySelector<HTMLButtonElement>("#downloadLogs")!;
 const uploadBtn = document.querySelector<HTMLButtonElement>("#uploadLogs")!;
 const copyBtn = document.querySelector<HTMLButtonElement>("#copyLogs")!;
 const clearBtn = document.querySelector<HTMLButtonElement>("#clearLogs")!;
+const settingsBtn = document.querySelector<HTMLButtonElement>("#settingsBtn")!;
+const presenceBadge = document.querySelector<HTMLSpanElement>("#presenceBadge")!;
+
+const settingsModal = document.querySelector<HTMLDivElement>("#settingsModal")!;
+const closeSettingsBtn = document.querySelector<HTMLButtonElement>("#closeSettings")!;
+const saveSettingsBtn = document.querySelector<HTMLButtonElement>("#saveSettings")!;
+const resetSettingsBtn = document.querySelector<HTMLButtonElement>("#resetSettings")!;
 
 const aiPpsInput = document.querySelector<HTMLInputElement>("#aiPps")!;
 const dasInput = document.querySelector<HTMLInputElement>("#dasMs")!;
 const arrInput = document.querySelector<HTMLInputElement>("#arrMs")!;
 const sdfInput = document.querySelector<HTMLInputElement>("#sdf")!;
+const gravityInput = document.querySelector<HTMLInputElement>("#gravity")!;
+const lockDelayInput = document.querySelector<HTMLInputElement>("#lockDelayMs")!;
+
+const keyInputs = {
+  left: document.querySelector<HTMLInputElement>("#keyLeft")!,
+  right: document.querySelector<HTMLInputElement>("#keyRight")!,
+  softDrop: document.querySelector<HTMLInputElement>("#keySoftDrop")!,
+  rotateCw: document.querySelector<HTMLInputElement>("#keyRotateCw")!,
+  rotateCcw: document.querySelector<HTMLInputElement>("#keyRotateCcw")!,
+  rotate180: document.querySelector<HTMLInputElement>("#keyRotate180")!,
+  hold: document.querySelector<HTMLInputElement>("#keyHold")!,
+  hardDrop: document.querySelector<HTMLInputElement>("#keyHardDrop")!,
+  nextRound: document.querySelector<HTMLInputElement>("#keyNextRound")!,
+  reset: document.querySelector<HTMLInputElement>("#keyReset")!,
+} satisfies Record<keyof KeyBindings, HTMLInputElement>;
 
 function setStatus(text: string): void {
   statusEl.textContent = text;
 }
 
+function cloneSettings(s: GameSettings): GameSettings {
+  return JSON.parse(JSON.stringify(s)) as GameSettings;
+}
+
+let settings: GameSettings = loadSettings();
+
+function loadSettings(): GameSettings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return cloneSettings(DEFAULT_SETTINGS);
+    const parsed = JSON.parse(raw) as Partial<GameSettings>;
+    return {
+      ...cloneSettings(DEFAULT_SETTINGS),
+      ...parsed,
+      keys: {
+        ...DEFAULT_SETTINGS.keys,
+        ...(parsed.keys ?? {}),
+      },
+    };
+  } catch {
+    return cloneSettings(DEFAULT_SETTINGS);
+  }
+}
+
+function saveSettingsToStorage(): void {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+}
+
+function keyLabel(key: string): string {
+  if (key === " ") return "Space";
+  return key;
+}
+
+function keyValue(label: string): string {
+  if (label === "Space") return " ";
+  return label;
+}
+
 function numInput(input: HTMLInputElement, fallback: number): number {
   const n = Number(input.value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function applySettingsToDom(): void {
+  aiPpsInput.value = String(settings.aiPps);
+  dasInput.value = String(settings.dasMs);
+  arrInput.value = String(settings.arrMs);
+  sdfInput.value = String(settings.sdfCellsPerSecond);
+  gravityInput.value = String(settings.gravityCellsPerSecond);
+  lockDelayInput.value = String(settings.lockDelayMs);
+
+  for (const [k, input] of Object.entries(keyInputs) as Array<[keyof KeyBindings, HTMLInputElement]>) {
+    input.value = keyLabel(settings.keys[k]);
+  }
+}
+
+function readSettingsFromDom(): void {
+  settings.aiPps = Math.max(0.1, Math.min(20, numInput(aiPpsInput, DEFAULT_SETTINGS.aiPps)));
+  settings.dasMs = Math.max(0, Math.min(500, numInput(dasInput, DEFAULT_SETTINGS.dasMs)));
+  settings.arrMs = Math.max(0, Math.min(200, numInput(arrInput, DEFAULT_SETTINGS.arrMs)));
+  settings.sdfCellsPerSecond = Math.max(1, Math.min(240, numInput(sdfInput, DEFAULT_SETTINGS.sdfCellsPerSecond)));
+  settings.gravityCellsPerSecond = Math.max(0, Math.min(60, numInput(gravityInput, DEFAULT_SETTINGS.gravityCellsPerSecond)));
+  settings.lockDelayMs = Math.max(0, Math.min(3000, numInput(lockDelayInput, DEFAULT_SETTINGS.lockDelayMs)));
+
+  for (const [k, input] of Object.entries(keyInputs) as Array<[keyof KeyBindings, HTMLInputElement]>) {
+    settings.keys[k] = keyValue(input.value || keyLabel(DEFAULT_SETTINGS.keys[k]));
+  }
+
+  saveSettingsToStorage();
+}
+
+function openSettings(): void {
+  applySettingsToDom();
+  settingsModal.classList.remove("hidden");
+  settingsModal.setAttribute("aria-hidden", "false");
+}
+
+function closeSettings(): void {
+  settingsModal.classList.add("hidden");
+  settingsModal.setAttribute("aria-hidden", "true");
+}
+
+function bindSettingsUi(): void {
+  for (const input of Object.values(keyInputs)) {
+    input.addEventListener("keydown", (e) => {
+      e.preventDefault();
+      input.value = keyLabel(e.key);
+    });
+  }
+
+  settingsBtn.addEventListener("click", openSettings);
+  closeSettingsBtn.addEventListener("click", closeSettings);
+  settingsModal.addEventListener("click", (e) => {
+    if (e.target === settingsModal) closeSettings();
+  });
+
+  saveSettingsBtn.addEventListener("click", () => {
+    readSettingsFromDom();
+    closeSettings();
+    setStatus("Settings saved.");
+  });
+
+  resetSettingsBtn.addEventListener("click", () => {
+    settings = cloneSettings(DEFAULT_SETTINGS);
+    saveSettingsToStorage();
+    applySettingsToDom();
+    setStatus("Settings reset.");
+  });
 }
 
 function seedNow(): number {
@@ -46,6 +220,14 @@ function seedNow(): number {
 function short(text: unknown, max = 86): string {
   const s = String(text ?? "");
   return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
+}
+
+function isBound(e: KeyboardEvent, key: string): boolean {
+  return e.key === key;
+}
+
+function gameKeys(): Set<string> {
+  return new Set(Object.values(settings.keys));
 }
 
 interface GarbageResolveResult {
@@ -66,20 +248,18 @@ function applyAttack(sender: TetrisEngine, receiver: TetrisEngine, amount: numbe
   const sent = atk;
   if (sent > 0) receiver.queueGarbage(sent);
 
-  return {
-    rawAttack,
-    canceled,
-    sent,
-    remainingIncoming: sender.pendingGarbage
-  };
+  return { rawAttack, canceled, sent, remainingIncoming: sender.pendingGarbage };
 }
 
-function applyRemainingGarbageAfterCounter(engine: TetrisEngine): void {
-  // TETR.IO-like flow:
-  // 1. Lock piece and calculate attack.
-  // 2. Outgoing attack cancels this player's visible incoming garbage first.
-  // 3. Any remaining incoming garbage materializes after the lock.
-  engine.applyPendingGarbage();
+function shouldMaterializeGarbageAfterLock(result: { rawAttack: number; linesCleared: number }): boolean {
+  // TETR.IO-like: continuous line clears / attacks keep the visible garbage queue
+  // counterable. Garbage materializes when the player locks without clearing or
+  // sending attack.
+  return result.rawAttack <= 0 && result.linesCleared <= 0;
+}
+
+function applyRemainingGarbageAfterCounter(engine: TetrisEngine, result: { rawAttack: number; linesCleared: number }): void {
+  if (shouldMaterializeGarbageAfterLock(result)) engine.applyPendingGarbage();
 }
 
 class Ft5Trainer {
@@ -107,8 +287,15 @@ class Ft5Trainer {
   private autoUploadInFlight = false;
   private autoUploadedMatchId: string | null = null;
 
+  private humanGravityCarry = 0;
+  private humanGroundedSince: number | null = null;
+
+  presence!: PresenceClient;
+
   constructor() {
     this.resetRound();
+    this.presence = new PresenceClient(this.logger.anonymousPlayerId);
+    this.presence.start();
   }
 
   setAi(ai: AiLike, name: string, details: string[] = []): void {
@@ -120,9 +307,9 @@ class Ft5Trainer {
 
   inputSettings() {
     return {
-      dasMs: Math.max(0, numInput(dasInput, 130)),
-      arrMs: Math.max(0, numInput(arrInput, 10)),
-      sdfCellsPerSecond: Math.max(1, Math.min(240, numInput(sdfInput, 30)))
+      dasMs: settings.dasMs,
+      arrMs: settings.arrMs,
+      sdfCellsPerSecond: settings.sdfCellsPerSecond,
     };
   }
 
@@ -135,6 +322,9 @@ class Ft5Trainer {
     this.matchOver = false;
     this.roundWinner = null;
     this.logger = new MatchLogger();
+    this.presence.stop();
+    this.presence = new PresenceClient(this.logger.anonymousPlayerId);
+    this.presence.start();
     this.autoUploadStatus = "idle";
     this.autoUploadDetail = "match end upload enabled";
     this.autoUploadInFlight = false;
@@ -149,6 +339,8 @@ class Ft5Trainer {
     this.aiEngine = new TetrisEngine(seed, seed + 31);
     this.input = new MovementInput(this.human, () => this.inputSettings());
     this.aiAccumulatorMs = 0;
+    this.humanGravityCarry = 0;
+    this.humanGroundedSince = null;
     this.roundOver = false;
     this.roundWinner = null;
     this.stepIndex = 0;
@@ -167,13 +359,12 @@ class Ft5Trainer {
       this.message = `Match over: ${winner} wins FT${this.firstTo}. Auto-uploading logs...`;
       this.autoUploadFinishedMatch();
     } else {
-      this.message = `Round winner: ${winner}. Press Enter or Next Round.`;
+      this.message = `Round winner: ${winner}. Press ${keyLabel(settings.keys.nextRound)} or Next Round.`;
     }
   }
 
   private autoUploadFinishedMatch(): void {
     const matchId = this.logger.matchId;
-
     if (this.autoUploadInFlight) return;
     if (this.autoUploadedMatchId === matchId) return;
 
@@ -217,6 +408,84 @@ class Ft5Trainer {
     this.resetRound();
   }
 
+  private resetHumanGroundTimer(): void {
+    this.humanGroundedSince = null;
+  }
+
+  private isHumanGrounded(): boolean {
+    return this.human.hardDropDistance(this.human.active) <= 0;
+  }
+
+  private updateHumanGravity(dtMs: number, now: number): void {
+    if (this.roundOver || this.matchOver || this.human.dead) return;
+
+    const gravity = Math.max(0, settings.gravityCellsPerSecond);
+    if (gravity > 0) {
+      this.humanGravityCarry += (dtMs / 1000) * gravity;
+      const steps = Math.min(20, Math.floor(this.humanGravityCarry));
+      if (steps > 0) this.humanGravityCarry -= steps;
+
+      for (let i = 0; i < steps; i++) {
+        const moved = this.human.move(0, 1);
+        if (moved) {
+          this.resetHumanGroundTimer();
+        } else {
+          break;
+        }
+      }
+    }
+
+    if (this.isHumanGrounded()) {
+      if (this.humanGroundedSince === null) this.humanGroundedSince = now;
+      if (now - this.humanGroundedSince >= settings.lockDelayMs) {
+        this.humanLockCurrent(now);
+      }
+    } else {
+      this.humanGroundedSince = null;
+    }
+  }
+
+  private humanLockCurrent(now: number): void {
+    if (this.roundOver || this.matchOver || this.human.dead) return;
+
+    const stateBefore = this.human.stateDict();
+    const aiStateBefore = this.aiEngine.stateDict();
+    const activeBefore: PieceState = { ...this.human.active };
+    const usedHold = this.human.holdUsedForCurrentPiece;
+
+    const result = this.human.lockPiece();
+    const rot = ((activeBefore.rot % 4) + 4) % 4;
+    const action: PlacementAction = {
+      piece: activeBefore.kind,
+      x: activeBefore.x,
+      rot,
+      hold: usedHold,
+      key: `${usedHold ? "H:" : ""}${activeBefore.kind}:${activeBefore.x}:${rot}`,
+    };
+
+    this.logger.logHumanMove({
+      roundIndex: this.roundIndex,
+      stepIndex: this.stepIndex,
+      state: stateBefore,
+      aiState: aiStateBefore,
+      action,
+      result,
+    });
+
+    applyAttack(this.human, this.aiEngine, result.attackSent);
+    applyRemainingGarbageAfterCounter(this.human, result);
+
+    this.humanGravityCarry = 0;
+    this.humanGroundedSince = null;
+
+    if (this.human.dead || result.topout) {
+      this.finishRound("ai");
+      return;
+    }
+
+    this.input.resetRepeatAfterPieceChange(now);
+  }
+
   humanHardDrop(): void {
     if (this.roundOver || this.matchOver || this.human.dead) return;
 
@@ -232,7 +501,7 @@ class Ft5Trainer {
       x: activeBefore.x,
       rot,
       hold: usedHold,
-      key: `${usedHold ? "H:" : ""}${activeBefore.kind}:${activeBefore.x}:${rot}`
+      key: `${usedHold ? "H:" : ""}${activeBefore.kind}:${activeBefore.x}:${rot}`,
     };
 
     this.logger.logHumanMove({
@@ -241,11 +510,14 @@ class Ft5Trainer {
       state: stateBefore,
       aiState: aiStateBefore,
       action,
-      result
+      result,
     });
 
     applyAttack(this.human, this.aiEngine, result.attackSent);
-    applyRemainingGarbageAfterCounter(this.human);
+    applyRemainingGarbageAfterCounter(this.human, result);
+
+    this.humanGravityCarry = 0;
+    this.humanGroundedSince = null;
 
     if (this.human.dead || result.topout) {
       this.finishRound("ai");
@@ -266,7 +538,7 @@ class Ft5Trainer {
 
     const result = this.aiEngine.applyAction(action);
     applyAttack(this.aiEngine, this.human, result.attackSent);
-    applyRemainingGarbageAfterCounter(this.aiEngine);
+    applyRemainingGarbageAfterCounter(this.aiEngine, result);
     this.stepIndex++;
 
     if (this.aiEngine.dead || result.topout) {
@@ -281,8 +553,9 @@ class Ft5Trainer {
     if (this.roundOver || this.matchOver) return;
 
     this.input.update(now);
+    this.updateHumanGravity(dtMs, now);
 
-    const pps = Math.max(0.1, Math.min(20, numInput(aiPpsInput, 1.4)));
+    const pps = Math.max(0.1, Math.min(20, settings.aiPps));
     const interval = 1000 / pps;
     this.aiAccumulatorMs += dtMs;
 
@@ -295,45 +568,69 @@ class Ft5Trainer {
   }
 
   handleKeyDown(e: KeyboardEvent): void {
-    const gameKeys = ["ArrowLeft", "ArrowRight", "ArrowDown", "ArrowUp", " ", "z", "x", "a", "c", "Shift", "Enter"];
-    if (gameKeys.includes(e.key)) e.preventDefault();
+    if (settingsModal.classList.contains("hidden") === false) return;
 
-    if (e.key === "q" || e.key === "Escape") return;
-    if (e.key === "r") {
+    if (gameKeys().has(e.key)) e.preventDefault();
+
+    if (isBound(e, settings.keys.reset)) {
       this.resetMatch();
       return;
     }
 
     if (this.roundOver) {
-      if (e.key === "Enter") this.nextRound();
+      if (isBound(e, settings.keys.nextRound)) this.nextRound();
       return;
     }
 
     if (this.matchOver) return;
 
     const now = performance.now();
-    if (this.input.keyDown(e.key, now)) return;
 
-    if (e.key === "ArrowUp" || e.key === "x") {
-      if (this.human.rotateCw()) this.input.notifyTransform(now);
-    } else if (e.key === "z") {
-      if (this.human.rotateCcw()) this.input.notifyTransform(now);
-    } else if (e.key === "a") {
-      if (this.human.rotate180()) this.input.notifyTransform(now);
-    } else if (e.key === "c" || e.key === "Shift") {
+    let logical: LogicalMoveKey | null = null;
+    if (isBound(e, settings.keys.left)) logical = "left";
+    else if (isBound(e, settings.keys.right)) logical = "right";
+    else if (isBound(e, settings.keys.softDrop)) logical = "down";
+
+    if (logical) {
+      this.input.keyDown(logical, now);
+      this.resetHumanGroundTimer();
+      return;
+    }
+
+    if (isBound(e, settings.keys.rotateCw)) {
+      if (this.human.rotateCw()) {
+        this.input.notifyTransform(now);
+        this.resetHumanGroundTimer();
+      }
+    } else if (isBound(e, settings.keys.rotateCcw)) {
+      if (this.human.rotateCcw()) {
+        this.input.notifyTransform(now);
+        this.resetHumanGroundTimer();
+      }
+    } else if (isBound(e, settings.keys.rotate180)) {
+      if (this.human.rotate180()) {
+        this.input.notifyTransform(now);
+        this.resetHumanGroundTimer();
+      }
+    } else if (isBound(e, settings.keys.hold)) {
       const beforeKind = this.human.active.kind;
       const beforeHold = this.human.hold;
       const ok = this.human.holdPiece();
       if (ok && (this.human.active.kind !== beforeKind || this.human.hold !== beforeHold)) {
         this.input.resetRepeatAfterPieceChange(now);
+        this.resetHumanGroundTimer();
       }
-    } else if (e.key === " ") {
+    } else if (isBound(e, settings.keys.hardDrop)) {
       this.humanHardDrop();
     }
   }
 
   handleKeyUp(e: KeyboardEvent): void {
-    this.input.keyUp(e.key, performance.now());
+    let logical: LogicalMoveKey | null = null;
+    if (isBound(e, settings.keys.left)) logical = "left";
+    else if (isBound(e, settings.keys.right)) logical = "right";
+    else if (isBound(e, settings.keys.softDrop)) logical = "down";
+    if (logical) this.input.keyUp(logical, performance.now());
   }
 }
 
@@ -342,11 +639,8 @@ const trainer = new Ft5Trainer();
 async function loadAiModel(): Promise<void> {
   const modelUrl = `${import.meta.env.BASE_URL}models/web_policy.json`;
   const ai = await WebPolicyAI.load(modelUrl);
-  if (ai) {
-    trainer.setAi(ai, ai.displayName(), ai.infoLines());
-  } else {
-    trainer.setAi(new HeuristicAI(), "HeuristicAI fallback", [`No model JSON found at ${modelUrl}`]);
-  }
+  if (ai) trainer.setAi(ai, ai.displayName(), ai.infoLines());
+  else trainer.setAi(new HeuristicAI(), "HeuristicAI fallback", [`No model JSON found at ${modelUrl}`]);
 }
 
 function resizeCanvasForDisplay(): void {
@@ -362,6 +656,8 @@ function resizeCanvasForDisplay(): void {
 }
 
 function render(): void {
+  presenceBadge.textContent = trainer.presence.status;
+
   resizeCanvasForDisplay();
   const rect = canvas.getBoundingClientRect();
   const w = rect.width;
@@ -377,7 +673,11 @@ function render(): void {
 
   ctx.font = "16px Consolas";
   ctx.fillStyle = "#34d399";
-  ctx.fillText(`FT${trainer.firstTo}   Human ${trainer.score.human} - ${trainer.score.ai} AI   |   ${trainer.aiName}   |   ${numInput(aiPpsInput, 1.4).toFixed(1)} mino/s`, 26, 70);
+  ctx.fillText(
+    `FT${trainer.firstTo}   Human ${trainer.score.human} - ${trainer.score.ai} AI   |   ${trainer.aiName}   |   playing ${trainer.presence.online || "?"}`,
+    26,
+    70
+  );
 
   ctx.fillStyle = trainer.roundOver ? "#fbbf24" : "#94a3b8";
   ctx.fillText(trainer.message, 26, 94);
@@ -391,33 +691,27 @@ function render(): void {
   const panelX = 1068;
   const panelY = boardY;
   const panelW = Math.max(300, w - panelX - 26);
-  const panelH = Math.max(560, Math.min(800, h - panelY - 36));
-  const sdf = numInput(sdfInput, 30);
+  const panelH = Math.max(430, Math.min(720, h - panelY - 36));
+
   const lines: Array<[string, string?]> = [
     ["AI", "#38bdf8"],
     [`${trainer.aiName}`],
-    ...trainer.aiDetails.slice(0, 12).map((line) => [line, "#94a3b8"] as [string, string]),
+    ...trainer.aiDetails.slice(0, 10).map((line) => [line, "#94a3b8"] as [string, string]),
+    [""],
+    ["Online", "#38bdf8"],
+    [`playing now: ${trainer.presence.online || "?"}`],
+    [trainer.presence.status, "#94a3b8"],
     [""],
     ["Auto upload", "#38bdf8"],
     [`status: ${trainer.autoUploadStatus}`],
     [short(trainer.autoUploadDetail, 52), trainer.autoUploadStatus === "failed" ? "#f87171" : "#94a3b8"],
     [""],
-    ["Input", "#38bdf8"],
-    [`DAS=${numInput(dasInput, 130)}ms ARR=${numInput(arrInput, 10)}ms`],
-    [`SDF=${sdf} cells/s${sdf > 60 ? " = instant" : ""}`],
-    [""],
-    ["Garbage", "#38bdf8"],
-    [`Human incoming=${trainer.human.pendingGarbage}`],
-    [`AI incoming=${trainer.aiEngine.pendingGarbage}`],
-    ["Attack cancels own incoming first"],
-    [""],
     ["Controls", "#38bdf8"],
-    ["←/→ hold : DAS/ARR move"],
-    ["↓ hold   : SDF soft drop"],
-    ["Z/X/A    : CCW/CW/180"],
-    ["C/Shift  : hold"],
-    ["Space    : hard drop"],
-    ["Enter    : next round"],
+    [`${keyLabel(settings.keys.left)}/${keyLabel(settings.keys.right)} : move`],
+    [`${keyLabel(settings.keys.softDrop)} : soft drop`],
+    [`${keyLabel(settings.keys.rotateCcw)}/${keyLabel(settings.keys.rotateCw)}/${keyLabel(settings.keys.rotate180)} : rotate`],
+    [`${keyLabel(settings.keys.hold)} : hold`],
+    [`${keyLabel(settings.keys.hardDrop)} : hard drop`],
     [""],
     [`Logs: ${trainer.logger.records.length + trainer.logger.roundBuffer.length} moves`, "#94a3b8"],
     [`ID: ${trainer.logger.anonymousPlayerId.slice(0, 8)}...`, "#94a3b8"]
@@ -438,6 +732,9 @@ function tick(ts: number): void {
   trainer.update(dt, ts);
   requestAnimationFrame(tick);
 }
+
+bindSettingsUi();
+applySettingsToDom();
 
 window.addEventListener("keydown", (e) => trainer.handleKeyDown(e));
 window.addEventListener("keyup", (e) => trainer.handleKeyUp(e));
