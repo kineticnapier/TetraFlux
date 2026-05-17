@@ -9,6 +9,17 @@ type Layer =
 export interface WebPolicyJson {
   format: "tetraflux_web_policy_json_v1";
   feature_version: string;
+
+  model_id?: string;
+  model_name?: string;
+  exported_at?: string;
+  checkpoint_name?: string;
+  checkpoint_path?: string;
+  checkpoint_mtime_utc?: string;
+  checkpoint_size_bytes?: number;
+  checkpoint_sha256_12?: string;
+  training_summary?: unknown;
+
   input_dim: number;
   num_actions: number;
   actions: string[];
@@ -98,12 +109,34 @@ function actionKey(action: PlacementAction): string {
   return `${action.hold ? "H:" : ""}${action.piece}:${action.x}:${action.rot}`;
 }
 
+function short(text: unknown, max = 46): string {
+  const s = String(text ?? "");
+  return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
+}
+
 export class WebPolicyAI {
   actionToIndex: Map<string, number>;
   fallback = new HeuristicAI();
 
   constructor(public model: WebPolicyJson) {
     this.actionToIndex = new Map(model.actions.map((a, i) => [a, i]));
+  }
+
+  displayName(): string {
+    const id = this.model.model_id || this.model.model_name || this.model.checkpoint_name;
+    return `WebPolicyAI ${short(id || `${this.model.num_actions} actions`, 38)}`;
+  }
+
+  infoLines(): string[] {
+    const out: string[] = [];
+    if (this.model.model_id) out.push(`id: ${short(this.model.model_id, 52)}`);
+    if (this.model.model_name) out.push(`name: ${short(this.model.model_name, 52)}`);
+    if (this.model.exported_at) out.push(`export: ${this.model.exported_at}`);
+    if (this.model.checkpoint_name) out.push(`ckpt: ${short(this.model.checkpoint_name, 52)}`);
+    if (this.model.checkpoint_mtime_utc) out.push(`ckpt time: ${this.model.checkpoint_mtime_utc}`);
+    if (this.model.checkpoint_sha256_12) out.push(`sha: ${this.model.checkpoint_sha256_12}`);
+    out.push(`actions: ${this.model.num_actions}`);
+    return out;
   }
 
   static async load(url = "/models/web_policy.json"): Promise<WebPolicyAI | null> {

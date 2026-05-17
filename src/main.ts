@@ -67,6 +67,7 @@ class Ft5Trainer {
   aiEngine!: TetrisEngine;
   ai: AiLike = new HeuristicAI();
   aiName = "HeuristicAI";
+  aiDetails: string[] = ["No model JSON found, fallback"];
   logger = new MatchLogger();
   input!: MovementInput;
   aiAccumulatorMs = 0;
@@ -75,9 +76,10 @@ class Ft5Trainer {
     this.resetRound();
   }
 
-  setAi(ai: AiLike, name: string): void {
+  setAi(ai: AiLike, name: string, details: string[] = []): void {
     this.ai = ai;
     this.aiName = name;
+    this.aiDetails = details;
     setStatus(`AI loaded: ${name}`);
   }
 
@@ -256,9 +258,13 @@ class Ft5Trainer {
 const trainer = new Ft5Trainer();
 
 async function loadAiModel(): Promise<void> {
-  const ai = await WebPolicyAI.load("/models/web_policy.json");
-  if (ai) trainer.setAi(ai, `WebPolicyAI ${ai.model.num_actions} actions`);
-  else trainer.setAi(new HeuristicAI(), "HeuristicAI fallback");
+  const modelUrl = `${import.meta.env.BASE_URL}models/web_policy.json`;
+  const ai = await WebPolicyAI.load(modelUrl);
+  if (ai) {
+    trainer.setAi(ai, ai.displayName(), ai.infoLines());
+  } else {
+    trainer.setAi(new HeuristicAI(), "HeuristicAI fallback", [`No model JSON found at ${modelUrl}`]);
+  }
 }
 
 function resizeCanvasForDisplay(): void {
@@ -294,19 +300,23 @@ function render(): void {
   ctx.fillStyle = trainer.roundOver ? "#fbbf24" : "#94a3b8";
   ctx.fillText(trainer.message, 26, 94);
 
-  const cell = Math.max(17, Math.min(22, Math.floor((h - 255) / 20)));
-  const boardY = 140;
+  // Push the board area down so the match/status text no longer overlaps
+  // with the player board panels.
+  const boardY = 180;
+  const cell = Math.max(15, Math.min(20, Math.floor((h - boardY - 120) / 20)));
 
   drawBoard(ctx, trainer.human, { x: 24, y: boardY, cell, title: "Human", showGhost: true, active: true });
   drawBoard(ctx, trainer.aiEngine, { x: 520, y: boardY, cell, title: "AI", showGhost: false, active: true });
 
   const panelX = 1018;
+  const panelY = boardY;
   const panelW = Math.max(300, w - panelX - 26);
+  const panelH = Math.max(430, Math.min(610, h - panelY - 36));
   const sdf = numInput(sdfInput, 30);
   const lines: Array<[string, string?]> = [
     ["AI", "#38bdf8"],
     [`${trainer.aiName}`],
-    [trainer.aiName.startsWith("WebPolicy") ? "Loaded /models/web_policy.json" : "No model JSON found, fallback"],
+    ...trainer.aiDetails.slice(0, 7).map((line) => [line, "#94a3b8"] as [string, string]),
     [""],
     ["Input", "#38bdf8"],
     [`DAS=${numInput(dasInput, 130)}ms ARR=${numInput(arrInput, 10)}ms`],
@@ -326,7 +336,7 @@ function render(): void {
     [`Logs: ${trainer.logger.records.length + trainer.logger.roundBuffer.length} moves`, "#94a3b8"],
     [`ID: ${trainer.logger.anonymousPlayerId.slice(0, 8)}...`, "#94a3b8"]
   ];
-  drawPanel(ctx, panelX, 130, panelW, 640, "Status", lines);
+  drawPanel(ctx, panelX, panelY, panelW, panelH, "Status", lines);
 
   ctx.fillStyle = "#94a3b8";
   ctx.font = "13px Consolas";
