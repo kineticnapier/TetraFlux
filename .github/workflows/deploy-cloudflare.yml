@@ -10,9 +10,9 @@ on:
         type: boolean
         default: true
       deploy_worker:
-        description: "Deploy worker/ with wrangler deploy if worker/wrangler.toml exists"
+        description: "Deploy log upload Worker"
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -22,19 +22,79 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  deploy-worker:
+    name: Deploy log upload Worker
+    if: ${{ github.event_name == 'push' || inputs.deploy_worker }}
+    runs-on: ubuntu-latest
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+    outputs:
+      worker_url: ${{ steps.worker_url.outputs.worker_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Validate Cloudflare settings
+        shell: bash
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "Missing secret: CLOUDFLARE_API_TOKEN"
+            exit 1
+          fi
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "Missing secret: CLOUDFLARE_ACCOUNT_ID"
+            exit 1
+          fi
+
+      - name: Install worker dependencies
+        working-directory: worker
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Deploy Worker
+        working-directory: worker
+        run: npx wrangler@latest deploy
+
+      - name: Compute Worker URL
+        id: worker_url
+        shell: bash
+        run: |
+          # If you use a custom route/domain, set repository variable VITE_LOG_UPLOAD_URL manually.
+          # This default URL is correct for workers.dev subdomains in many setups.
+          echo "worker_url=https://tetraflux-log-upload.${{ vars.CLOUDFLARE_WORKERS_SUBDOMAIN }}.workers.dev" >> "$GITHUB_OUTPUT"
+
   deploy-pages:
     name: Deploy frontend to Cloudflare Pages
-    if: ${{ github.event_name == 'push' || inputs.deploy_pages }}
+    needs: [deploy-worker]
+    if: ${{ always() && (github.event_name == 'push' || inputs.deploy_pages) }}
     runs-on: ubuntu-latest
 
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CF_PAGES_PROJECT_NAME: ${{ vars.CF_PAGES_PROJECT_NAME }}
-      # Important:
-      # vite.config.ts uses GitHub Pages style base path when GITHUB_ACTIONS=true.
-      # Cloudflare Pages should normally serve from site root, so force VITE_BASE=/.
+
+      # Vite base for Cloudflare Pages.
       VITE_BASE: /
+
+      # Prefer explicit repository variable if set.
+      # If empty, src/logging.ts will still show a clear error on Upload Logs.
+      VITE_LOG_UPLOAD_URL: ${{ vars.VITE_LOG_UPLOAD_URL }}
 
     steps:
       - name: Checkout
@@ -61,6 +121,10 @@ jobs:
             echo "Missing repository variable: CF_PAGES_PROJECT_NAME"
             exit 1
           fi
+          if [ -z "$VITE_LOG_UPLOAD_URL" ]; then
+            echo "WARNING: VITE_LOG_UPLOAD_URL is empty."
+            echo "Upload Logs button will not work until you set repository variable VITE_LOG_UPLOAD_URL."
+          fi
 
       - name: Install dependencies
         run: npm ci
@@ -75,40 +139,3 @@ jobs:
             --branch="${GITHUB_REF_NAME}" \
             --commit-hash="${GITHUB_SHA}" \
             --commit-message="${GITHUB_SHA}"
-
-  deploy-worker:
-    name: Deploy optional Worker
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_worker }}
-    runs-on: ubuntu-latest
-
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Deploy worker/ with Wrangler if present
-        shell: bash
-        run: |
-          if [ ! -f worker/wrangler.toml ]; then
-            echo "worker/wrangler.toml not found. Skipping Worker deploy."
-            exit 0
-          fi
-
-          cd worker
-
-          if [ -f package-lock.json ]; then
-            npm ci
-          elif [ -f package.json ]; then
-            npm install
-          fi
-
-          npx wrangler@latest deploy

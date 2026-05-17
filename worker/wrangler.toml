@@ -1,0 +1,9 @@
+name = "tetraflux-log-upload"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+# R2 bucket:
+#   npx wrangler r2 bucket create tetraflux-logs
+[[r2_buckets]]
+binding = "LOG_BUCKET"
+bucket_name = "tetraflux-logs"
