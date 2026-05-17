@@ -42,14 +42,38 @@ function seedNow(): number {
   return (Date.now() ^ Math.floor(Math.random() * 1_000_000_000)) >>> 0;
 }
 
-function applyAttack(sender: TetrisEngine, receiver: TetrisEngine, amount: number): void {
-  let atk = Math.max(0, Math.floor(amount));
-  if (atk <= 0) return;
+interface GarbageResolveResult {
+  rawAttack: number;
+  canceled: number;
+  sent: number;
+  remainingIncoming: number;
+}
 
-  const cancel = Math.min(sender.pendingGarbage, atk);
-  sender.pendingGarbage -= cancel;
-  atk -= cancel;
-  if (atk > 0) receiver.queueGarbage(atk);
+function applyAttack(sender: TetrisEngine, receiver: TetrisEngine, amount: number): GarbageResolveResult {
+  const rawAttack = Math.max(0, Math.floor(amount));
+  let atk = rawAttack;
+
+  const canceled = Math.min(sender.pendingGarbage, atk);
+  sender.pendingGarbage -= canceled;
+  atk -= canceled;
+
+  const sent = atk;
+  if (sent > 0) receiver.queueGarbage(sent);
+
+  return {
+    rawAttack,
+    canceled,
+    sent,
+    remainingIncoming: sender.pendingGarbage
+  };
+}
+
+function applyRemainingGarbageAfterCounter(engine: TetrisEngine): void {
+  // TETR.IO-like flow:
+  // 1. Lock piece and calculate attack.
+  // 2. Outgoing attack cancels this player's visible incoming garbage first.
+  // 3. Any remaining incoming garbage materializes after the lock.
+  engine.applyPendingGarbage();
 }
 
 class Ft5Trainer {
@@ -165,6 +189,7 @@ class Ft5Trainer {
     });
 
     applyAttack(this.human, this.aiEngine, result.attackSent);
+    applyRemainingGarbageAfterCounter(this.human);
 
     if (this.human.dead || result.topout) {
       this.finishRound("ai");
@@ -185,6 +210,7 @@ class Ft5Trainer {
 
     const result = this.aiEngine.applyAction(action);
     applyAttack(this.aiEngine, this.human, result.attackSent);
+    applyRemainingGarbageAfterCounter(this.aiEngine);
     this.stepIndex++;
 
     if (this.aiEngine.dead || result.topout) {
@@ -306,9 +332,9 @@ function render(): void {
   const cell = Math.max(15, Math.min(20, Math.floor((h - boardY - 120) / 20)));
 
   drawBoard(ctx, trainer.human, { x: 24, y: boardY, cell, title: "Human", showGhost: true, active: true });
-  drawBoard(ctx, trainer.aiEngine, { x: 520, y: boardY, cell, title: "AI", showGhost: false, active: true });
+  drawBoard(ctx, trainer.aiEngine, { x: 540, y: boardY, cell, title: "AI", showGhost: false, active: true });
 
-  const panelX = 1018;
+  const panelX = 1068;
   const panelY = boardY;
   const panelW = Math.max(300, w - panelX - 26);
   const panelH = Math.max(430, Math.min(610, h - panelY - 36));
@@ -321,6 +347,11 @@ function render(): void {
     ["Input", "#38bdf8"],
     [`DAS=${numInput(dasInput, 130)}ms ARR=${numInput(arrInput, 10)}ms`],
     [`SDF=${sdf} cells/s${sdf > 60 ? " = instant" : ""}`],
+    [""],
+    ["Garbage", "#38bdf8"],
+    [`Human incoming=${trainer.human.pendingGarbage}`],
+    [`AI incoming=${trainer.aiEngine.pendingGarbage}`],
+    ["Attack cancels own incoming first"],
     [""],
     ["Layout", "#38bdf8"],
     ["HOLD | BOARD | NEXT per player"],

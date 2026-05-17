@@ -75,6 +75,35 @@ export function drawNextQueue(ctx: CanvasRenderingContext2D, queue: PieceKind[],
   }
 }
 
+export function drawGarbageMeter(ctx: CanvasRenderingContext2D, amount: number, x: number, y: number, h: number): void {
+  const w = 14;
+  const clamped = Math.max(0, Math.min(20, amount));
+
+  drawText(ctx, "G", x - 1, y - 10, amount > 0 ? "#fb7185" : "#64748b", "bold 13px Consolas");
+
+  ctx.fillStyle = "#111827";
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = amount > 0 ? "#fb7185" : "#334155";
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+
+  for (let i = 0; i < clamped; i++) {
+    const rowH = Math.max(2, Math.floor(h / 20));
+    const yy = y + h - (i + 1) * rowH;
+    ctx.fillStyle = i < 8 ? "#f97316" : i < 14 ? "#ef4444" : "#be123c";
+    ctx.fillRect(x + 2, yy + 1, w - 4, Math.max(1, rowH - 2));
+  }
+
+  if (amount > 20) {
+    ctx.fillStyle = "#e5e7eb";
+    ctx.font = "10px Consolas";
+    ctx.fillText(`+${amount - 20}`, x - 1, y + 10);
+  }
+
+  ctx.fillStyle = amount > 0 ? "#fecaca" : "#64748b";
+  ctx.font = "12px Consolas";
+  ctx.fillText(String(amount), x - 2, y + h + 14);
+}
+
 export interface DrawBoardOptions {
   x: number;
   y: number;
@@ -96,13 +125,14 @@ export function drawBoard(ctx: CanvasRenderingContext2D, engine: TetrisEngine, o
 
   const sideW = 96;
   const gap = 12;
-  const boardX = x + sideW + gap;
+  const garbageW = 20;
+  const boardX = x + sideW + gap + garbageW + gap;
   const boardY = y;
   const boardW = 10 * cell;
   const boardH = 20 * cell;
   const nextX = boardX + boardW + gap;
 
-  const panelW = sideW + gap + boardW + gap + sideW + 24;
+  const panelW = sideW + gap + garbageW + gap + boardW + gap + sideW + 24;
   const panelH = boardH + 130;
 
   drawRoundRect(ctx, x - 12, y - 50, panelW, panelH, 14, "#0d1423");
@@ -110,6 +140,9 @@ export function drawBoard(ctx: CanvasRenderingContext2D, engine: TetrisEngine, o
 
   // HOLD: left side of this player's board.
   drawMiniPiece(ctx, engine.hold, x, y, 15, "HOLD");
+
+  // Visible garbage queue: between HOLD and board.
+  drawGarbageMeter(ctx, engine.pendingGarbage, x + sideW + gap, y, boardH);
 
   // Board: center.
   const visible = engine.board.slice(HIDDEN_ROWS);

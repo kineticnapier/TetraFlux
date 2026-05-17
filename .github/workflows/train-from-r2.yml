@@ -1,0 +1,192 @@
+name: Train policy from R2 logs
+
+on:
+  workflow_dispatch:
+    inputs:
+      epochs:
+        description: "Training epochs"
+        type: number
+        default: 30
+      batch_size:
+        description: "Batch size"
+        type: number
+        default: 256
+      max_objects:
+        description: "Max newest R2 jsonl objects to download. 0 = all"
+        type: number
+        default: 0
+      max_holes:
+        description: "Filter: max holes"
+        type: number
+        default: 20
+      max_height:
+        description: "Filter: max visible height"
+        type: number
+        default: 18
+      min_round_length:
+        description: "Filter: min round length"
+        type: number
+        default: 8
+      model_name:
+        description: "Model name embedded into web_policy.json"
+        type: string
+        default: "ga_r2_clean"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: train-from-r2
+  cancel-in-progress: false
+
+jobs:
+  train:
+    name: Download R2 logs, train, export, deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CF_PAGES_PROJECT_NAME: ${{ vars.CF_PAGES_PROJECT_NAME }}
+      VITE_BASE: /
+      VITE_LOG_UPLOAD_URL: ${{ vars.VITE_LOG_UPLOAD_URL }}
+
+      R2_LOG_BUCKET: ${{ vars.R2_LOG_BUCKET || 'tetraflux-logs' }}
+      R2_LOG_PREFIX: ${{ vars.R2_LOG_PREFIX || 'raw/' }}
+
+      COLLECTED_DIR: collected_logs_r2
+      DATA_DIR: data
+      MODEL_DIR: models/web_human_policy_r2
+      PUBLIC_MODEL_JSON: public/models/web_policy.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate settings
+        shell: bash
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "Missing secret: CLOUDFLARE_API_TOKEN"
+            exit 1
+          fi
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "Missing secret: CLOUDFLARE_ACCOUNT_ID"
+            exit 1
+          fi
+          if [ -z "$CF_PAGES_PROJECT_NAME" ]; then
+            echo "Missing repository variable: CF_PAGES_PROJECT_NAME"
+            exit 1
+          fi
+          echo "R2_LOG_BUCKET=$R2_LOG_BUCKET"
+          echo "R2_LOG_PREFIX=$R2_LOG_PREFIX"
+          echo "CF_PAGES_PROJECT_NAME=$CF_PAGES_PROJECT_NAME"
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: |
+          # Avoid npm/Rollup optional dependency lockfile issue on Linux runner.
+          rm -rf node_modules package-lock.json
+          npm install --include=optional --no-audit --no-fund
+          node -e "require('@rollup/rollup-linux-x64-gnu'); console.log('rollup native optional package OK')"
+
+      - name: Install training dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-training.txt
+
+      - name: Download logs from R2
+        run: |
+          python tools/download_r2_logs.py \
+            --bucket "$R2_LOG_BUCKET" \
+            --prefix "$R2_LOG_PREFIX" \
+            --out-dir "$COLLECTED_DIR" \
+            --max-objects "${{ inputs.max_objects }}"
+
+      - name: Merge JSONL logs
+        run: |
+          mkdir -p "$DATA_DIR"
+          python tools/merge_jsonl.py \
+            --input "$COLLECTED_DIR" \
+            --out "$DATA_DIR/merged_r2_logs.jsonl"
+
+      - name: Audit merged logs
+        run: |
+          python tools/audit_web_logs.py \
+            --input "$DATA_DIR/merged_r2_logs.jsonl" \
+            --out "$DATA_DIR/audit_r2_logs.json"
+
+      - name: Filter logs
+        run: |
+          python tools/filter_web_logs.py \
+            --input "$DATA_DIR/merged_r2_logs.jsonl" \
+            --out "$DATA_DIR/merged_r2_logs_clean.jsonl" \
+            --trainer-version web-ft5-0.2.0 \
+            --winner human \
+            --max-holes "${{ inputs.max_holes }}" \
+            --max-height "${{ inputs.max_height }}" \
+            --max-pending-garbage 8 \
+            --min-round-length "${{ inputs.min_round_length }}"
+
+      - name: Build dataset
+        run: |
+          python tools/build_web_dataset.py \
+            --input "$DATA_DIR/merged_r2_logs_clean.jsonl" \
+            --out "$DATA_DIR/web_human_dataset_r2.jsonl"
+
+      - name: Train policy
+        run: |
+          python tools/train_web_policy.py \
+            --data "$DATA_DIR/web_human_dataset_r2.jsonl" \
+            --out-dir "$MODEL_DIR" \
+            --epochs "${{ inputs.epochs }}" \
+            --batch-size "${{ inputs.batch_size }}" \
+            --device cpu
+
+      - name: Export web policy JSON
+        run: |
+          mkdir -p public/models
+          python tools/export_web_policy_json.py \
+            --checkpoint "$MODEL_DIR/best_policy.pt" \
+            --out "$PUBLIC_MODEL_JSON" \
+            --model-name "${{ inputs.model_name }}_run${{ github.run_number }}_${{ github.run_attempt }}"
+
+      - name: Build frontend with trained model
+        run: npm run build
+
+      - name: Deploy Cloudflare Pages with trained model
+        run: |
+          npx wrangler@latest pages deploy dist \
+            --project-name="$CF_PAGES_PROJECT_NAME" \
+            --branch="${GITHUB_REF_NAME}" \
+            --commit-hash="${GITHUB_SHA}" \
+            --commit-message="trained-model-run-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+
+      - name: Upload training artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tetraflux-trained-policy-r2-run-${{ github.run_number }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            public/models/web_policy.json
+            models/web_human_policy_r2/best_policy.pt
+            models/web_human_policy_r2/summary.json
+            models/web_human_policy_r2/history.json
+            models/web_human_policy_r2/actions.json
+            data/audit_r2_logs.json
+            data/merged_r2_logs_clean.meta.json
+            data/web_human_dataset_r2.meta.json
+            collected_logs_r2/_download_summary.json

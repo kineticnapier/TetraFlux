@@ -578,7 +578,10 @@ export class TetrisEngine {
     if (hiddenOccupied) this.dead = true;
 
     if (!this.dead) {
-      this.applyPendingGarbage();
+      // Garbage is intentionally NOT applied here.
+      // The match controller first cancels incoming garbage with outgoing attack,
+      // then calls applyPendingGarbage() if anything remains. This matches the
+      // TETR.IO-like visible garbage queue/countering flow used by the trainer.
       this.spawnNext();
     }
 
