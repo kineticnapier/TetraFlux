@@ -49,8 +49,6 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-      # R2 S3-compatible API credentials.
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
@@ -90,26 +88,11 @@ jobs:
         shell: bash
         run: |
           set -e
-          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
-            echo "Missing secret: CLOUDFLARE_API_TOKEN"
-            exit 1
-          fi
-          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
-            echo "Missing secret: CLOUDFLARE_ACCOUNT_ID"
-            exit 1
-          fi
-          if [ -z "$R2_ACCESS_KEY_ID" ]; then
-            echo "Missing secret: R2_ACCESS_KEY_ID"
-            exit 1
-          fi
-          if [ -z "$R2_SECRET_ACCESS_KEY" ]; then
-            echo "Missing secret: R2_SECRET_ACCESS_KEY"
-            exit 1
-          fi
-          if [ -z "$CF_PAGES_PROJECT_NAME" ]; then
-            echo "Missing repository variable: CF_PAGES_PROJECT_NAME"
-            exit 1
-          fi
+          test -n "$CLOUDFLARE_API_TOKEN" || (echo "Missing secret: CLOUDFLARE_API_TOKEN" && exit 1)
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || (echo "Missing secret: CLOUDFLARE_ACCOUNT_ID" && exit 1)
+          test -n "$R2_ACCESS_KEY_ID" || (echo "Missing secret: R2_ACCESS_KEY_ID" && exit 1)
+          test -n "$R2_SECRET_ACCESS_KEY" || (echo "Missing secret: R2_SECRET_ACCESS_KEY" && exit 1)
+          test -n "$CF_PAGES_PROJECT_NAME" || (echo "Missing repository variable: CF_PAGES_PROJECT_NAME" && exit 1)
           echo "R2_LOG_BUCKET=$R2_LOG_BUCKET"
           echo "R2_LOG_PREFIX=$R2_LOG_PREFIX"
           echo "CF_PAGES_PROJECT_NAME=$CF_PAGES_PROJECT_NAME"
@@ -123,8 +106,7 @@ jobs:
 
       - name: Install training dependencies with uv
         shell: bash
-        run: |
-          uv pip install --python "$PY" -r requirements-training.txt
+        run: uv pip install --python "$PY" -r requirements-training.txt
 
       - name: Download logs from R2
         run: |
@@ -182,8 +164,43 @@ jobs:
             --out "$PUBLIC_MODEL_JSON" \
             --model-name "${{ inputs.model_name }}_run${{ github.run_number }}_${{ github.run_attempt }}"
 
+      - name: Inspect exported model before build
+        run: |
+          "$PY" - <<'PY'
+          import json, pathlib
+          p = pathlib.Path("public/models/web_policy.json")
+          data = json.loads(p.read_text(encoding="utf-8"))
+          print("PUBLIC MODEL:")
+          print("  model_id:", data.get("model_id"))
+          print("  model_name:", data.get("model_name"))
+          print("  exported_at:", data.get("exported_at"))
+          print("  checkpoint_mtime_utc:", data.get("checkpoint_mtime_utc"))
+          print("  sha:", data.get("checkpoint_sha256_12"))
+          print("  size:", p.stat().st_size)
+          PY
+
       - name: Build frontend with trained model
         run: npm run build
+
+      - name: Inspect dist model before deploy
+        run: |
+          "$PY" - <<'PY'
+          import json, pathlib, sys
+          p = pathlib.Path("dist/models/web_policy.json")
+          if not p.exists():
+              print("ERROR: dist/models/web_policy.json does not exist")
+              sys.exit(1)
+          data = json.loads(p.read_text(encoding="utf-8"))
+          print("DIST MODEL:")
+          print("  model_id:", data.get("model_id"))
+          print("  model_name:", data.get("model_name"))
+          print("  exported_at:", data.get("exported_at"))
+          print("  checkpoint_mtime_utc:", data.get("checkpoint_mtime_utc"))
+          print("  sha:", data.get("checkpoint_sha256_12"))
+          print("  size:", p.stat().st_size)
+          PY
+          echo "DIST HEADERS:"
+          if [ -f dist/_headers ]; then cat dist/_headers; else echo "dist/_headers not found"; fi
 
       - name: Deploy Cloudflare Pages with trained model
         run: |
@@ -201,6 +218,8 @@ jobs:
           retention-days: 30
           path: |
             public/models/web_policy.json
+            dist/models/web_policy.json
+            dist/_headers
             models/web_human_policy_r2/best_policy.pt
             models/web_human_policy_r2/summary.json
             models/web_human_policy_r2/history.json

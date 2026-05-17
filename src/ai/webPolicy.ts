@@ -114,12 +114,48 @@ function short(text: unknown, max = 46): string {
   return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
 }
 
+function withCacheBuster(url: string): string {
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}t=${Date.now()}`;
+}
+
 export class WebPolicyAI {
   actionToIndex: Map<string, number>;
   fallback = new HeuristicAI();
+  loadedUrl = "";
 
   constructor(public model: WebPolicyJson) {
     this.actionToIndex = new Map(model.actions.map((a, i) => [a, i]));
+  }
+
+  static async load(url = "/models/web_policy.json"): Promise<WebPolicyAI | null> {
+    try {
+      const actualUrl = withCacheBuster(url);
+      const res = await fetch(actualUrl, {
+        cache: "no-store",
+        headers: {
+          "cache-control": "no-cache",
+          "pragma": "no-cache",
+        },
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as WebPolicyJson;
+      if (data.format !== "tetraflux_web_policy_json_v1") return null;
+      const ai = new WebPolicyAI(data);
+      ai.loadedUrl = actualUrl;
+      console.log("[TetraFlux] loaded web policy", {
+        url: actualUrl,
+        model_id: data.model_id,
+        model_name: data.model_name,
+        exported_at: data.exported_at,
+        checkpoint_mtime_utc: data.checkpoint_mtime_utc,
+        sha: data.checkpoint_sha256_12,
+      });
+      return ai;
+    } catch (err) {
+      console.warn("[TetraFlux] failed to load web policy", err);
+      return null;
+    }
   }
 
   displayName(): string {
@@ -135,20 +171,9 @@ export class WebPolicyAI {
     if (this.model.checkpoint_name) out.push(`ckpt: ${short(this.model.checkpoint_name, 52)}`);
     if (this.model.checkpoint_mtime_utc) out.push(`ckpt time: ${this.model.checkpoint_mtime_utc}`);
     if (this.model.checkpoint_sha256_12) out.push(`sha: ${this.model.checkpoint_sha256_12}`);
+    if (this.loadedUrl) out.push(`url: ${short(this.loadedUrl, 52)}`);
     out.push(`actions: ${this.model.num_actions}`);
     return out;
-  }
-
-  static async load(url = "/models/web_policy.json"): Promise<WebPolicyAI | null> {
-    try {
-      const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) return null;
-      const data = (await res.json()) as WebPolicyJson;
-      if (data.format !== "tetraflux_web_policy_json_v1") return null;
-      return new WebPolicyAI(data);
-    } catch {
-      return null;
-    }
   }
 
   forward(feats: number[]): number[] {
@@ -180,7 +205,6 @@ export class WebPolicyAI {
     if (candidates.length === 0) return this.fallback.choose(engine);
     candidates.sort((a, b) => b.logit - a.logit);
 
-    // Safety filter: choose the best policy action that does not instantly topout.
     for (const c of candidates.slice(0, 40)) {
       const e = engine.clone();
       const result = e.applyAction(c.action);
