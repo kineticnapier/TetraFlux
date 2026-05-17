@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="TetraFlux icon">
+  <defs>
+    <radialGradient id="bg" cx="24%" cy="20%" r="85%">
+      <stop offset="0" stop-color="#13445c"/>
+      <stop offset=".42" stop-color="#09152f"/>
+      <stop offset="1" stop-color="#020617"/>
+    </radialGradient>
+
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="10" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="shadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity=".35"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+
+  <g transform="translate(140 128)">
+    
+    <g filter="url(#shadow)">
+      <rect x="0" y="0" width="74" height="74" rx="16" fill="#22d3ee"/>
+      <rect x="78" y="0" width="74" height="74" rx="16" fill="#22d3ee"/>
+      <rect x="156" y="0" width="74" height="74" rx="16" fill="#22d3ee"/>
+      <rect x="78" y="78" width="74" height="74" rx="16" fill="#22d3ee"/>
+    </g>
+    <g opacity=".20">
+      <rect x="0" y="0" width="74" height="74" rx="16" fill="#ffffff"/>
+      <rect x="78" y="0" width="74" height="74" rx="16" fill="#ffffff"/>
+      <rect x="156" y="0" width="74" height="74" rx="16" fill="#ffffff"/>
+      <rect x="78" y="78" width="74" height="74" rx="16" fill="#ffffff"/>
+    </g>
+  </g>
+
+  <text x="256" y="460" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="42" font-weight="900" fill="#e5e7eb">TetraFlux</text>
+</svg>

@@ -706,7 +706,8 @@ function resizeCanvasForDisplay(): void {
 }
 
 function render(): void {
-  presenceBadge.textContent = trainer.presence.status;
+  const playingText = `playing ${trainer.presence.online || "?"}`;
+  presenceBadge.textContent = playingText;
 
   resizeCanvasForDisplay();
   const rect = canvas.getBoundingClientRect();
@@ -724,7 +725,7 @@ function render(): void {
   ctx.font = "16px Consolas";
   ctx.fillStyle = "#34d399";
   ctx.fillText(
-    `FT${trainer.firstTo}   Human ${trainer.score.human} - ${trainer.score.ai} AI   |   ${trainer.aiName}   |   playing ${trainer.presence.online || "?"}`,
+    `FT${trainer.firstTo}   Human ${trainer.score.human} - ${trainer.score.ai} AI   |   ${trainer.aiName}   |   ${playingText}`,
     26,
     70
   );
@@ -741,29 +742,25 @@ function render(): void {
   const panelX = 1068;
   const panelY = boardY;
   const panelW = Math.max(300, w - panelX - 26);
-  const panelH = Math.max(430, Math.min(720, h - panelY - 36));
+  const panelH = Math.max(420, h - panelY - 18);
 
   const lines: Array<[string, string?]> = [
     ["AI", "#38bdf8"],
     [`${trainer.aiName}`],
-    ...trainer.aiDetails.slice(0, 10).map((line) => [line, "#94a3b8"] as [string, string]),
+    ...trainer.aiDetails.slice(0, 6).map((line) => [line, "#94a3b8"] as [string, string]),
     [""],
-    ["Online", "#38bdf8"],
-    [`playing now: ${trainer.presence.online || "?"}`],
-    [trainer.presence.status, "#94a3b8"],
-    [""],
-    ["Auto upload", "#38bdf8"],
-    [`status: ${trainer.autoUploadStatus}`],
+    ["Upload", "#38bdf8"],
+    [`${trainer.autoUploadStatus}`],
     [short(trainer.autoUploadDetail, 52), trainer.autoUploadStatus === "failed" ? "#f87171" : "#94a3b8"],
     [""],
-    ["Controls", "#38bdf8"],
+    ["Keys", "#38bdf8"],
     [`${keysLabel(settings.keys.left)}/${keysLabel(settings.keys.right)} : move`],
-    [`${keysLabel(settings.keys.softDrop)} : soft drop`],
-    [`${keysLabel(settings.keys.rotateCcw)}/${keysLabel(settings.keys.rotateCw)}/${keysLabel(settings.keys.rotate180)} : rotate`],
+    [`${keysLabel(settings.keys.softDrop)} : soft`],
+    [`${keysLabel(settings.keys.rotateCcw)}/${keysLabel(settings.keys.rotateCw)}/${keysLabel(settings.keys.rotate180)} : rot`],
     [`${keysLabel(settings.keys.hold)} : hold`],
-    [`${keysLabel(settings.keys.hardDrop)} : hard drop`],
+    [`${keysLabel(settings.keys.hardDrop)} : drop`],
     [""],
-    [`Logs: ${trainer.logger.records.length + trainer.logger.roundBuffer.length} moves`, "#94a3b8"],
+    [`Logs: ${trainer.logger.records.length + trainer.logger.roundBuffer.length}`, "#94a3b8"],
     [`ID: ${trainer.logger.anonymousPlayerId.slice(0, 8)}...`, "#94a3b8"]
   ];
   drawPanel(ctx, panelX, panelY, panelW, panelH, "Status", lines);

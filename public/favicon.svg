@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="TetraFlux favicon">
+  <defs>
+    <radialGradient id="bg" cx="24%" cy="20%" r="85%">
+      <stop offset="0" stop-color="#13445c"/>
+      <stop offset=".42" stop-color="#09152f"/>
+      <stop offset="1" stop-color="#020617"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="64" height="64" rx="16" fill="url(#bg)"/>
+
+  <g>
+    <rect x="10" y="12" width="14" height="14" rx="3" fill="#22d3ee"/>
+    <rect x="25" y="12" width="14" height="14" rx="3" fill="#22d3ee"/>
+    <rect x="40" y="12" width="14" height="14" rx="3" fill="#22d3ee"/>
+    <rect x="25" y="27" width="14" height="14" rx="3" fill="#22d3ee"/>
+  </g>
+
+  <g opacity=".20">
+    <rect x="10" y="12" width="14" height="14" rx="3" fill="#ffffff"/>
+    <rect x="25" y="12" width="14" height="14" rx="3" fill="#ffffff"/>
+    <rect x="40" y="12" width="14" height="14" rx="3" fill="#ffffff"/>
+    <rect x="25" y="27" width="14" height="14" rx="3" fill="#ffffff"/>
+  </g>
+</svg>
