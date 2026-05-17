@@ -49,6 +49,12 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # R2 S3-compatible API credentials.
+      # Create these from Cloudflare R2 API Tokens / Access Keys.
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
       CF_PAGES_PROJECT_NAME: ${{ vars.CF_PAGES_PROJECT_NAME }}
       VITE_BASE: /
       VITE_LOG_UPLOAD_URL: ${{ vars.VITE_LOG_UPLOAD_URL }}
@@ -65,15 +71,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Setup Python
+        run: uv python install 3.11
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
       - name: Validate settings
         shell: bash
@@ -85,6 +92,14 @@ jobs:
           fi
           if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
             echo "Missing secret: CLOUDFLARE_ACCOUNT_ID"
+            exit 1
+          fi
+          if [ -z "$R2_ACCESS_KEY_ID" ]; then
+            echo "Missing secret: R2_ACCESS_KEY_ID"
+            exit 1
+          fi
+          if [ -z "$R2_SECRET_ACCESS_KEY" ]; then
+            echo "Missing secret: R2_SECRET_ACCESS_KEY"
             exit 1
           fi
           if [ -z "$CF_PAGES_PROJECT_NAME" ]; then
@@ -102,14 +117,13 @@ jobs:
           npm install --include=optional --no-audit --no-fund
           node -e "require('@rollup/rollup-linux-x64-gnu'); console.log('rollup native optional package OK')"
 
-      - name: Install training dependencies
+      - name: Install training dependencies with uv
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-training.txt
+          uv pip install --python 3.11 -r requirements-training.txt
 
       - name: Download logs from R2
         run: |
-          python tools/download_r2_logs.py \
+          uv run --python 3.11 python tools/download_r2_logs.py \
             --bucket "$R2_LOG_BUCKET" \
             --prefix "$R2_LOG_PREFIX" \
             --out-dir "$COLLECTED_DIR" \
@@ -118,19 +132,19 @@ jobs:
       - name: Merge JSONL logs
         run: |
           mkdir -p "$DATA_DIR"
-          python tools/merge_jsonl.py \
+          uv run --python 3.11 python tools/merge_jsonl.py \
             --input "$COLLECTED_DIR" \
             --out "$DATA_DIR/merged_r2_logs.jsonl"
 
       - name: Audit merged logs
         run: |
-          python tools/audit_web_logs.py \
+          uv run --python 3.11 python tools/audit_web_logs.py \
             --input "$DATA_DIR/merged_r2_logs.jsonl" \
             --out "$DATA_DIR/audit_r2_logs.json"
 
       - name: Filter logs
         run: |
-          python tools/filter_web_logs.py \
+          uv run --python 3.11 python tools/filter_web_logs.py \
             --input "$DATA_DIR/merged_r2_logs.jsonl" \
             --out "$DATA_DIR/merged_r2_logs_clean.jsonl" \
             --trainer-version web-ft5-0.2.0 \
@@ -142,13 +156,13 @@ jobs:
 
       - name: Build dataset
         run: |
-          python tools/build_web_dataset.py \
+          uv run --python 3.11 python tools/build_web_dataset.py \
             --input "$DATA_DIR/merged_r2_logs_clean.jsonl" \
             --out "$DATA_DIR/web_human_dataset_r2.jsonl"
 
       - name: Train policy
         run: |
-          python tools/train_web_policy.py \
+          uv run --python 3.11 python tools/train_web_policy.py \
             --data "$DATA_DIR/web_human_dataset_r2.jsonl" \
             --out-dir "$MODEL_DIR" \
             --epochs "${{ inputs.epochs }}" \
@@ -158,7 +172,7 @@ jobs:
       - name: Export web policy JSON
         run: |
           mkdir -p public/models
-          python tools/export_web_policy_json.py \
+          uv run --python 3.11 python tools/export_web_policy_json.py \
             --checkpoint "$MODEL_DIR/best_policy.pt" \
             --out "$PUBLIC_MODEL_JSON" \
             --model-name "${{ inputs.model_name }}_run${{ github.run_number }}_${{ github.run_attempt }}"

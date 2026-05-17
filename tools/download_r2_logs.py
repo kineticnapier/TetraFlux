@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """
-Download TetraFlux JSONL logs from Cloudflare R2 using Wrangler.
+Download TetraFlux JSONL logs from Cloudflare R2 using the S3-compatible API.
 
-Required auth in environment:
-  CLOUDFLARE_API_TOKEN
+Why this exists:
+  Wrangler v4 has `r2 object get/put/delete`, but not `r2 object list`.
+  So listing + batch download should use the R2 S3-compatible API instead.
+
+Required environment:
   CLOUDFLARE_ACCOUNT_ID
+  R2_ACCESS_KEY_ID
+  R2_SECRET_ACCESS_KEY
 
 Example:
   python tools/download_r2_logs.py ^
@@ -12,8 +17,8 @@ Example:
     --prefix raw/ ^
     --out-dir collected_logs_r2
 
-This version prints Wrangler stdout/stderr on failure, so GitHub Actions
-will show the real reason instead of only CalledProcessError.
+Optional:
+  --endpoint-url https://<account_id>.r2.cloudflarestorage.com
 """
 
 from __future__ import annotations
@@ -22,69 +27,19 @@ import argparse
 import json
 import os
 import re
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
-
-def run(cmd: list[str], *, capture: bool = False) -> str:
-    print("+ " + " ".join(cmd), flush=True)
-
-    if capture:
-        p = subprocess.run(
-            cmd,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=os.environ.copy(),
-        )
-        if p.stdout.strip():
-            print("----- stdout -----", flush=True)
-            print(p.stdout, flush=True)
-        if p.stderr.strip():
-            print("----- stderr -----", file=sys.stderr, flush=True)
-            print(p.stderr, file=sys.stderr, flush=True)
-        if p.returncode != 0:
-            raise SystemExit(f"Command failed with exit code {p.returncode}: {' '.join(cmd)}")
-        return p.stdout
-
-    p = subprocess.run(cmd, text=True, env=os.environ.copy())
-    if p.returncode != 0:
-        raise SystemExit(f"Command failed with exit code {p.returncode}: {' '.join(cmd)}")
-    return ""
+import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
 
 
-def parse_objects(raw: str) -> list[dict[str, Any]]:
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        print("Wrangler output was not JSON.", file=sys.stderr)
-        print(raw, file=sys.stderr)
-        raise SystemExit(f"Failed to parse JSON from wrangler: {e}") from e
-
-    if isinstance(data, list):
-        objects = data
-    elif isinstance(data, dict):
-        # Wrangler versions have varied JSON wrappers.
-        objects = (
-            data.get("objects")
-            or data.get("items")
-            or data.get("result")
-            or data.get("objects_truncated")
-            or []
-        )
-    else:
-        objects = []
-
-    out: list[dict[str, Any]] = []
-    for item in objects:
-        if not isinstance(item, dict):
-            continue
-        key = item.get("key") or item.get("name")
-        if isinstance(key, str):
-            out.append(item)
-    return out
+def require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise SystemExit(f"{name} is not set")
+    return value
 
 
 def safe_relpath(key: str) -> Path:
@@ -98,12 +53,49 @@ def safe_relpath(key: str) -> Path:
     return Path(*parts) if parts else Path("unknown.jsonl")
 
 
-def wrangler_cmd(raw: str) -> list[str]:
-    # Accept:
-    #   "npx wrangler@latest"
-    #   "npx --yes wrangler@latest"
-    #   "wrangler"
-    return raw.split()
+def make_client(endpoint_url: str):
+    return boto3.client(
+        "s3",
+        endpoint_url=endpoint_url,
+        aws_access_key_id=require_env("R2_ACCESS_KEY_ID"),
+        aws_secret_access_key=require_env("R2_SECRET_ACCESS_KEY"),
+        region_name="auto",
+        config=Config(
+            signature_version="s3v4",
+            retries={"max_attempts": 5, "mode": "standard"},
+        ),
+    )
+
+
+def list_jsonl_objects(client, bucket: str, prefix: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    paginator = client.get_paginator("list_objects_v2")
+
+    try:
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for item in page.get("Contents", []):
+                key = item.get("Key")
+                if isinstance(key, str) and key.endswith(".jsonl"):
+                    out.append({
+                        "key": key,
+                        "size": int(item.get("Size", 0)),
+                        "last_modified": item.get("LastModified").isoformat() if item.get("LastModified") else None,
+                    })
+    except ClientError as e:
+        err = e.response.get("Error", {})
+        code = err.get("Code")
+        msg = err.get("Message")
+        raise SystemExit(
+            "R2 list_objects_v2 failed.\n"
+            f"bucket={bucket}\n"
+            f"prefix={prefix}\n"
+            f"code={code}\n"
+            f"message={msg}\n"
+            "Check R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY permissions and bucket name."
+        ) from e
+
+    out.sort(key=lambda x: str(x["key"]))
+    return out
 
 
 def main() -> int:
@@ -112,99 +104,88 @@ def main() -> int:
     ap.add_argument("--prefix", default="raw/")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--max-objects", type=int, default=0, help="0 means unlimited")
-    ap.add_argument("--wrangler", default="npx --yes wrangler@latest")
-    ap.add_argument("--skip-list-debug", action="store_true")
+    ap.add_argument("--endpoint-url", default=None)
     args = ap.parse_args()
 
-    if not os.environ.get("CLOUDFLARE_API_TOKEN"):
-        raise SystemExit("CLOUDFLARE_API_TOKEN is not set")
-    if not os.environ.get("CLOUDFLARE_ACCOUNT_ID"):
-        raise SystemExit("CLOUDFLARE_ACCOUNT_ID is not set")
+    account_id = require_env("CLOUDFLARE_ACCOUNT_ID")
+    require_env("R2_ACCESS_KEY_ID")
+    require_env("R2_SECRET_ACCESS_KEY")
+
+    endpoint_url = args.endpoint_url or f"https://{account_id}.r2.cloudflarestorage.com"
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    wrangler = wrangler_cmd(args.wrangler)
+    print(json.dumps({
+        "endpoint_url": endpoint_url,
+        "bucket": args.bucket,
+        "prefix": args.prefix,
+        "out_dir": str(out_dir),
+        "max_objects": args.max_objects,
+    }, ensure_ascii=False, indent=2), flush=True)
 
-    # Debug commands make permission/bucket/auth errors visible in Actions logs.
-    if not args.skip_list_debug:
-        run([*wrangler, "--version"], capture=True)
-        run([*wrangler, "whoami"], capture=True)
-        run([*wrangler, "r2", "bucket", "list"], capture=True)
-
-    list_cmd = [
-        *wrangler,
-        "r2",
-        "object",
-        "list",
-        args.bucket,
-        "--prefix",
-        args.prefix,
-        "--json",
-    ]
-
-    raw = run(list_cmd, capture=True)
-    objects = parse_objects(raw)
-
-    jsonl_objects = []
-    for obj in objects:
-        key = obj.get("key") or obj.get("name")
-        if not isinstance(key, str):
-            continue
-        if key.endswith(".jsonl"):
-            jsonl_objects.append(obj)
-
-    jsonl_objects.sort(key=lambda x: str(x.get("key") or x.get("name")))
+    client = make_client(endpoint_url)
+    objects = list_jsonl_objects(client, args.bucket, args.prefix)
 
     if args.max_objects > 0:
-        jsonl_objects = jsonl_objects[-args.max_objects:]
+        objects = objects[-args.max_objects:]
 
-    if not jsonl_objects:
+    downloaded = []
+    skipped = []
+
+    if not objects:
         summary = {
             "bucket": args.bucket,
             "prefix": args.prefix,
+            "endpoint_url": endpoint_url,
             "out_dir": str(out_dir),
-            "objects_seen": len(objects),
             "jsonl_objects": 0,
             "downloaded": 0,
             "skipped": 0,
-            "note": "No .jsonl objects found. Check prefix and whether Upload Logs has succeeded.",
+            "note": "No .jsonl objects found. Check Upload Logs, bucket, and prefix.",
         }
         (out_dir / "_download_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0
 
-    downloaded = []
-    skipped = []
-
-    for obj in jsonl_objects:
-        key = str(obj.get("key") or obj.get("name"))
-        rel = safe_relpath(key)
-        dest = out_dir / rel
+    for obj in objects:
+        key = str(obj["key"])
+        dest = out_dir / safe_relpath(key)
         dest.parent.mkdir(parents=True, exist_ok=True)
 
         if dest.exists() and dest.stat().st_size > 0:
             skipped.append({"key": key, "reason": "already_exists", "path": str(dest)})
             continue
 
-        get_cmd = [
-            *wrangler,
-            "r2",
-            "object",
-            "get",
-            f"{args.bucket}/{key}",
-            "--file",
-            str(dest),
-        ]
-        run(get_cmd, capture=True)
-        downloaded.append({"key": key, "path": str(dest), "bytes": dest.stat().st_size if dest.exists() else 0})
+        print(f"download s3://{args.bucket}/{key} -> {dest}", flush=True)
+        try:
+            client.download_file(args.bucket, key, str(dest))
+        except ClientError as e:
+            err = e.response.get("Error", {})
+            code = err.get("Code")
+            msg = err.get("Message")
+            raise SystemExit(
+                "R2 download_file failed.\n"
+                f"bucket={args.bucket}\n"
+                f"key={key}\n"
+                f"code={code}\n"
+                f"message={msg}"
+            ) from e
+
+        downloaded.append({
+            "key": key,
+            "path": str(dest),
+            "bytes": dest.stat().st_size if dest.exists() else 0,
+            "source_size": obj.get("size"),
+            "last_modified": obj.get("last_modified"),
+        })
 
     summary = {
         "bucket": args.bucket,
         "prefix": args.prefix,
+        "endpoint_url": endpoint_url,
         "out_dir": str(out_dir),
-        "objects_seen": len(objects),
-        "jsonl_objects": len(jsonl_objects),
+        "jsonl_objects": len(objects),
         "downloaded": len(downloaded),
         "skipped": len(skipped),
         "downloaded_files": downloaded[:50],
