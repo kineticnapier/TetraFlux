@@ -5,7 +5,6 @@
       <stop offset=".45" stop-color="#08152f"/>
       <stop offset="1" stop-color="#020617"/>
     </radialGradient>
-
     <filter id="softGlow" x="-40%" y="-40%" width="180%" height="180%">
       <feGaussianBlur stdDeviation="18" result="blur"/>
       <feMerge>
@@ -13,7 +12,6 @@
         <feMergeNode in="SourceGraphic"/>
       </feMerge>
     </filter>
-
     <filter id="shadow" x="-40%" y="-40%" width="180%" height="180%">
       <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#000000" flood-opacity=".35"/>
     </filter>
