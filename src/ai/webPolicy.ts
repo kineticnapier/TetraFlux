@@ -29,6 +29,11 @@ export interface WebPolicyJson {
 const PIECES = ["I", "J", "L", "O", "S", "T", "Z"] as const;
 const PIECE_TO_IDX = new Map<string, number>(PIECES.map((p, i) => [p, i]));
 
+const POLICY_TOP_K = 80;
+const POLICY_RANK_PENALTY = 0.08;
+const POLICY_LOGIT_GAP_PENALTY = 0.02;
+const MAX_DEBUG_CANDIDATES = 5;
+
 function onehotPiece(piece: unknown): number[] {
   const out = Array.from({ length: 7 }, () => 0);
   const p = String(piece ?? "").toUpperCase();
@@ -147,11 +152,8 @@ function trainingSummaryLines(summary: unknown): string[] {
 
   const out: string[] = [];
 
-  if (trainN !== null) {
-    out.push(`learned ops: ${trainN.toLocaleString()} train`);
-  } else {
-    out.push("learned ops: unknown");
-  }
+  if (trainN !== null) out.push(`learned ops: ${trainN.toLocaleString()} train`);
+  else out.push("learned ops: unknown");
 
   if (totalN > 0) {
     out.push(
@@ -186,10 +188,18 @@ function trainingSummaryLines(summary: unknown): string[] {
   return out;
 }
 
+interface PolicyCandidate {
+  action: PlacementAction;
+  key: string;
+  logit: number;
+  policyRank: number;
+}
+
 export class WebPolicyAI {
   actionToIndex: Map<string, number>;
   fallback = new HeuristicAI();
   loadedUrl = "";
+  lastChoiceInfo: Record<string, unknown> = {};
 
   constructor(public model: WebPolicyJson) {
     this.actionToIndex = new Map(model.actions.map((a, i) => [a, i]));
@@ -228,7 +238,7 @@ export class WebPolicyAI {
 
   displayName(): string {
     const id = this.model.model_id || this.model.model_name || this.model.checkpoint_name;
-    return `WebPolicyAI ${short(id || `${this.model.num_actions} actions`, 38)}`;
+    return `HybridAI ${short(id || `${this.model.num_actions} actions`, 38)}`;
   }
 
   infoLines(): string[] {
@@ -236,6 +246,9 @@ export class WebPolicyAI {
     if (this.model.model_id) out.push(`id: ${short(this.model.model_id, 52)}`);
     if (this.model.model_name) out.push(`name: ${short(this.model.model_name, 52)}`);
     if (this.model.exported_at) out.push(`export: ${this.model.exported_at}`);
+
+    out.push("mode: policy top-k + heuristic rerank");
+    out.push(`rerank: top${POLICY_TOP_K}, rankPenalty=${POLICY_RANK_PENALTY}`);
 
     out.push(...trainingSummaryLines(this.model.training_summary));
 
@@ -256,42 +269,106 @@ export class WebPolicyAI {
     return x;
   }
 
-  choose(engine: TetrisEngine): AiChoice | null {
+  private policyCandidates(engine: TetrisEngine, logits: number[]): PolicyCandidate[] {
     const legal = engine.legalPlacements(true);
-    if (legal.length === 0) return null;
-
-    const feats = featurizeState(engine.stateDict());
-    if (feats.length !== this.model.input_dim) return this.fallback.choose(engine);
-
-    const logits = this.forward(feats);
-    const candidates: Array<{ logit: number; action: PlacementAction }> = [];
+    const out: PolicyCandidate[] = [];
 
     for (const action of legal) {
-      const idx = this.actionToIndex.get(actionKey(action));
+      const key = actionKey(action);
+      const idx = this.actionToIndex.get(key);
       if (idx === undefined) continue;
-      candidates.push({ logit: logits[idx], action });
+      out.push({ action, key, logit: logits[idx], policyRank: 0 });
     }
 
-    if (candidates.length === 0) return this.fallback.choose(engine);
-    candidates.sort((a, b) => b.logit - a.logit);
+    out.sort((a, b) => b.logit - a.logit);
+    for (let i = 0; i < out.length; i++) out[i].policyRank = i;
+    return out;
+  }
 
-    for (const c of candidates.slice(0, 40)) {
-      const e = engine.clone();
-      const result = e.applyAction(c.action);
-      if (!e.dead && !result.topout) {
-        return {
-          ...c.action,
-          aiScore: -c.logit,
-          aiInfo: { source: "web_policy", logit: c.logit, safety: "safe_top40" },
+  choose(engine: TetrisEngine): AiChoice | null {
+    const feats = featurizeState(engine.stateDict());
+    if (feats.length !== this.model.input_dim) {
+      const fallbackChoice = this.fallback.choose(engine);
+      if (fallbackChoice) {
+        fallbackChoice.aiInfo = {
+          ...fallbackChoice.aiInfo,
+          source: "heuristic_fallback",
+          reason: "feature_dim_mismatch",
+          expected: this.model.input_dim,
+          actual: feats.length,
         };
+      }
+      return fallbackChoice;
+    }
+
+    const logits = this.forward(feats);
+    const allPolicy = this.policyCandidates(engine, logits);
+    if (allPolicy.length === 0) {
+      const fallbackChoice = this.fallback.choose(engine);
+      if (fallbackChoice) {
+        fallbackChoice.aiInfo = {
+          ...fallbackChoice.aiInfo,
+          source: "heuristic_fallback",
+          reason: "no_policy_legal_candidates",
+        };
+      }
+      return fallbackChoice;
+    }
+
+    const top = allPolicy.slice(0, Math.min(POLICY_TOP_K, allPolicy.length));
+    const bestLogit = top[0]?.logit ?? 0;
+
+    let best: {
+      candidate: PolicyCandidate;
+      combinedScore: number;
+      heuristicScore: number;
+      heuristicInfo: Record<string, unknown>;
+    } | null = null;
+
+    const debug: Array<Record<string, unknown>> = [];
+
+    for (const c of top) {
+      const { score: heuristicScore, info: heuristicInfo } = this.fallback.scoreAfter(engine, c.action);
+
+      const rankPenalty = c.policyRank * POLICY_RANK_PENALTY;
+      const logitGapPenalty = Math.max(0, bestLogit - c.logit) * POLICY_LOGIT_GAP_PENALTY;
+      const combinedScore = heuristicScore + rankPenalty + logitGapPenalty;
+
+      if (debug.length < MAX_DEBUG_CANDIDATES) {
+        debug.push({
+          key: c.key,
+          rank: c.policyRank,
+          logit: Number(c.logit.toFixed(3)),
+          heuristic: Number(heuristicScore.toFixed(3)),
+          combined: Number(combinedScore.toFixed(3)),
+        });
+      }
+
+      if (!best || combinedScore < best.combinedScore) {
+        best = { candidate: c, combinedScore, heuristicScore, heuristicInfo };
       }
     }
 
-    const best = candidates[0];
+    if (!best) return this.fallback.choose(engine);
+
+    this.lastChoiceInfo = {
+      source: "policy_topk_heuristic_rerank",
+      topK: top.length,
+      legalPolicyCandidates: allPolicy.length,
+      chosenPolicyRank: best.candidate.policyRank,
+      chosenLogit: best.candidate.logit,
+      combinedScore: best.combinedScore,
+      heuristicScore: best.heuristicScore,
+      debugTop: debug,
+    };
+
     return {
-      ...best.action,
-      aiScore: -best.logit,
-      aiInfo: { source: "web_policy", logit: best.logit, safety: "no_safe_candidate" },
+      ...best.candidate.action,
+      aiScore: best.combinedScore,
+      aiInfo: {
+        ...best.heuristicInfo,
+        ...this.lastChoiceInfo,
+      },
     };
   }
 }
