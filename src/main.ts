@@ -69,10 +69,6 @@ function applyAttack(sender: TetrisEngine, receiver: TetrisEngine, amount: numbe
 }
 
 function applyRemainingGarbageAfterCounter(engine: TetrisEngine): void {
-  // TETR.IO-like flow:
-  // 1. Lock piece and calculate attack.
-  // 2. Outgoing attack cancels this player's visible incoming garbage first.
-  // 3. Any remaining incoming garbage materializes after the lock.
   engine.applyPendingGarbage();
 }
 
@@ -326,8 +322,6 @@ function render(): void {
   ctx.fillStyle = trainer.roundOver ? "#fbbf24" : "#94a3b8";
   ctx.fillText(trainer.message, 26, 94);
 
-  // Push the board area down so the match/status text no longer overlaps
-  // with the player board panels.
   const boardY = 180;
   const cell = Math.max(15, Math.min(20, Math.floor((h - boardY - 120) / 20)));
 
@@ -337,12 +331,12 @@ function render(): void {
   const panelX = 1068;
   const panelY = boardY;
   const panelW = Math.max(300, w - panelX - 26);
-  const panelH = Math.max(430, Math.min(610, h - panelY - 36));
+  const panelH = Math.max(520, Math.min(760, h - panelY - 36));
   const sdf = numInput(sdfInput, 30);
   const lines: Array<[string, string?]> = [
     ["AI", "#38bdf8"],
     [`${trainer.aiName}`],
-    ...trainer.aiDetails.slice(0, 7).map((line) => [line, "#94a3b8"] as [string, string]),
+    ...trainer.aiDetails.slice(0, 12).map((line) => [line, "#94a3b8"] as [string, string]),
     [""],
     ["Input", "#38bdf8"],
     [`DAS=${numInput(dasInput, 130)}ms ARR=${numInput(arrInput, 10)}ms`],
@@ -352,9 +346,6 @@ function render(): void {
     [`Human incoming=${trainer.human.pendingGarbage}`],
     [`AI incoming=${trainer.aiEngine.pendingGarbage}`],
     ["Attack cancels own incoming first"],
-    [""],
-    ["Layout", "#38bdf8"],
-    ["HOLD | BOARD | NEXT per player"],
     [""],
     ["Controls", "#38bdf8"],
     ["←/→ hold : DAS/ARR move"],

@@ -119,6 +119,73 @@ function withCacheBuster(url: string): string {
   return `${url}${sep}t=${Date.now()}`;
 }
 
+function isObj(x: unknown): x is Record<string, unknown> {
+  return !!x && typeof x === "object" && !Array.isArray(x);
+}
+
+function num(x: unknown): number | null {
+  return typeof x === "number" && Number.isFinite(x) ? x : null;
+}
+
+function fmtInt(x: unknown): string | null {
+  const n = num(x);
+  return n === null ? null : Math.round(n).toLocaleString();
+}
+
+function fmtPct(x: unknown): string | null {
+  const n = num(x);
+  return n === null ? null : `${(n * 100).toFixed(1)}%`;
+}
+
+function trainingSummaryLines(summary: unknown): string[] {
+  if (!isObj(summary)) return ["learned ops: unknown"];
+
+  const trainN = num(summary.train_n);
+  const valN = num(summary.val_n);
+  const testN = num(summary.test_n);
+  const totalN = (trainN ?? 0) + (valN ?? 0) + (testN ?? 0);
+
+  const out: string[] = [];
+
+  if (trainN !== null) {
+    out.push(`learned ops: ${trainN.toLocaleString()} train`);
+  } else {
+    out.push("learned ops: unknown");
+  }
+
+  if (totalN > 0) {
+    out.push(
+      `dataset ops: ${totalN.toLocaleString()} total ` +
+      `(tr ${fmtInt(trainN) ?? "?"} / va ${fmtInt(valN) ?? "?"} / te ${fmtInt(testN) ?? "?"})`
+    );
+  }
+
+  const bestEpoch = fmtInt(summary.best_epoch);
+  if (bestEpoch) out.push(`best epoch: ${bestEpoch}`);
+
+  const test = isObj(summary.test) ? summary.test : null;
+  if (test) {
+    const top1 = fmtPct(test.top1);
+    const top5 = fmtPct(test.top5);
+    const softX1 = fmtPct(test.soft_x1);
+    const piece = fmtPct(test.piece_acc);
+    const xAcc = fmtPct(test.x_acc);
+
+    const parts: string[] = [];
+    if (top1) parts.push(`top1 ${top1}`);
+    if (top5) parts.push(`top5 ${top5}`);
+    if (softX1) parts.push(`softX1 ${softX1}`);
+    if (parts.length) out.push(`test: ${parts.join(" / ")}`);
+
+    const accParts: string[] = [];
+    if (piece) accParts.push(`piece ${piece}`);
+    if (xAcc) accParts.push(`x ${xAcc}`);
+    if (accParts.length) out.push(`acc: ${accParts.join(" / ")}`);
+  }
+
+  return out;
+}
+
 export class WebPolicyAI {
   actionToIndex: Map<string, number>;
   fallback = new HeuristicAI();
@@ -150,6 +217,7 @@ export class WebPolicyAI {
         exported_at: data.exported_at,
         checkpoint_mtime_utc: data.checkpoint_mtime_utc,
         sha: data.checkpoint_sha256_12,
+        training_summary: data.training_summary,
       });
       return ai;
     } catch (err) {
@@ -168,11 +236,13 @@ export class WebPolicyAI {
     if (this.model.model_id) out.push(`id: ${short(this.model.model_id, 52)}`);
     if (this.model.model_name) out.push(`name: ${short(this.model.model_name, 52)}`);
     if (this.model.exported_at) out.push(`export: ${this.model.exported_at}`);
-    if (this.model.checkpoint_name) out.push(`ckpt: ${short(this.model.checkpoint_name, 52)}`);
-    if (this.model.checkpoint_mtime_utc) out.push(`ckpt time: ${this.model.checkpoint_mtime_utc}`);
+
+    out.push(...trainingSummaryLines(this.model.training_summary));
+
     if (this.model.checkpoint_sha256_12) out.push(`sha: ${this.model.checkpoint_sha256_12}`);
+    out.push(`action classes: ${this.model.num_actions}`);
+
     if (this.loadedUrl) out.push(`url: ${short(this.loadedUrl, 52)}`);
-    out.push(`actions: ${this.model.num_actions}`);
     return out;
   }
 
