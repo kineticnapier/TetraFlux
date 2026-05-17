@@ -51,7 +51,6 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       # R2 S3-compatible API credentials.
-      # Create these from Cloudflare R2 API Tokens / Access Keys.
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
@@ -62,6 +61,7 @@ jobs:
       R2_LOG_BUCKET: ${{ vars.R2_LOG_BUCKET || 'tetraflux-logs' }}
       R2_LOG_PREFIX: ${{ vars.R2_LOG_PREFIX || 'raw/' }}
 
+      PY: .venv/bin/python
       COLLECTED_DIR: collected_logs_r2
       DATA_DIR: data
       MODEL_DIR: models/web_human_policy_r2
@@ -74,8 +74,12 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
 
-      - name: Setup Python
-        run: uv python install 3.11
+      - name: Create Python venv with uv
+        shell: bash
+        run: |
+          uv python install 3.11
+          uv venv --python 3.11 .venv
+          .venv/bin/python --version
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -118,12 +122,13 @@ jobs:
           node -e "require('@rollup/rollup-linux-x64-gnu'); console.log('rollup native optional package OK')"
 
       - name: Install training dependencies with uv
+        shell: bash
         run: |
-          uv pip install --python 3.11 -r requirements-training.txt
+          uv pip install --python "$PY" -r requirements-training.txt
 
       - name: Download logs from R2
         run: |
-          uv run --python 3.11 python tools/download_r2_logs.py \
+          "$PY" tools/download_r2_logs.py \
             --bucket "$R2_LOG_BUCKET" \
             --prefix "$R2_LOG_PREFIX" \
             --out-dir "$COLLECTED_DIR" \
@@ -132,19 +137,19 @@ jobs:
       - name: Merge JSONL logs
         run: |
           mkdir -p "$DATA_DIR"
-          uv run --python 3.11 python tools/merge_jsonl.py \
+          "$PY" tools/merge_jsonl.py \
             --input "$COLLECTED_DIR" \
             --out "$DATA_DIR/merged_r2_logs.jsonl"
 
       - name: Audit merged logs
         run: |
-          uv run --python 3.11 python tools/audit_web_logs.py \
+          "$PY" tools/audit_web_logs.py \
             --input "$DATA_DIR/merged_r2_logs.jsonl" \
             --out "$DATA_DIR/audit_r2_logs.json"
 
       - name: Filter logs
         run: |
-          uv run --python 3.11 python tools/filter_web_logs.py \
+          "$PY" tools/filter_web_logs.py \
             --input "$DATA_DIR/merged_r2_logs.jsonl" \
             --out "$DATA_DIR/merged_r2_logs_clean.jsonl" \
             --trainer-version web-ft5-0.2.0 \
@@ -156,13 +161,13 @@ jobs:
 
       - name: Build dataset
         run: |
-          uv run --python 3.11 python tools/build_web_dataset.py \
+          "$PY" tools/build_web_dataset.py \
             --input "$DATA_DIR/merged_r2_logs_clean.jsonl" \
             --out "$DATA_DIR/web_human_dataset_r2.jsonl"
 
       - name: Train policy
         run: |
-          uv run --python 3.11 python tools/train_web_policy.py \
+          "$PY" tools/train_web_policy.py \
             --data "$DATA_DIR/web_human_dataset_r2.jsonl" \
             --out-dir "$MODEL_DIR" \
             --epochs "${{ inputs.epochs }}" \
@@ -172,7 +177,7 @@ jobs:
       - name: Export web policy JSON
         run: |
           mkdir -p public/models
-          uv run --python 3.11 python tools/export_web_policy_json.py \
+          "$PY" tools/export_web_policy_json.py \
             --checkpoint "$MODEL_DIR/best_policy.pt" \
             --out "$PUBLIC_MODEL_JSON" \
             --model-name "${{ inputs.model_name }}_run${{ github.run_number }}_${{ github.run_attempt }}"
