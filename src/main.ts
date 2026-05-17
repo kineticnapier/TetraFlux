@@ -1,0 +1,380 @@
+import "./style.css";
+import { HeuristicAI } from "./ai/heuristic";
+import type { AiChoice } from "./ai/heuristic";
+import { WebPolicyAI } from "./ai/webPolicy";
+import { TetrisEngine, type PlacementAction, type PieceState } from "./engine/tetris";
+import { MovementInput } from "./input";
+import { MatchLogger, uploadLogs } from "./logging";
+import { drawBoard, drawPanel } from "./render";
+
+type Winner = "human" | "ai";
+
+interface AiLike {
+  choose(engine: TetrisEngine): AiChoice | null;
+}
+
+const canvas = document.querySelector<HTMLCanvasElement>("#game")!;
+const ctx = canvas.getContext("2d")!;
+const statusEl = document.querySelector<HTMLParagraphElement>("#status")!;
+
+const newMatchBtn = document.querySelector<HTMLButtonElement>("#newMatch")!;
+const nextRoundBtn = document.querySelector<HTMLButtonElement>("#nextRound")!;
+const downloadBtn = document.querySelector<HTMLButtonElement>("#downloadLogs")!;
+const uploadBtn = document.querySelector<HTMLButtonElement>("#uploadLogs")!;
+const copyBtn = document.querySelector<HTMLButtonElement>("#copyLogs")!;
+const clearBtn = document.querySelector<HTMLButtonElement>("#clearLogs")!;
+
+const aiPpsInput = document.querySelector<HTMLInputElement>("#aiPps")!;
+const dasInput = document.querySelector<HTMLInputElement>("#dasMs")!;
+const arrInput = document.querySelector<HTMLInputElement>("#arrMs")!;
+const sdfInput = document.querySelector<HTMLInputElement>("#sdf")!;
+
+function setStatus(text: string): void {
+  statusEl.textContent = text;
+}
+
+function numInput(input: HTMLInputElement, fallback: number): number {
+  const n = Number(input.value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function seedNow(): number {
+  return (Date.now() ^ Math.floor(Math.random() * 1_000_000_000)) >>> 0;
+}
+
+function applyAttack(sender: TetrisEngine, receiver: TetrisEngine, amount: number): void {
+  let atk = Math.max(0, Math.floor(amount));
+  if (atk <= 0) return;
+
+  const cancel = Math.min(sender.pendingGarbage, atk);
+  sender.pendingGarbage -= cancel;
+  atk -= cancel;
+  if (atk > 0) receiver.queueGarbage(atk);
+}
+
+class Ft5Trainer {
+  firstTo = 5;
+  baseSeed = seedNow();
+  roundIndex = 0;
+  stepIndex = 0;
+  score = { human: 0, ai: 0 };
+  roundOver = false;
+  matchOver = false;
+  roundWinner: Winner | null = null;
+  message = "";
+
+  human!: TetrisEngine;
+  aiEngine!: TetrisEngine;
+  ai: AiLike = new HeuristicAI();
+  aiName = "HeuristicAI";
+  logger = new MatchLogger();
+  input!: MovementInput;
+  aiAccumulatorMs = 0;
+
+  constructor() {
+    this.resetRound();
+  }
+
+  setAi(ai: AiLike, name: string): void {
+    this.ai = ai;
+    this.aiName = name;
+    setStatus(`AI loaded: ${name}`);
+  }
+
+  inputSettings() {
+    return {
+      dasMs: Math.max(0, numInput(dasInput, 130)),
+      arrMs: Math.max(0, numInput(arrInput, 10)),
+      sdfCellsPerSecond: Math.max(1, Math.min(240, numInput(sdfInput, 30)))
+    };
+  }
+
+  resetMatch(): void {
+    this.baseSeed = seedNow();
+    this.roundIndex = 0;
+    this.stepIndex = 0;
+    this.score = { human: 0, ai: 0 };
+    this.roundOver = false;
+    this.matchOver = false;
+    this.roundWinner = null;
+    this.logger = new MatchLogger();
+    this.resetRound();
+    setStatus("New FT5 match started.");
+  }
+
+  resetRound(): void {
+    const seed = (this.baseSeed + this.roundIndex * 1009) >>> 0;
+    this.human = new TetrisEngine(seed, seed + 17);
+    this.aiEngine = new TetrisEngine(seed, seed + 31);
+    this.input = new MovementInput(this.human, () => this.inputSettings());
+    this.aiAccumulatorMs = 0;
+    this.roundOver = false;
+    this.roundWinner = null;
+    this.stepIndex = 0;
+    this.message = `Round ${this.roundIndex + 1}: async play.`;
+  }
+
+  finishRound(winner: Winner): void {
+    if (this.roundOver) return;
+    this.roundOver = true;
+    this.roundWinner = winner;
+    this.score[winner] += 1;
+    this.logger.finishRound(winner, this.score);
+
+    if (this.score.human >= this.firstTo || this.score.ai >= this.firstTo) {
+      this.matchOver = true;
+      this.message = `Match over: ${winner} wins FT${this.firstTo}. Download or upload logs.`;
+    } else {
+      this.message = `Round winner: ${winner}. Press Enter or Next Round.`;
+    }
+  }
+
+  nextRound(): void {
+    if (!this.roundOver || this.matchOver) return;
+    this.roundIndex++;
+    this.resetRound();
+  }
+
+  humanHardDrop(): void {
+    if (this.roundOver || this.matchOver || this.human.dead) return;
+
+    const stateBefore = this.human.stateDict();
+    const aiStateBefore = this.aiEngine.stateDict();
+    const activeBefore: PieceState = { ...this.human.active };
+    const usedHold = this.human.holdUsedForCurrentPiece;
+
+    const result = this.human.hardDrop();
+    const rot = ((activeBefore.rot % 4) + 4) % 4;
+    const action: PlacementAction = {
+      piece: activeBefore.kind,
+      x: activeBefore.x,
+      rot,
+      hold: usedHold,
+      key: `${usedHold ? "H:" : ""}${activeBefore.kind}:${activeBefore.x}:${rot}`
+    };
+
+    this.logger.logHumanMove({
+      roundIndex: this.roundIndex,
+      stepIndex: this.stepIndex,
+      state: stateBefore,
+      aiState: aiStateBefore,
+      action,
+      result
+    });
+
+    applyAttack(this.human, this.aiEngine, result.attackSent);
+
+    if (this.human.dead || result.topout) {
+      this.finishRound("ai");
+      return;
+    }
+
+    this.input.resetRepeatAfterPieceChange(performance.now());
+  }
+
+  aiTurn(): void {
+    if (this.roundOver || this.matchOver || this.aiEngine.dead) return;
+
+    const action = this.ai.choose(this.aiEngine);
+    if (!action) {
+      this.finishRound("human");
+      return;
+    }
+
+    const result = this.aiEngine.applyAction(action);
+    applyAttack(this.aiEngine, this.human, result.attackSent);
+    this.stepIndex++;
+
+    if (this.aiEngine.dead || result.topout) {
+      this.finishRound("human");
+      return;
+    }
+
+    if (this.human.dead) this.finishRound("ai");
+  }
+
+  update(dtMs: number, now: number): void {
+    if (this.roundOver || this.matchOver) return;
+
+    this.input.update(now);
+
+    const pps = Math.max(0.1, Math.min(20, numInput(aiPpsInput, 1.4)));
+    const interval = 1000 / pps;
+    this.aiAccumulatorMs += dtMs;
+
+    let guard = 0;
+    while (this.aiAccumulatorMs >= interval && guard < 5 && !this.roundOver && !this.matchOver) {
+      this.aiTurn();
+      this.aiAccumulatorMs -= interval;
+      guard++;
+    }
+  }
+
+  handleKeyDown(e: KeyboardEvent): void {
+    const gameKeys = ["ArrowLeft", "ArrowRight", "ArrowDown", "ArrowUp", " ", "z", "x", "a", "c", "Shift", "Enter"];
+    if (gameKeys.includes(e.key)) e.preventDefault();
+
+    if (e.key === "q" || e.key === "Escape") return;
+    if (e.key === "r") {
+      this.resetMatch();
+      return;
+    }
+
+    if (this.roundOver) {
+      if (e.key === "Enter") this.nextRound();
+      return;
+    }
+
+    if (this.matchOver) return;
+
+    const now = performance.now();
+    if (this.input.keyDown(e.key, now)) return;
+
+    if (e.key === "ArrowUp" || e.key === "x") {
+      if (this.human.rotateCw()) this.input.notifyTransform(now);
+    } else if (e.key === "z") {
+      if (this.human.rotateCcw()) this.input.notifyTransform(now);
+    } else if (e.key === "a") {
+      if (this.human.rotate180()) this.input.notifyTransform(now);
+    } else if (e.key === "c" || e.key === "Shift") {
+      const beforeKind = this.human.active.kind;
+      const beforeHold = this.human.hold;
+      const ok = this.human.holdPiece();
+      if (ok && (this.human.active.kind !== beforeKind || this.human.hold !== beforeHold)) {
+        this.input.resetRepeatAfterPieceChange(now);
+      }
+    } else if (e.key === " ") {
+      this.humanHardDrop();
+    }
+  }
+
+  handleKeyUp(e: KeyboardEvent): void {
+    this.input.keyUp(e.key, performance.now());
+  }
+}
+
+const trainer = new Ft5Trainer();
+
+async function loadAiModel(): Promise<void> {
+  const ai = await WebPolicyAI.load("/models/web_policy.json");
+  if (ai) trainer.setAi(ai, `WebPolicyAI ${ai.model.num_actions} actions`);
+  else trainer.setAi(new HeuristicAI(), "HeuristicAI fallback");
+}
+
+function resizeCanvasForDisplay(): void {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  const ww = Math.floor(rect.width * dpr);
+  const hh = Math.floor(rect.height * dpr);
+  if (canvas.width !== ww || canvas.height !== hh) {
+    canvas.width = ww;
+    canvas.height = hh;
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function render(): void {
+  resizeCanvasForDisplay();
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width;
+  const h = rect.height;
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#070b14";
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.fillStyle = "#e5e7eb";
+  ctx.font = "bold 30px Consolas";
+  ctx.fillText("TetraFlux Web FT5 Trainer", 26, 42);
+
+  ctx.font = "16px Consolas";
+  ctx.fillStyle = "#34d399";
+  ctx.fillText(`FT${trainer.firstTo}   Human ${trainer.score.human} - ${trainer.score.ai} AI   |   ${trainer.aiName}   |   ${numInput(aiPpsInput, 1.4).toFixed(1)} mino/s`, 26, 70);
+
+  ctx.fillStyle = trainer.roundOver ? "#fbbf24" : "#94a3b8";
+  ctx.fillText(trainer.message, 26, 94);
+
+  const cell = Math.max(17, Math.min(22, Math.floor((h - 255) / 20)));
+  const boardY = 140;
+
+  drawBoard(ctx, trainer.human, { x: 24, y: boardY, cell, title: "Human", showGhost: true, active: true });
+  drawBoard(ctx, trainer.aiEngine, { x: 520, y: boardY, cell, title: "AI", showGhost: false, active: true });
+
+  const panelX = 1018;
+  const panelW = Math.max(300, w - panelX - 26);
+  const sdf = numInput(sdfInput, 30);
+  const lines: Array<[string, string?]> = [
+    ["AI", "#38bdf8"],
+    [`${trainer.aiName}`],
+    [trainer.aiName.startsWith("WebPolicy") ? "Loaded /models/web_policy.json" : "No model JSON found, fallback"],
+    [""],
+    ["Input", "#38bdf8"],
+    [`DAS=${numInput(dasInput, 130)}ms ARR=${numInput(arrInput, 10)}ms`],
+    [`SDF=${sdf} cells/s${sdf > 60 ? " = instant" : ""}`],
+    [""],
+    ["Layout", "#38bdf8"],
+    ["HOLD | BOARD | NEXT per player"],
+    [""],
+    ["Controls", "#38bdf8"],
+    ["←/→ hold : DAS/ARR move"],
+    ["↓ hold   : SDF soft drop"],
+    ["Z/X/A    : CCW/CW/180"],
+    ["C/Shift  : hold"],
+    ["Space    : hard drop"],
+    ["Enter    : next round"],
+    [""],
+    [`Logs: ${trainer.logger.records.length + trainer.logger.roundBuffer.length} moves`, "#94a3b8"],
+    [`ID: ${trainer.logger.anonymousPlayerId.slice(0, 8)}...`, "#94a3b8"]
+  ];
+  drawPanel(ctx, panelX, 130, panelW, 640, "Status", lines);
+
+  ctx.fillStyle = "#94a3b8";
+  ctx.font = "13px Consolas";
+  ctx.fillText("This is a local web trainer. It does not connect to TETR.IO.", 26, h - 18);
+
+  requestAnimationFrame(render);
+}
+
+let lastTs = performance.now();
+function tick(ts: number): void {
+  const dt = Math.min(100, ts - lastTs);
+  lastTs = ts;
+  trainer.update(dt, ts);
+  requestAnimationFrame(tick);
+}
+
+window.addEventListener("keydown", (e) => trainer.handleKeyDown(e));
+window.addEventListener("keyup", (e) => trainer.handleKeyUp(e));
+window.addEventListener("blur", () => trainer.input.clearAllHeld());
+
+newMatchBtn.addEventListener("click", () => trainer.resetMatch());
+nextRoundBtn.addEventListener("click", () => trainer.nextRound());
+downloadBtn.addEventListener("click", () => {
+  trainer.logger.download();
+  setStatus("Downloaded current match log.");
+});
+copyBtn.addEventListener("click", async () => {
+  await navigator.clipboard.writeText(trainer.logger.toJsonl(true));
+  setStatus("Copied logs to clipboard.");
+});
+clearBtn.addEventListener("click", () => {
+  trainer.logger.clearLocal();
+  setStatus("Cleared local saved log copy. Current in-memory match remains.");
+});
+uploadBtn.addEventListener("click", async () => {
+  try {
+    const text = trainer.logger.toJsonl(true);
+    if (!text.trim()) {
+      setStatus("No logs to upload.");
+      return;
+    }
+    const res = await uploadLogs(text);
+    setStatus(`Uploaded logs: ${res.slice(0, 120)}`);
+  } catch (err) {
+    setStatus(err instanceof Error ? err.message : String(err));
+  }
+});
+
+loadAiModel();
+render();
+requestAnimationFrame(tick);

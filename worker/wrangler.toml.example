@@ -1,0 +1,7 @@
+name = "tetraflux-log-worker"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+[[r2_buckets]]
+binding = "LOG_BUCKET"
+bucket_name = "tetraflux-logs"
