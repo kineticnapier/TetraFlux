@@ -31,9 +31,6 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-    outputs:
-      worker_url: ${{ steps.worker_url.outputs.worker_url }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,8 +39,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: worker/package-lock.json
 
       - name: Validate Cloudflare settings
         shell: bash
@@ -60,23 +55,12 @@ jobs:
       - name: Install worker dependencies
         working-directory: worker
         run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
+          # npm ci can fail with Rollup optional dependencies if lockfile was created on another OS.
+          npm install --include=optional
 
       - name: Deploy Worker
         working-directory: worker
         run: npx wrangler@latest deploy
-
-      - name: Compute Worker URL
-        id: worker_url
-        shell: bash
-        run: |
-          # If you use a custom route/domain, set repository variable VITE_LOG_UPLOAD_URL manually.
-          # This default URL is correct for workers.dev subdomains in many setups.
-          echo "worker_url=https://tetraflux-log-upload.${{ vars.CLOUDFLARE_WORKERS_SUBDOMAIN }}.workers.dev" >> "$GITHUB_OUTPUT"
 
   deploy-pages:
     name: Deploy frontend to Cloudflare Pages
@@ -92,8 +76,7 @@ jobs:
       # Vite base for Cloudflare Pages.
       VITE_BASE: /
 
-      # Prefer explicit repository variable if set.
-      # If empty, src/logging.ts will still show a clear error on Upload Logs.
+      # Build-time upload endpoint for the Upload Logs button.
       VITE_LOG_UPLOAD_URL: ${{ vars.VITE_LOG_UPLOAD_URL }}
 
     steps:
@@ -104,7 +87,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
 
       - name: Validate Cloudflare settings
         shell: bash
@@ -126,8 +108,11 @@ jobs:
             echo "Upload Logs button will not work until you set repository variable VITE_LOG_UPLOAD_URL."
           fi
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Install frontend dependencies
+        run: |
+          # Avoid npm/rollup optional dependency bug:
+          # Error: Cannot find module @rollup/rollup-linux-x64-gnu
+          npm install --include=optional
 
       - name: Build frontend
         run: npm run build
