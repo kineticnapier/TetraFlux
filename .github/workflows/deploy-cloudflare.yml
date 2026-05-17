@@ -54,9 +54,11 @@ jobs:
 
       - name: Install worker dependencies
         working-directory: worker
+        shell: bash
         run: |
-          # npm ci can fail with Rollup optional dependencies if lockfile was created on another OS.
-          npm install --include=optional
+          # Work around npm/Rollup optional dependency lockfile issue.
+          rm -rf node_modules package-lock.json
+          npm install --include=optional --no-audit --no-fund
 
       - name: Deploy Worker
         working-directory: worker
@@ -109,10 +111,21 @@ jobs:
           fi
 
       - name: Install frontend dependencies
+        shell: bash
         run: |
-          # Avoid npm/rollup optional dependency bug:
-          # Error: Cannot find module @rollup/rollup-linux-x64-gnu
-          npm install --include=optional
+          # Work around npm/Rollup optional dependency lockfile issue:
+          #   Cannot find module @rollup/rollup-linux-x64-gnu
+          #
+          # The current package-lock may have been generated on Windows and may not
+          # contain Linux optional packages. For CI deploy, rebuild deps from
+          # package.json instead of trusting the broken lockfile.
+          rm -rf node_modules package-lock.json
+          npm install --include=optional --no-audit --no-fund
+
+      - name: Verify Rollup native optional package
+        shell: bash
+        run: |
+          node -e "require('@rollup/rollup-linux-x64-gnu'); console.log('rollup native optional package OK')"
 
       - name: Build frontend
         run: npm run build
