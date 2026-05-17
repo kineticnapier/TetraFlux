@@ -7,7 +7,11 @@ dist
 
 # TetraFlux data / training outputs
 collected_logs/
+collected_logs_r2/
 data/
 models/
 *.pt
 *.pth
+
+# Generated model should live in R2 / Actions artifacts, not git.
+public/models/web_policy.json

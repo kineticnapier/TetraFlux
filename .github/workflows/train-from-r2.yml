@@ -58,6 +58,7 @@ jobs:
 
       R2_LOG_BUCKET: ${{ vars.R2_LOG_BUCKET || 'tetraflux-logs' }}
       R2_LOG_PREFIX: ${{ vars.R2_LOG_PREFIX || 'raw/' }}
+      R2_MODEL_KEY: ${{ vars.R2_MODEL_KEY || 'models/latest/web_policy.json' }}
 
       PY: .venv/bin/python
       COLLECTED_DIR: collected_logs_r2
@@ -95,6 +96,7 @@ jobs:
           test -n "$CF_PAGES_PROJECT_NAME" || (echo "Missing repository variable: CF_PAGES_PROJECT_NAME" && exit 1)
           echo "R2_LOG_BUCKET=$R2_LOG_BUCKET"
           echo "R2_LOG_PREFIX=$R2_LOG_PREFIX"
+          echo "R2_MODEL_KEY=$R2_MODEL_KEY"
           echo "CF_PAGES_PROJECT_NAME=$CF_PAGES_PROJECT_NAME"
 
       - name: Install frontend dependencies
@@ -164,6 +166,13 @@ jobs:
             --out "$PUBLIC_MODEL_JSON" \
             --model-name "${{ inputs.model_name }}_run${{ github.run_number }}_${{ github.run_attempt }}"
 
+      - name: Upload latest model JSON to R2
+        run: |
+          "$PY" tools/sync_web_policy_r2.py upload \
+            --bucket "$R2_LOG_BUCKET" \
+            --key "$R2_MODEL_KEY" \
+            --file "$PUBLIC_MODEL_JSON"
+
       - name: Inspect exported model before build
         run: |
           "$PY" - <<'PY'
@@ -171,11 +180,8 @@ jobs:
           p = pathlib.Path("public/models/web_policy.json")
           data = json.loads(p.read_text(encoding="utf-8"))
           print("PUBLIC MODEL:")
-          print("  model_id:", data.get("model_id"))
-          print("  model_name:", data.get("model_name"))
-          print("  exported_at:", data.get("exported_at"))
-          print("  checkpoint_mtime_utc:", data.get("checkpoint_mtime_utc"))
-          print("  sha:", data.get("checkpoint_sha256_12"))
+          for k in ["model_id", "model_name", "exported_at", "checkpoint_mtime_utc", "checkpoint_sha256_12"]:
+              print(f"  {k}: {data.get(k)}")
           print("  size:", p.stat().st_size)
           PY
 
@@ -192,15 +198,10 @@ jobs:
               sys.exit(1)
           data = json.loads(p.read_text(encoding="utf-8"))
           print("DIST MODEL:")
-          print("  model_id:", data.get("model_id"))
-          print("  model_name:", data.get("model_name"))
-          print("  exported_at:", data.get("exported_at"))
-          print("  checkpoint_mtime_utc:", data.get("checkpoint_mtime_utc"))
-          print("  sha:", data.get("checkpoint_sha256_12"))
+          for k in ["model_id", "model_name", "exported_at", "checkpoint_mtime_utc", "checkpoint_sha256_12"]:
+              print(f"  {k}: {data.get(k)}")
           print("  size:", p.stat().st_size)
           PY
-          echo "DIST HEADERS:"
-          if [ -f dist/_headers ]; then cat dist/_headers; else echo "dist/_headers not found"; fi
 
       - name: Deploy Cloudflare Pages with trained model
         run: |
