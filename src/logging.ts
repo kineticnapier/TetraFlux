@@ -251,22 +251,18 @@ function byteLen(text: string): number {
 }
 
 function splitJsonlByBytes(jsonl: string, maxBytes = UPLOAD_CHUNK_TARGET_BYTES): string[] {
-  const lines = jsonl.split(/?
-/).filter((line) => line.trim().length > 0);
+  const lines = jsonl.split(/\r?\n/).filter((line) => line.trim().length > 0);
   const chunks: string[] = [];
   let current: string[] = [];
   let currentBytes = 0;
 
   for (const line of lines) {
-    const lineWithNewline = `${line}
-`;
+    const lineWithNewline = `${line}\n`;
     const b = byteLen(lineWithNewline);
 
     if (b > maxBytes) {
       if (current.length) {
-        chunks.push(current.join("
-") + "
-");
+        chunks.push(current.join("\n") + "\n");
         current = [];
         currentBytes = 0;
       }
@@ -275,9 +271,7 @@ function splitJsonlByBytes(jsonl: string, maxBytes = UPLOAD_CHUNK_TARGET_BYTES):
     }
 
     if (current.length && currentBytes + b > maxBytes) {
-      chunks.push(current.join("
-") + "
-");
+      chunks.push(current.join("\n") + "\n");
       current = [];
       currentBytes = 0;
     }
@@ -286,9 +280,7 @@ function splitJsonlByBytes(jsonl: string, maxBytes = UPLOAD_CHUNK_TARGET_BYTES):
     currentBytes += b;
   }
 
-  if (current.length) chunks.push(current.join("
-") + "
-");
+  if (current.length) chunks.push(current.join("\n") + "\n");
   return chunks;
 }
 
