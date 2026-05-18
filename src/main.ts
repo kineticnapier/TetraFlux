@@ -2,7 +2,6 @@ import "./style.css";
 import { HeuristicAI } from "./ai/heuristic";
 import type { AiChoice } from "./ai/heuristic";
 import { WebPolicyAI } from "./ai/webPolicy";
-import { WebValueModel } from "./ai/webValue";
 import { TetrisEngine, type PlacementAction, type PieceState } from "./engine/tetris";
 import { MovementInput, type LogicalMoveKey } from "./input";
 import { MatchLogger, SelfplayLogger, type BattleSide, uploadLogs, uploadSelfplayLogs } from "./logging";
@@ -213,7 +212,10 @@ class Ft5Trainer {
   roundOver = false;
   matchOver = false;
   roundWinner: Winner | null = null;
+  matchStarted = false;
   message = "";
+
+  private aiBattleAutoNextAt: number | null = null;
 
   human!: TetrisEngine;
   aiEngine!: TetrisEngine;
@@ -274,7 +276,6 @@ class Ft5Trainer {
   inputSettings() { return { dasMs: settings.dasMs, arrMs: settings.arrMs, sdfCellsPerSecond: settings.sdfCellsPerSecond }; }
 
   resetMatch(): void {
-    this.firstTo = this.mode === "ai_vs_ai" ? 15 : 5;
     this.baseSeed = seedNow();
     this.roundIndex = 0;
     this.stepIndex = 0;
@@ -282,6 +283,8 @@ class Ft5Trainer {
     this.roundOver = false;
     this.matchOver = false;
     this.roundWinner = null;
+    this.matchStarted = this.mode === "ai_vs_ai";
+    this.aiBattleAutoNextAt = null;
     this.logger = new MatchLogger();
     this.selfplayLogger = new SelfplayLogger();
     this.presence?.stop();
@@ -293,7 +296,19 @@ class Ft5Trainer {
     this.autoUploadedMatchId = null;
     this.resetRound();
     this.updateModeButton();
-    setStatus(this.mode === "human_vs_ai" ? "New Human vs AI FT5 started." : "New AI Battle FT5 started.");
+    setStatus(this.mode === "human_vs_ai" ? "Press R to start Human vs AI FT5." : "New AI Battle FT5 started.");
+  }
+
+  startHumanMatch(): void {
+    if (this.mode !== "human_vs_ai") {
+      this.resetMatch();
+      return;
+    }
+
+    this.resetMatch();
+    this.matchStarted = true;
+    this.resetRound();
+    setStatus("Human vs AI FT5 started.");
   }
 
   resetRound(): void {
@@ -310,7 +325,7 @@ class Ft5Trainer {
     this.roundWinner = null;
     this.stepIndex = 0;
     this.message = this.mode === "human_vs_ai"
-      ? `Round ${this.roundIndex + 1}: play against AI.`
+      ? (this.matchStarted ? `Round ${this.roundIndex + 1}: play against AI.` : "Press R to start Human vs AI.")
       : `Round ${this.roundIndex + 1}: ${this.battleLeftName} vs ${this.battleRightName}.`;
   }
 
@@ -340,7 +355,12 @@ class Ft5Trainer {
         this.autoUploadHumanMatch();
       }
     } else {
-      this.message = `Round winner: ${this.winnerDisplay(winner)}. Press ${keysLabel(settings.keys.nextRound)} or Next Round.`;
+      if (this.mode === "ai_vs_ai") {
+        this.aiBattleAutoNextAt = performance.now() + 700;
+        this.message = `Round winner: ${this.winnerDisplay(winner)}. Auto next round...`;
+      } else {
+        this.message = `Round winner: ${this.winnerDisplay(winner)}. Press ${keysLabel(settings.keys.nextRound)} or Next Round.`;
+      }
     }
   }
 
@@ -394,7 +414,13 @@ class Ft5Trainer {
     void this.uploadJsonl("selfplay", matchId, this.selfplayLogger.toJsonl(false), uploadSelfplayLogs);
   }
 
-  nextRound(): void { if (this.roundOver && !this.matchOver) { this.roundIndex++; this.resetRound(); } }
+  nextRound(): void {
+    if (this.roundOver && !this.matchOver) {
+      this.aiBattleAutoNextAt = null;
+      this.roundIndex++;
+      this.resetRound();
+    }
+  }
   private resetHumanGroundTimer(): void { this.humanGroundedSince = null; }
   private isHumanGrounded(): boolean { return this.human.hardDropDistance(this.human.active) <= 0; }
 
@@ -517,7 +543,13 @@ class Ft5Trainer {
   }
 
   update(dtMs: number, now: number): void {
+    if (this.mode === "ai_vs_ai" && this.roundOver && !this.matchOver && this.aiBattleAutoNextAt !== null && now >= this.aiBattleAutoNextAt) {
+      this.nextRound();
+    }
+
     if (this.roundOver || this.matchOver) return;
+    if (this.mode === "human_vs_ai" && !this.matchStarted) return;
+
     const pps = Math.max(0.1, Math.min(20, settings.aiPps));
     const interval = 1000 / pps;
     if (this.mode === "human_vs_ai") {
@@ -545,9 +577,13 @@ class Ft5Trainer {
   handleKeyDown(e: KeyboardEvent): void {
     if (!settingsModal.classList.contains("hidden")) return;
     if (gameKeys().has(e.key)) e.preventDefault();
-    if (isBound(e, settings.keys.reset)) { this.resetMatch(); return; }
+    if (isBound(e, settings.keys.reset)) {
+      if (this.mode === "human_vs_ai") this.startHumanMatch();
+      else this.resetMatch();
+      return;
+    }
     if (this.roundOver) { if (isBound(e, settings.keys.nextRound)) this.nextRound(); return; }
-    if (this.matchOver || this.mode !== "human_vs_ai") return;
+    if (this.matchOver || this.mode !== "human_vs_ai" || !this.matchStarted) return;
     const now = performance.now();
     let logical: LogicalMoveKey | null = null;
     if (isBound(e, settings.keys.left)) logical = "left";
@@ -584,23 +620,9 @@ const trainer = new Ft5Trainer();
 
 async function loadAiModel(): Promise<void> {
   const modelUrl = `${import.meta.env.BASE_URL}models/web_policy.json`;
-  const valueUrl = `${import.meta.env.BASE_URL}models/web_value.json`;
-
-  const [ai, valueModel] = await Promise.all([
-    WebPolicyAI.load(modelUrl),
-    WebValueModel.load(valueUrl),
-  ]);
-
-  if (ai) {
-    ai.setValueModel(valueModel);
-    trainer.setLoadedAi(ai, ai.displayName(), ai.infoLines());
-  } else {
-    trainer.setLoadedAi(
-      new HeuristicAI(),
-      "HeuristicAI fallback",
-      [`No policy JSON found at ${modelUrl}`, valueModel ? `value loaded: ${valueModel.displayName()}` : `No value JSON found at ${valueUrl}`]
-    );
-  }
+  const ai = await WebPolicyAI.load(modelUrl);
+  if (ai) trainer.setLoadedAi(ai, ai.displayName(), ai.infoLines());
+  else trainer.setLoadedAi(new HeuristicAI(), "HeuristicAI fallback", [`No model JSON found at ${modelUrl}`]);
 }
 
 function resizeCanvasForDisplay(): void {
@@ -630,7 +652,8 @@ function render(): void {
   ctx.fillStyle = "#34d399";
   const leftName = trainer.mode === "ai_vs_ai" ? trainer.battleLeftName : "Human";
   const rightName = trainer.mode === "ai_vs_ai" ? trainer.battleRightName : "AI";
-  ctx.fillText(`FT${trainer.firstTo}   ${leftName} ${trainer.score.human} - ${trainer.score.ai} ${rightName}   |   ${trainer.modeLabel()}   |   ${playingText}`, 26, 70);
+  const startState = trainer.mode === "human_vs_ai" && !trainer.matchStarted ? "WAITING: press R" : trainer.modeLabel();
+  ctx.fillText(`FT${trainer.firstTo}   ${leftName} ${trainer.score.human} - ${trainer.score.ai} ${rightName}   |   ${startState}   |   ${playingText}`, 26, 70);
   ctx.fillStyle = trainer.roundOver ? "#fbbf24" : "#94a3b8";
   ctx.fillText(trainer.message, 26, 94);
   const boardY = 180;
@@ -666,7 +689,7 @@ function render(): void {
   drawPanel(ctx, panelX, panelY, panelW, panelH, "Status", lines);
   ctx.fillStyle = "#94a3b8";
   ctx.font = "13px Consolas";
-  ctx.fillText("AI Battle is FT15, uploads to selfplay/, and is used for value/RL training.", 26, h - 18);
+  ctx.fillText("AI Battle uploads to selfplay/ and is never mixed into human raw/ logs.", 26, h - 18);
   requestAnimationFrame(render);
 }
 

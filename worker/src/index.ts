@@ -1,7 +1,7 @@
 export interface Env { LOG_BUCKET: R2Bucket; }
 
-const MAX_BYTES = 4 * 1024 * 1024;
-const MAX_LINES = 12000;
+const MAX_BYTES = 16 * 1024 * 1024;
+const MAX_LINES = 50000;
 const PRESENCE_ACTIVE_MS = 45_000;
 const PRESENCE_CLEANUP_MS = 5 * 60_000;
 const ALLOWED_VERSIONS = new Set(["web-ft5-0.2.0", "web-ft5-0.3.0"]);

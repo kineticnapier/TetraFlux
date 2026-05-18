@@ -232,23 +232,109 @@ export class SelfplayLogger {
   clearLocal(): void { localStorage.removeItem("tetraflux_last_selfplay_log"); }
 }
 
-export async function uploadLogs(jsonl: string): Promise<string> {
+const UPLOAD_CHUNK_TARGET_BYTES = 3_400_000;
+
+function endpointFor(pathname?: string): string {
   const endpoint = import.meta.env.VITE_LOG_UPLOAD_URL;
   if (!endpoint) throw new Error("VITE_LOG_UPLOAD_URL is not set. Download logs manually.");
-  const res = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/x-ndjson" }, body: jsonl });
+
+  if (!pathname) return endpoint;
+
+  const url = new URL(endpoint);
+  url.pathname = pathname;
+  url.search = "";
+  return url.toString();
+}
+
+function byteLen(text: string): number {
+  return new TextEncoder().encode(text).byteLength;
+}
+
+function splitJsonlByBytes(jsonl: string, maxBytes = UPLOAD_CHUNK_TARGET_BYTES): string[] {
+  const lines = jsonl.split(/?
+/).filter((line) => line.trim().length > 0);
+  const chunks: string[] = [];
+  let current: string[] = [];
+  let currentBytes = 0;
+
+  for (const line of lines) {
+    const lineWithNewline = `${line}
+`;
+    const b = byteLen(lineWithNewline);
+
+    if (b > maxBytes) {
+      if (current.length) {
+        chunks.push(current.join("
+") + "
+");
+        current = [];
+        currentBytes = 0;
+      }
+      chunks.push(lineWithNewline);
+      continue;
+    }
+
+    if (current.length && currentBytes + b > maxBytes) {
+      chunks.push(current.join("
+") + "
+");
+      current = [];
+      currentBytes = 0;
+    }
+
+    current.push(line);
+    currentBytes += b;
+  }
+
+  if (current.length) chunks.push(current.join("
+") + "
+");
+  return chunks;
+}
+
+async function uploadJsonlTo(endpoint: string, jsonl: string): Promise<string> {
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/x-ndjson" },
+    body: jsonl
+  });
   const text = await res.text();
   if (!res.ok) throw new Error(text || `Upload failed: ${res.status}`);
   return text;
 }
 
+async function uploadJsonlChunked(endpoint: string, jsonl: string, label: string): Promise<string> {
+  const chunks = splitJsonlByBytes(jsonl);
+  if (chunks.length === 0) throw new Error(`No ${label} logs to upload.`);
+
+  if (chunks.length === 1) return uploadJsonlTo(endpoint, chunks[0]);
+
+  const results: string[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const result = await uploadJsonlTo(endpoint, chunks[i]);
+    results.push(result);
+  }
+
+  return JSON.stringify({
+    ok: true,
+    chunked: true,
+    kind: label,
+    chunks: chunks.length,
+    responses: results.map((x) => {
+      try {
+        const parsed = JSON.parse(x);
+        return { key: parsed.key, lines: parsed.lines, bytes: parsed.bytes, duplicate: parsed.duplicate };
+      } catch {
+        return { raw: x.slice(0, 160) };
+      }
+    })
+  });
+}
+
+export async function uploadLogs(jsonl: string): Promise<string> {
+  return uploadJsonlChunked(endpointFor(), jsonl, "human");
+}
+
 export async function uploadSelfplayLogs(jsonl: string): Promise<string> {
-  const endpoint = import.meta.env.VITE_LOG_UPLOAD_URL;
-  if (!endpoint) throw new Error("VITE_LOG_UPLOAD_URL is not set. Download selfplay logs manually.");
-  const url = new URL(endpoint);
-  url.pathname = "/selfplay";
-  url.search = "";
-  const res = await fetch(url.toString(), { method: "POST", headers: { "content-type": "application/x-ndjson" }, body: jsonl });
-  const text = await res.text();
-  if (!res.ok) throw new Error(text || `Selfplay upload failed: ${res.status}`);
-  return text;
+  return uploadJsonlChunked(endpointFor("/selfplay"), jsonl, "selfplay");
 }
