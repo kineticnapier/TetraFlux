@@ -2,15 +2,16 @@ import "./style.css";
 import { HeuristicAI } from "./ai/heuristic";
 import type { AiChoice } from "./ai/heuristic";
 import { WebPolicyAI } from "./ai/webPolicy";
+import { WebValueModel } from "./ai/webValue";
 import { TetrisEngine, type PlacementAction, type PieceState } from "./engine/tetris";
 import { MovementInput, type LogicalMoveKey } from "./input";
-import { MatchLogger, uploadLogs } from "./logging";
+import { MatchLogger, SelfplayLogger, type BattleSide, uploadLogs, uploadSelfplayLogs } from "./logging";
 import { PresenceClient } from "./presence";
 import { drawBoard, drawPanel } from "./render";
 
 type Winner = "human" | "ai";
 type GameMode = "human_vs_ai" | "ai_vs_ai";
-type AutoUploadStatus = "idle" | "uploading" | "uploaded" | "failed" | "skipped" | "disabled";
+type AutoUploadStatus = "idle" | "uploading" | "uploaded" | "failed" | "skipped" | "selfplay" | "disabled";
 
 interface AiLike { choose(engine: TetrisEngine): AiChoice | null; }
 
@@ -227,6 +228,7 @@ class Ft5Trainer {
   battleRightName = "HeuristicAI";
 
   logger = new MatchLogger();
+  selfplayLogger = new SelfplayLogger();
   input!: MovementInput;
   aiAccumulatorMs = 0;
   battleLeftAccumulatorMs = 0;
@@ -272,6 +274,7 @@ class Ft5Trainer {
   inputSettings() { return { dasMs: settings.dasMs, arrMs: settings.arrMs, sdfCellsPerSecond: settings.sdfCellsPerSecond }; }
 
   resetMatch(): void {
+    this.firstTo = this.mode === "ai_vs_ai" ? 15 : 5;
     this.baseSeed = seedNow();
     this.roundIndex = 0;
     this.stepIndex = 0;
@@ -280,11 +283,12 @@ class Ft5Trainer {
     this.matchOver = false;
     this.roundWinner = null;
     this.logger = new MatchLogger();
+    this.selfplayLogger = new SelfplayLogger();
     this.presence?.stop();
     this.presence = new PresenceClient(this.logger.anonymousPlayerId);
     this.presence.start();
-    this.autoUploadStatus = this.mode === "human_vs_ai" ? "idle" : "disabled";
-    this.autoUploadDetail = this.mode === "human_vs_ai" ? "match end upload enabled" : "AI Battle does not upload logs";
+    this.autoUploadStatus = "idle";
+    this.autoUploadDetail = this.mode === "human_vs_ai" ? "human logs upload to raw/" : "selfplay upload to selfplay/";
     this.autoUploadInFlight = false;
     this.autoUploadedMatchId = null;
     this.resetRound();
@@ -315,17 +319,25 @@ class Ft5Trainer {
     this.roundOver = true;
     this.roundWinner = winner;
     this.score[winner] += 1;
-    if (this.mode === "human_vs_ai") this.logger.finishRound(winner, this.score);
 
-    if (this.score.human >= this.firstTo || this.score.ai >= this.firstTo) {
+    const willMatchEnd = this.score.human >= this.firstTo || this.score.ai >= this.firstTo;
+
+    if (this.mode === "human_vs_ai") {
+      this.logger.finishRound(winner, this.score);
+    } else {
+      const sideWinner: BattleSide = winner === "human" ? "left" : "right";
+      const matchWinner = willMatchEnd ? sideWinner : null;
+      this.selfplayLogger.finishRound(sideWinner, { left: this.score.human, right: this.score.ai }, matchWinner);
+    }
+
+    if (willMatchEnd) {
       this.matchOver = true;
       if (this.mode === "ai_vs_ai") {
-        this.message = `AI Battle over: ${this.winnerDisplay(winner)} wins FT${this.firstTo}.`;
-        this.autoUploadStatus = "disabled";
-        this.autoUploadDetail = "AI Battle logs are not uploaded";
+        this.message = `AI Battle over: ${this.winnerDisplay(winner)} wins FT${this.firstTo}. Uploading selfplay logs...`;
+        this.autoUploadSelfplayMatch();
       } else {
         this.message = `Match over: ${winner} wins FT${this.firstTo}. Auto-uploading logs...`;
-        this.autoUploadFinishedMatch();
+        this.autoUploadHumanMatch();
       }
     } else {
       this.message = `Round winner: ${this.winnerDisplay(winner)}. Press ${keysLabel(settings.keys.nextRound)} or Next Round.`;
@@ -337,43 +349,49 @@ class Ft5Trainer {
     return winner;
   }
 
-  private autoUploadFinishedMatch(): void {
-    if (this.mode !== "human_vs_ai") {
-      this.autoUploadStatus = "disabled";
-      this.autoUploadDetail = "AI Battle does not upload logs";
-      return;
-    }
-    const matchId = this.logger.matchId;
-    if (this.autoUploadInFlight || this.autoUploadedMatchId === matchId) return;
-    const jsonl = this.logger.toJsonl(false);
+  private async uploadJsonl(label: string, matchId: string, jsonl: string, uploader: (jsonl: string) => Promise<string>): Promise<void> {
     const rows = jsonl.trim() ? jsonl.trim().split(/\r?\n/).length : 0;
+
     if (!jsonl.trim()) {
       this.autoUploadStatus = "skipped";
-      this.autoUploadDetail = "no completed logs to upload";
-      this.message = "Match over. Auto-upload skipped: no logs.";
+      this.autoUploadDetail = `no ${label} logs to upload`;
+      this.message = `${label} upload skipped: no logs.`;
       setStatus(this.message);
       return;
     }
+
     this.autoUploadInFlight = true;
     this.autoUploadStatus = "uploading";
-    this.autoUploadDetail = `${rows} rows, match ${matchId.slice(0, 8)}...`;
-    setStatus(`Auto-uploading ${rows} rows...`);
-    void uploadLogs(jsonl)
-      .then((res) => {
-        this.autoUploadInFlight = false;
-        this.autoUploadedMatchId = matchId;
-        this.autoUploadStatus = "uploaded";
-        this.autoUploadDetail = short(res, 110);
-        this.message = `Match over. Logs auto-uploaded (${rows} rows).`;
-        setStatus(this.message);
-      })
-      .catch((err) => {
-        this.autoUploadInFlight = false;
-        this.autoUploadStatus = "failed";
-        this.autoUploadDetail = short(err instanceof Error ? err.message : String(err), 110);
-        this.message = "Match over. Auto-upload failed; use Download Logs or Upload Logs.";
-        setStatus(`${this.message} ${this.autoUploadDetail}`);
-      });
+    this.autoUploadDetail = `${label}: ${rows} rows, match ${matchId.slice(0, 8)}...`;
+    setStatus(`Uploading ${label} ${rows} rows...`);
+
+    try {
+      const res = await uploader(jsonl);
+      this.autoUploadInFlight = false;
+      this.autoUploadedMatchId = matchId;
+      this.autoUploadStatus = label === "selfplay" ? "selfplay" : "uploaded";
+      this.autoUploadDetail = short(res, 110);
+      this.message = `${label} logs uploaded (${rows} rows).`;
+      setStatus(this.message);
+    } catch (err) {
+      this.autoUploadInFlight = false;
+      this.autoUploadStatus = "failed";
+      this.autoUploadDetail = short(err instanceof Error ? err.message : String(err), 110);
+      this.message = `${label} upload failed; use Download Logs.`;
+      setStatus(`${this.message} ${this.autoUploadDetail}`);
+    }
+  }
+
+  private autoUploadHumanMatch(): void {
+    const matchId = this.logger.matchId;
+    if (this.autoUploadInFlight || this.autoUploadedMatchId === matchId) return;
+    void this.uploadJsonl("human", matchId, this.logger.toJsonl(false), uploadLogs);
+  }
+
+  private autoUploadSelfplayMatch(): void {
+    const matchId = this.selfplayLogger.matchId;
+    if (this.autoUploadInFlight || this.autoUploadedMatchId === matchId) return;
+    void this.uploadJsonl("selfplay", matchId, this.selfplayLogger.toJsonl(false), uploadSelfplayLogs);
   }
 
   nextRound(): void { if (this.roundOver && !this.matchOver) { this.roundIndex++; this.resetRound(); } }
@@ -442,13 +460,38 @@ class Ft5Trainer {
     this.input.resetRepeatAfterPieceChange(performance.now());
   }
 
-  private aiAction(engine: TetrisEngine, opponent: TetrisEngine, ai: AiLike): boolean {
+  private aiAction(engine: TetrisEngine, opponent: TetrisEngine, ai: AiLike, side?: BattleSide): boolean {
     if (this.roundOver || this.matchOver || engine.dead) return false;
+
+    const stateBefore = engine.stateDict();
+    const opponentBefore = opponent.stateDict();
+
     const action = ai.choose(engine);
     if (!action) return false;
+
     const result = engine.applyAction(action);
     applyAttack(engine, opponent, result.attackSent);
     applyRemainingGarbageAfterCounter(engine, result);
+
+    const stateAfter = engine.stateDict();
+    const opponentAfter = opponent.stateDict();
+
+    if (this.mode === "ai_vs_ai" && side) {
+      this.selfplayLogger.logMove({
+        leftAiName: this.battleLeftName,
+        rightAiName: this.battleRightName,
+        side,
+        roundIndex: this.roundIndex,
+        stepIndex: this.stepIndex,
+        state: stateBefore,
+        opponentState: opponentBefore,
+        action,
+        result,
+        stateAfter,
+        opponentStateAfter: opponentAfter,
+      });
+    }
+
     this.stepIndex++;
     return !(engine.dead || result.topout);
   }
@@ -463,11 +506,11 @@ class Ft5Trainer {
   battleTurn(side: "left" | "right"): void {
     if (this.mode !== "ai_vs_ai" || this.roundOver || this.matchOver) return;
     if (side === "left") {
-      const alive = this.aiAction(this.human, this.aiEngine, this.battleLeftAi);
+      const alive = this.aiAction(this.human, this.aiEngine, this.battleLeftAi, "left");
       if (!alive) { this.finishRound("ai"); return; }
       if (this.aiEngine.dead) this.finishRound("human");
     } else {
-      const alive = this.aiAction(this.aiEngine, this.human, this.battleRightAi);
+      const alive = this.aiAction(this.aiEngine, this.human, this.battleRightAi, "right");
       if (!alive) { this.finishRound("human"); return; }
       if (this.human.dead) this.finishRound("ai");
     }
@@ -541,9 +584,23 @@ const trainer = new Ft5Trainer();
 
 async function loadAiModel(): Promise<void> {
   const modelUrl = `${import.meta.env.BASE_URL}models/web_policy.json`;
-  const ai = await WebPolicyAI.load(modelUrl);
-  if (ai) trainer.setLoadedAi(ai, ai.displayName(), ai.infoLines());
-  else trainer.setLoadedAi(new HeuristicAI(), "HeuristicAI fallback", [`No model JSON found at ${modelUrl}`]);
+  const valueUrl = `${import.meta.env.BASE_URL}models/web_value.json`;
+
+  const [ai, valueModel] = await Promise.all([
+    WebPolicyAI.load(modelUrl),
+    WebValueModel.load(valueUrl),
+  ]);
+
+  if (ai) {
+    ai.setValueModel(valueModel);
+    trainer.setLoadedAi(ai, ai.displayName(), ai.infoLines());
+  } else {
+    trainer.setLoadedAi(
+      new HeuristicAI(),
+      "HeuristicAI fallback",
+      [`No policy JSON found at ${modelUrl}`, valueModel ? `value loaded: ${valueModel.displayName()}` : `No value JSON found at ${valueUrl}`]
+    );
+  }
 }
 
 function resizeCanvasForDisplay(): void {
@@ -603,13 +660,13 @@ function render(): void {
     [`${keysLabel(settings.keys.hold)} : hold`],
     [`${keysLabel(settings.keys.hardDrop)} : drop`],
     [""],
-    [`Logs: ${trainer.logger.records.length + trainer.logger.roundBuffer.length}`, "#94a3b8"],
+    [`Logs: ${trainer.mode === "ai_vs_ai" ? trainer.selfplayLogger.records.length + trainer.selfplayLogger.roundBuffer.length : trainer.logger.records.length + trainer.logger.roundBuffer.length}`, "#94a3b8"],
     [`ID: ${trainer.logger.anonymousPlayerId.slice(0, 8)}...`, "#94a3b8"]
   ];
   drawPanel(ctx, panelX, panelY, panelW, panelH, "Status", lines);
   ctx.fillStyle = "#94a3b8";
   ctx.font = "13px Consolas";
-  ctx.fillText("AI Battle is evaluation-only and does not upload training logs.", 26, h - 18);
+  ctx.fillText("AI Battle is FT15, uploads to selfplay/, and is used for value/RL training.", 26, h - 18);
   requestAnimationFrame(render);
 }
 
@@ -629,12 +686,35 @@ window.addEventListener("blur", () => trainer.input.clearAllHeld());
 newMatchBtn.addEventListener("click", () => trainer.resetMatch());
 nextRoundBtn.addEventListener("click", () => trainer.nextRound());
 toggleModeBtn.addEventListener("click", () => trainer.toggleMode());
-downloadBtn.addEventListener("click", () => { trainer.logger.download(); setStatus("Downloaded current match log."); });
-copyBtn.addEventListener("click", async () => { await navigator.clipboard.writeText(trainer.logger.toJsonl(true)); setStatus("Copied logs to clipboard."); });
-clearBtn.addEventListener("click", () => { trainer.logger.clearLocal(); setStatus("Cleared local saved log copy. Current in-memory match remains."); });
+downloadBtn.addEventListener("click", () => {
+  if (trainer.mode === "ai_vs_ai") {
+    trainer.selfplayLogger.download();
+    setStatus("Downloaded current selfplay log.");
+  } else {
+    trainer.logger.download();
+    setStatus("Downloaded current match log.");
+  }
+});
+copyBtn.addEventListener("click", async () => {
+  const text = trainer.mode === "ai_vs_ai" ? trainer.selfplayLogger.toJsonl(true) : trainer.logger.toJsonl(true);
+  await navigator.clipboard.writeText(text);
+  setStatus(trainer.mode === "ai_vs_ai" ? "Copied selfplay logs to clipboard." : "Copied logs to clipboard.");
+});
+clearBtn.addEventListener("click", () => {
+  trainer.logger.clearLocal();
+  trainer.selfplayLogger.clearLocal();
+  setStatus("Cleared local saved log copies. Current in-memory match remains.");
+});
 uploadBtn.addEventListener("click", async () => {
   try {
-    if (trainer.mode !== "human_vs_ai") { setStatus("AI Battle logs are not uploaded to avoid dataset contamination."); return; }
+    if (trainer.mode === "ai_vs_ai") {
+      const text = trainer.selfplayLogger.toJsonl(true);
+      if (!text.trim()) { setStatus("No selfplay logs to upload."); return; }
+      const res = await uploadSelfplayLogs(text);
+      setStatus(`Uploaded selfplay logs: ${res.slice(0, 120)}`);
+      return;
+    }
+
     const text = trainer.logger.toJsonl(true);
     if (!text.trim()) { setStatus("No logs to upload."); return; }
     const res = await uploadLogs(text);

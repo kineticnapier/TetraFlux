@@ -1,0 +1,135 @@
+name: Train selfplay value model
+
+on:
+  workflow_dispatch:
+    inputs:
+      epochs:
+        description: "Training epochs"
+        required: true
+        default: "40"
+      max_objects:
+        description: "Max selfplay jsonl objects to download; 0 = all"
+        required: true
+        default: "0"
+      ai_pps_note:
+        description: "Note only; AI Battle is FT15 in the web app"
+        required: false
+        default: "FT15 selfplay value training"
+
+jobs:
+  train-selfplay-value:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      R2_BUCKET: ${{ vars.R2_LOG_BUCKET || 'tetraflux-logs' }}
+      SELFPLAY_PREFIX: ${{ vars.R2_SELFPLAY_PREFIX || 'selfplay/' }}
+      VALUE_MODEL_KEY: ${{ vars.R2_VALUE_MODEL_KEY || 'models/latest/web_value.json' }}
+      POLICY_MODEL_KEY: ${{ vars.R2_MODEL_KEY || 'models/latest/web_policy.json' }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      VITE_LOG_UPLOAD_URL: ${{ vars.VITE_LOG_UPLOAD_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Python dependencies
+        run: |
+          uv pip install --system torch numpy boto3
+
+      - name: Download selfplay logs from R2
+        run: |
+          python tools/download_r2_jsonl_prefix.py \
+            --bucket "$R2_BUCKET" \
+            --prefix "$SELFPLAY_PREFIX" \
+            --out-dir data/selfplay_r2 \
+            --max-objects "${{ inputs.max_objects }}"
+
+      - name: Build selfplay value dataset
+        run: |
+          python tools/build_selfplay_value_dataset.py \
+            --input data/selfplay_r2 \
+            --out data/selfplay_value_dataset.jsonl
+
+      - name: Train value model
+        run: |
+          python tools/train_selfplay_value.py \
+            --data data/selfplay_value_dataset.jsonl \
+            --out-dir models/selfplay_value \
+            --epochs "${{ inputs.epochs }}" \
+            --batch-size 512
+
+      - name: Export web value JSON
+        run: |
+          python tools/export_web_value_json.py \
+            --checkpoint models/selfplay_value/best_value.pt \
+            --summary models/selfplay_value/summary.json \
+            --out public/models/web_value.json \
+            --model-name ga_selfplay_value
+
+      - name: Upload value model to R2
+        run: |
+          python tools/upload_r2_file.py \
+            --bucket "$R2_BUCKET" \
+            --key "$VALUE_MODEL_KEY" \
+            --file public/models/web_value.json \
+            --content-type application/json
+
+      - name: Sync latest policy model from R2 if available
+        run: |
+          python tools/download_r2_file.py \
+            --bucket "$R2_BUCKET" \
+            --key "$POLICY_MODEL_KEY" \
+            --out public/models/web_policy.json \
+            --optional
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install frontend dependencies
+        run: |
+          rm -rf node_modules package-lock.json
+          npm install --include=optional --no-audit --no-fund
+
+      - name: Build frontend with latest policy + value
+        run: npm run build
+
+      - name: Inspect exported value model
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('dist/models/web_value.json')
+          obj = json.loads(p.read_text(encoding='utf-8'))
+          print(json.dumps({
+            'model_id': obj.get('model_id'),
+            'input_dim': obj.get('input_dim'),
+            'exported_at': obj.get('exported_at'),
+            'summary': obj.get('training_summary'),
+          }, indent=2, ensure_ascii=False))
+          PY
+
+      - name: Deploy frontend to Cloudflare Pages
+        run: |
+          npx --yes wrangler@latest pages deploy dist \
+            --project-name "${{ vars.CF_PAGES_PROJECT_NAME }}" \
+            --branch main
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfplay-value-model
+          path: |
+            models/selfplay_value/summary.json
+            models/selfplay_value/best_value.pt
+            public/models/web_value.json
+            data/selfplay_value_dataset.jsonl.meta.json
