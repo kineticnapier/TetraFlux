@@ -160,7 +160,9 @@ export function drawBoard(ctx: CanvasRenderingContext2D, engine: TetrisEngine, o
   // NEXT: right side of this player's board.
   drawNextQueue(ctx, engine.queue, nextX, y);
 
-  if (opts.showGhost && !engine.dead) {
+  // Ghost is shown for every board, including AI and AI Battle boards.
+  // showGhost=false is intentionally ignored so AI placement preview is visible.
+  if (!engine.dead) {
     const ghost = engine.ghostPiece();
     for (const [gx, gy] of shapeCells(ghost)) {
       const vy = gy - HIDDEN_ROWS;

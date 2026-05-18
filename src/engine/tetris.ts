@@ -220,7 +220,7 @@ export function shapeCells(piece: PieceState): Array<[number, number]> {
 }
 
 function isDifficultClear(lines: number, spin: SpinType): boolean {
-  return lines === 4 || (spin === "tspin" && lines > 0) || (spin === "tspin-mini" && lines > 0);
+  return lines === 4 || ((spin === "tspin" || spin === "tspin-mini" || spin === "spin") && lines > 0);
 }
 
 export function attackFor(lines: number, spin: SpinType, combo: number, b2bBeforeClear: number): number {
@@ -233,6 +233,13 @@ export function attackFor(lines: number, spin: SpinType, combo: number, b2bBefor
   } else if (spin === "tspin-mini") {
     if (lines === 1) attack = 1;
     else if (lines === 2) attack = 3;
+  } else if (spin === "spin") {
+    // Approximate all-piece spin table. This is intentionally conservative
+    // compared with full TETR.IO all-spin scoring.
+    if (lines === 1) attack = 1;
+    else if (lines === 2) attack = 2;
+    else if (lines === 3) attack = 4;
+    else if (lines >= 4) attack = 6;
   } else {
     if (lines === 2) attack = 1;
     else if (lines === 3) attack = 2;
@@ -313,6 +320,13 @@ export class TetrisEngine {
   private lastActionWasRotation = false;
   private lastKickIndex = 0;
 
+  // Garbage holes are intentionally "sticky" so incoming garbage looks closer
+  // to TETR.IO-style garbage instead of fully random cheese every line.
+  // A hole column is kept for at least 4 inserted garbage rows.
+  // About 5% of rows still become scattered single-line holes.
+  private garbageHole: number | null = null;
+  private garbageHoleRunRemaining = 0;
+
   constructor(seed: number, garbageSeed?: number) {
     this.bag = new SevenBag(seed);
     this.garbageRng = new Rng(garbageSeed ?? seed);
@@ -341,6 +355,8 @@ export class TetrisEngine {
     e.lastResult = this.lastResult ? { ...this.lastResult } : null;
     e.lastActionWasRotation = this.lastActionWasRotation;
     e.lastKickIndex = this.lastKickIndex;
+    e.garbageHole = this.garbageHole;
+    e.garbageHoleRunRemaining = this.garbageHoleRunRemaining;
     return e;
   }
 
@@ -370,10 +386,29 @@ export class TetrisEngine {
     return false;
   }
 
+  private cellKey(x: number, y: number): string {
+    return `${x},${y}`;
+  }
+
+  private collidesIgnoringLocked(piece: PieceState, lockedCells: Set<string>): boolean {
+    for (const [x, y] of shapeCells(piece)) {
+      if (x < 0 || x >= WIDTH) return true;
+      if (y >= HEIGHT) return true;
+      if (y >= 0 && this.board[y][x] !== null && !lockedCells.has(this.cellKey(x, y))) return true;
+    }
+    return false;
+  }
+
   isOccupiedOrWall(x: number, y: number): boolean {
     if (x < 0 || x >= WIDTH || y >= HEIGHT) return true;
     if (y < 0) return true;
     return this.board[y][x] !== null;
+  }
+
+  private isOccupiedOrWallIgnoringLocked(x: number, y: number, lockedCells: Set<string>): boolean {
+    if (x < 0 || x >= WIDTH || y >= HEIGHT) return true;
+    if (y < 0) return true;
+    return this.board[y][x] !== null && !lockedCells.has(this.cellKey(x, y));
   }
 
   move(dx: number, dy = 0): boolean {
@@ -486,39 +521,46 @@ export class TetrisEngine {
     };
   }
 
-  private detectSpin(linesCleared: number): SpinType {
+  private countFullLines(): number {
+    return this.board.filter((row) => row.every((c) => c !== null)).length;
+  }
+
+  private moveWouldWorkIgnoringLocked(piece: PieceState, dx: number, dy: number, lockedCells: Set<string>): boolean {
+    const p = copyPiece(piece);
+    p.x += dx;
+    p.y += dy;
+    return !this.collidesIgnoringLocked(p, lockedCells);
+  }
+
+  private detectSpin(linesCleared: number, lockedPiece: PieceState, lockedCells: Set<string>): SpinType {
     if (!this.lastActionWasRotation) return "none";
 
-    if (this.active.kind === "T") {
-      const cx = this.active.x + 1;
-      const cy = this.active.y + 1;
+    if (lockedPiece.kind === "T") {
+      const cx = lockedPiece.x + 1;
+      const cy = lockedPiece.y + 1;
       const corners = [
-        this.isOccupiedOrWall(cx - 1, cy - 1),
-        this.isOccupiedOrWall(cx + 1, cy - 1),
-        this.isOccupiedOrWall(cx - 1, cy + 1),
-        this.isOccupiedOrWall(cx + 1, cy + 1)
+        this.isOccupiedOrWallIgnoringLocked(cx - 1, cy - 1, lockedCells),
+        this.isOccupiedOrWallIgnoringLocked(cx + 1, cy - 1, lockedCells),
+        this.isOccupiedOrWallIgnoringLocked(cx - 1, cy + 1, lockedCells),
+        this.isOccupiedOrWallIgnoringLocked(cx + 1, cy + 1, lockedCells)
       ].filter(Boolean).length;
 
       if (corners >= 3) {
         if (linesCleared === 1 && this.lastKickIndex < 4) return "tspin-mini";
         return "tspin";
       }
-      return "none";
     }
 
-    // Very light all-spin-ish marker for logging only.
-    const stuck =
-      !this.moveWouldWork(1, 0) &&
-      !this.moveWouldWork(-1, 0) &&
-      !this.moveWouldWork(0, -1);
-    return stuck ? "spin" : "none";
-  }
+    // Approximate all-piece spin:
+    // after a rotation, if the final piece cannot move left, right, or down,
+    // mark it as a generic spin. This is not exact TETR.IO SRS+, but it makes
+    // I/J/L/O/S/Z spin clears visible, scorable, and learnable in this sandbox.
+    const immobile =
+      !this.moveWouldWorkIgnoringLocked(lockedPiece, 1, 0, lockedCells) &&
+      !this.moveWouldWorkIgnoringLocked(lockedPiece, -1, 0, lockedCells) &&
+      !this.moveWouldWorkIgnoringLocked(lockedPiece, 0, 1, lockedCells);
 
-  private moveWouldWork(dx: number, dy: number): boolean {
-    const p = copyPiece(this.active);
-    p.x += dx;
-    p.y += dy;
-    return !this.collides(p);
+    return immobile ? "spin" : "none";
   }
 
   lockPiece(): LockResult {
@@ -549,11 +591,17 @@ export class TetrisEngine {
         this.lastResult = result;
         return result;
       }
-      this.board[y][x] = p.kind;
     }
 
-    const lines = this.clearLines();
-    const spin = this.detectSpin(lines);
+    const lockedCells = new Set<string>();
+    for (const [x, y] of shapeCells(p)) {
+      this.board[y][x] = p.kind;
+      lockedCells.add(this.cellKey(x, y));
+    }
+
+    const lines = this.countFullLines();
+    const spin = this.detectSpin(lines, p, lockedCells);
+    this.clearLines();
     this.lines += lines;
     this.piecesLocked++;
 
@@ -630,10 +678,33 @@ export class TetrisEngine {
     this.pendingGarbage += Math.max(0, Math.floor(n));
   }
 
+  private nextGarbageHole(): number {
+    // 5%: scatter one row without consuming/changing the current clean streak.
+    if (this.garbageRng.next() < 0.05) return this.garbageRng.int(WIDTH);
+
+    if (this.garbageHole === null || this.garbageHoleRunRemaining <= 0) {
+      const prev = this.garbageHole;
+      let next = this.garbageRng.int(WIDTH);
+
+      // Prefer changing column when a streak ends, but don't force it if RNG
+      // repeatedly lands on the same column.
+      if (prev !== null && WIDTH > 1) {
+        for (let i = 0; i < 4 && next === prev; i++) next = this.garbageRng.int(WIDTH);
+      }
+
+      this.garbageHole = next;
+      // At least 4 rows aligned. Extra 0-4 rows makes the pattern less robotic.
+      this.garbageHoleRunRemaining = 4 + this.garbageRng.int(5);
+    }
+
+    this.garbageHoleRunRemaining--;
+    return this.garbageHole;
+  }
+
   applyPendingGarbage(): void {
     if (this.pendingGarbage <= 0) return;
     for (let i = 0; i < this.pendingGarbage; i++) {
-      const hole = this.garbageRng.int(WIDTH);
+      const hole = this.nextGarbageHole();
       const row: Cell[] = Array.from({ length: WIDTH }, (_, x) => x === hole ? null : "G");
       this.board.shift();
       this.board.push(row);
@@ -652,12 +723,18 @@ export class TetrisEngine {
     this.active.x = action.x;
     this.active.y = 0;
     this.active.rot = ((action.rot % 4) + 4) % 4;
-    this.lastActionWasRotation = false;
 
     if (this.collides(this.active)) {
       this.dead = true;
       return this.makeFail("spawn_collision_after_action");
     }
+
+    // Placement-level AI has no key-by-key rotation path. Marking the placement
+    // as rotation-derived lets final spin slots receive spin credit in sandbox
+    // evaluation. This is an approximation, not an input-sequence proof.
+    this.lastActionWasRotation = true;
+    this.lastKickIndex = 0;
+
     return this.hardDrop();
   }
 
