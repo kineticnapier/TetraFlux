@@ -209,7 +209,10 @@ export class SelfplayLogger {
       this.records.push(rec);
     }
     this.roundBuffer = [];
-    this.persistLocal();
+
+    // Do not persist full selfplay logs to localStorage.
+    // FT15 AI Battle can exceed browser localStorage quota around late rounds,
+    // throwing QuotaExceededError and freezing auto-next.
   }
 
   toJsonl(includeCurrentRound = false): string {
@@ -228,8 +231,25 @@ export class SelfplayLogger {
     URL.revokeObjectURL(url);
   }
 
-  persistLocal(): void { localStorage.setItem("tetraflux_last_selfplay_log", this.toJsonl(true)); }
-  clearLocal(): void { localStorage.removeItem("tetraflux_last_selfplay_log"); }
+  persistLocal(): void {
+    // Keep this method for compatibility, but do not store the full selfplay JSONL.
+    // It is too large for localStorage in long AI Battle matches.
+    try {
+      localStorage.setItem("tetraflux_last_selfplay_log_meta", JSON.stringify({
+        matchId: this.matchId,
+        records: this.records.length,
+        currentRound: this.roundBuffer.length,
+        updatedAt: Date.now()
+      }));
+    } catch (err) {
+      console.warn("[TetraFlux] failed to persist selfplay log metadata", err);
+    }
+  }
+
+  clearLocal(): void {
+    localStorage.removeItem("tetraflux_last_selfplay_log");
+    localStorage.removeItem("tetraflux_last_selfplay_log_meta");
+  }
 }
 
 const UPLOAD_CHUNK_TARGET_BYTES = 3_400_000;

@@ -216,6 +216,7 @@ class Ft5Trainer {
   message = "";
 
   private aiBattleAutoNextAt: number | null = null;
+  private aiBattleAutoNextTimer: number | null = null;
 
   human!: TetrisEngine;
   aiEngine!: TetrisEngine;
@@ -275,6 +276,24 @@ class Ft5Trainer {
 
   inputSettings() { return { dasMs: settings.dasMs, arrMs: settings.arrMs, sdfCellsPerSecond: settings.sdfCellsPerSecond }; }
 
+  private clearAiBattleAutoNext(): void {
+    if (this.aiBattleAutoNextTimer !== null) {
+      window.clearTimeout(this.aiBattleAutoNextTimer);
+      this.aiBattleAutoNextTimer = null;
+    }
+    this.aiBattleAutoNextAt = null;
+  }
+
+  private scheduleAiBattleAutoNext(): void {
+    this.clearAiBattleAutoNext();
+    this.aiBattleAutoNextAt = performance.now() + 700;
+    this.aiBattleAutoNextTimer = window.setTimeout(() => {
+      if (this.mode === "ai_vs_ai" && this.roundOver && !this.matchOver) {
+        this.nextRound();
+      }
+    }, 700);
+  }
+
   resetMatch(): void {
     this.baseSeed = seedNow();
     this.roundIndex = 0;
@@ -284,7 +303,7 @@ class Ft5Trainer {
     this.matchOver = false;
     this.roundWinner = null;
     this.matchStarted = this.mode === "ai_vs_ai";
-    this.aiBattleAutoNextAt = null;
+    this.clearAiBattleAutoNext();
     this.logger = new MatchLogger();
     this.selfplayLogger = new SelfplayLogger();
     this.presence?.stop();
@@ -356,7 +375,7 @@ class Ft5Trainer {
       }
     } else {
       if (this.mode === "ai_vs_ai") {
-        this.aiBattleAutoNextAt = performance.now() + 700;
+        this.scheduleAiBattleAutoNext();
         this.message = `Round winner: ${this.winnerDisplay(winner)}. Auto next round...`;
       } else {
         this.message = `Round winner: ${this.winnerDisplay(winner)}. Press ${keysLabel(settings.keys.nextRound)} or Next Round.`;
@@ -416,7 +435,7 @@ class Ft5Trainer {
 
   nextRound(): void {
     if (this.roundOver && !this.matchOver) {
-      this.aiBattleAutoNextAt = null;
+      this.clearAiBattleAutoNext();
       this.roundIndex++;
       this.resetRound();
     }
@@ -634,7 +653,36 @@ function resizeCanvasForDisplay(): void {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
+let lastFullRenderAt = 0;
+let lastFullRenderStep = -1;
+
+function shouldSkipFullRender(now: number): boolean {
+  if (trainer.mode !== "ai_vs_ai" || settings.aiPps <= 15 || trainer.roundOver || trainer.matchOver) {
+    lastFullRenderAt = now;
+    lastFullRenderStep = trainer.stepIndex;
+    return false;
+  }
+
+  const stepDelta = trainer.stepIndex - lastFullRenderStep;
+  const minStepDelta = settings.aiPps >= 19 ? 6 : 4;
+  const maxSilentMs = 220;
+
+  if (stepDelta < minStepDelta && now - lastFullRenderAt < maxSilentMs) {
+    return true;
+  }
+
+  lastFullRenderAt = now;
+  lastFullRenderStep = trainer.stepIndex;
+  return false;
+}
+
 function render(): void {
+  const now = performance.now();
+  if (shouldSkipFullRender(now)) {
+    requestAnimationFrame(render);
+    return;
+  }
+
   const playingText = `playing ${trainer.presence.online || "?"}`;
   presenceBadge.textContent = playingText;
   trainer.updateModeButton();
