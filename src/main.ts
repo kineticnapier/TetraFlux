@@ -203,7 +203,7 @@ function applyRemainingGarbageAfterCounter(engine: TetrisEngine, result: { rawAt
 }
 
 class Ft5Trainer {
-  firstTo = 5;
+  firstTo = 15;
   mode: GameMode = "human_vs_ai";
   baseSeed = seedNow();
   roundIndex = 0;
