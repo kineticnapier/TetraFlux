@@ -301,6 +301,17 @@ const ZENITH_JOIN_INTERVAL_MS = 1_700;
 const ZENITH_NEAR_RANGE_M = 85;
 const ZENITH_REMOVE_BEHIND_M = 260;
 
+// Zenith pressure is measured in garbage lines per second.
+// Bot attackRecent is a rolling threat score, not direct garbage.
+// These values keep the mode playable even with ~100 simulated climbers.
+const ZENITH_NEAR_PRESSURE_SCALE = 0.16;
+const ZENITH_TOP_PRESSURE_SCALE = 0.035;
+const ZENITH_PENDING_FEEDBACK_SCALE = 0.0015;
+const ZENITH_GRACE_MS = 8_000;
+const ZENITH_RAMP_MS = 45_000;
+const ZENITH_BASE_MAX_INCOMING = 0.75;
+const ZENITH_MAX_INCOMING = 4.0;
+
 class ZenithTowerSim {
   bots: ZenithBot[] = [];
   feed: ZenithFeedItem[] = [];
@@ -465,9 +476,33 @@ class ZenithTowerSim {
 
     const nearby = active.filter((b) => Math.abs(b.heightM - this.playerHeightM) <= ZENITH_NEAR_RANGE_M);
     const nearbyAttack = nearby.reduce((s, b) => s + b.attackRecent, 0);
-    const topPressure = active.slice(0, 10).reduce((s, b) => s + b.attackRecent, 0) * 0.0025;
-    const ramp = 1 + Math.min(2.4, this.playerHeightM / 350);
-    this.playerIncomingRate = Math.max(0, nearbyAttack * 0.018 * ramp + topPressure + playerPendingGarbage * 0.015);
+    const nearbyAverage = nearby.length > 0 ? nearbyAttack / nearby.length : 0;
+
+    const topBots = active.slice(0, 10);
+    const topAttack = topBots.reduce((s, b) => s + b.attackRecent, 0);
+    const topAverage = topBots.length > 0 ? topAttack / topBots.length : 0;
+
+    const heightRamp = 1 + Math.min(1.7, this.playerHeightM / 420);
+    const ageMs = Math.max(0, now - this.startedAtMs);
+    const graceRamp =
+      ageMs <= ZENITH_GRACE_MS
+        ? 0
+        : Math.min(1, (ageMs - ZENITH_GRACE_MS) / ZENITH_RAMP_MS);
+
+    const rawIncoming =
+      (
+        nearbyAverage * ZENITH_NEAR_PRESSURE_SCALE +
+        topAverage * ZENITH_TOP_PRESSURE_SCALE +
+        playerPendingGarbage * ZENITH_PENDING_FEEDBACK_SCALE
+      ) * heightRamp * graceRamp;
+
+    // Hard cap. Without this, 100 nearby mock bots can accidentally behave like
+    // 100 real attackers and produce dozens of garbage lines per second.
+    const cap =
+      (ZENITH_BASE_MAX_INCOMING + Math.min(ZENITH_MAX_INCOMING - ZENITH_BASE_MAX_INCOMING, this.playerHeightM / 180)) *
+      (0.35 + 0.65 * graceRamp);
+
+    this.playerIncomingRate = Math.max(0, Math.min(cap, rawIncoming));
 
     this.sortBots();
     this.playerRank = 1 + active.filter((b) => b.heightM > this.playerHeightM).length;
@@ -1201,6 +1236,7 @@ function drawZenithTower(ctx: CanvasRenderingContext2D, trainer: Ft5Trainer, x: 
     [`height: ${z.playerHeightM.toFixed(1)}m`, "#e5e7eb"],
     [`rank: #${z.playerRank} / ${z.activeCount()}`, "#34d399"],
     [`nearby: ${z.nearbyCount()}  incoming: ${z.playerIncomingRate.toFixed(2)}/s`, "#94a3b8"],
+    [`pressure cap: ${ZENITH_MAX_INCOMING.toFixed(1)}/s max`, "#64748b"],
     [`sent: ${Math.round(z.playerAttackTotal)}  received: ${Math.round(z.playerReceivedTotal)}`, "#94a3b8"],
     [`population: ${z.bots.filter((b) => b.alive).length} bots`, "#94a3b8"],
   ]);
