@@ -2,7 +2,7 @@ import "./style.css";
 import { HeuristicAI } from "./ai/heuristic";
 import type { AiChoice } from "./ai/heuristic";
 import { WebPolicyAI } from "./ai/webPolicy";
-import { TetrisEngine, type PlacementAction, type PieceState } from "./engine/tetris";
+import { boardMetrics, TetrisEngine, type PlacementAction, type PieceState } from "./engine/tetris";
 import { MovementInput, type LogicalMoveKey } from "./input";
 import { MatchLogger, SelfplayLogger, type BattleSide, uploadLogs, uploadSelfplayLogs } from "./logging";
 import { PresenceClient } from "./presence";
@@ -67,6 +67,11 @@ const DEFAULT_SETTINGS: GameSettings = {
 };
 
 const SETTINGS_KEY = "tetraflux_settings_v2_multikey";
+
+// AI vs AI can become almost immortal after fake-spin attack was removed.
+// Limit one round by total AI placements, then decide by board danger.
+// 1200 total placements is roughly 600 pieces per side.
+const AI_BATTLE_MAX_TURNS_PER_ROUND = 1200;
 
 const canvas = document.querySelector<HTMLCanvasElement>("#game")!;
 const ctx = canvas.getContext("2d")!;
@@ -232,12 +237,24 @@ function short(text: unknown, max = 86): string { const s = String(text ?? ""); 
 function isBound(e: KeyboardEvent, keys: string[]): boolean { return keys.includes(e.key); }
 function gameKeys(): Set<string> { return new Set(Object.values(settings.keys).flat()); }
 
-function applyAttack(sender: TetrisEngine, receiver: TetrisEngine, amount: number): void {
-  let atk = Math.max(0, Math.floor(amount));
+interface AttackApplyResult {
+  rawAttack: number;
+  canceled: number;
+  sent: number;
+}
+
+function applyAttack(sender: TetrisEngine, receiver: TetrisEngine, amount: number): AttackApplyResult {
+  const rawAttack = Math.max(0, Math.floor(amount));
+  let atk = rawAttack;
+
   const canceled = Math.min(sender.pendingGarbage, atk);
   sender.pendingGarbage -= canceled;
   atk -= canceled;
-  if (atk > 0) receiver.queueGarbage(atk);
+
+  const sent = atk;
+  if (sent > 0) receiver.queueGarbage(sent);
+
+  return { rawAttack, canceled, sent };
 }
 
 function applyRemainingGarbageAfterCounter(engine: TetrisEngine, result: { rawAttack: number; linesCleared: number }): void {
@@ -256,6 +273,7 @@ class Ft5Trainer {
   roundWinner: Winner | null = null;
   matchStarted = false;
   message = "";
+  lastRoundLimitReason = "";
 
   private aiBattleAutoNextAt: number | null = null;
   private aiBattleAutoNextTimer: number | null = null;
@@ -279,6 +297,9 @@ class Ft5Trainer {
   aiAccumulatorMs = 0;
   battleLeftAccumulatorMs = 0;
   battleRightAccumulatorMs = 0;
+  battleAttack = { left: 0, right: 0 };
+  battleRawAttack = { left: 0, right: 0 };
+  battleCanceled = { left: 0, right: 0 };
 
   autoUploadStatus: AutoUploadStatus = "idle";
   autoUploadDetail = "match end upload enabled";
@@ -390,6 +411,10 @@ class Ft5Trainer {
     this.roundOver = false;
     this.roundWinner = null;
     this.stepIndex = 0;
+    this.lastRoundLimitReason = "";
+    this.battleAttack = { left: 0, right: 0 };
+    this.battleRawAttack = { left: 0, right: 0 };
+    this.battleCanceled = { left: 0, right: 0 };
     this.message = this.mode === "human_vs_ai"
       ? (this.matchStarted ? `Round ${this.roundIndex + 1}: play against AI.` : "Press R to start Human vs AI.")
       : `Round ${this.roundIndex + 1}: ${this.battleLeftName} vs ${this.battleRightName}.`;
@@ -414,7 +439,8 @@ class Ft5Trainer {
     if (willMatchEnd) {
       this.matchOver = true;
       if (this.mode === "ai_vs_ai") {
-        this.message = `AI Battle over: ${this.winnerDisplay(winner)} wins FT${this.firstTo}. Uploading selfplay logs...`;
+        const limitNote = this.lastRoundLimitReason ? ` Last round: ${this.lastRoundLimitReason}.` : "";
+        this.message = `AI Battle over: ${this.winnerDisplay(winner)} wins FT${this.firstTo}.${limitNote} Uploading selfplay logs...`;
         this.autoUploadSelfplayMatch();
       } else {
         this.message = `Match over: ${winner} wins FT${this.firstTo}. Auto-uploading logs...`;
@@ -423,7 +449,8 @@ class Ft5Trainer {
     } else {
       if (this.mode === "ai_vs_ai") {
         this.scheduleAiBattleAutoNext();
-        this.message = `Round winner: ${this.winnerDisplay(winner)}. Auto next round...`;
+        const limitNote = this.lastRoundLimitReason ? ` (${this.lastRoundLimitReason})` : "";
+        this.message = `Round winner: ${this.winnerDisplay(winner)}${limitNote}. Auto next round...`;
       } else {
         this.message = `Round winner: ${this.winnerDisplay(winner)}. Press ${keysLabel(settings.keys.nextRound)} or Next Round.`;
       }
@@ -562,8 +589,14 @@ class Ft5Trainer {
     if (!action) return false;
 
     const result = engine.applyAction(action);
-    applyAttack(engine, opponent, result.attackSent);
+    const attackApplied = applyAttack(engine, opponent, result.attackSent);
     applyRemainingGarbageAfterCounter(engine, result);
+
+    if (this.mode === "ai_vs_ai" && side) {
+      this.battleAttack[side] += attackApplied.sent;
+      this.battleRawAttack[side] += attackApplied.rawAttack;
+      this.battleCanceled[side] += attackApplied.canceled;
+    }
 
     const stateAfter = engine.stateDict();
     const opponentAfter = opponent.stateDict();
@@ -595,16 +628,71 @@ class Ft5Trainer {
     if (this.human.dead) this.finishRound("ai");
   }
 
+  private battleDangerScore(engine: TetrisEngine): number {
+    const metrics = boardMetrics(engine.stateDict().board);
+
+    // Lower is better. Holes and height matter most; pending garbage matters
+    // because it is about to become danger if the bot fails to clear/cancel.
+    return (
+      metrics.holes * 9.0 +
+      metrics.maxHeight * 3.5 +
+      metrics.totalHeight * 0.18 +
+      metrics.bumpiness * 0.55 +
+      metrics.wells * 0.2 +
+      engine.pendingGarbage * 4.0 -
+      Math.max(0, engine.b2b) * 0.35 -
+      Math.max(0, engine.combo) * 0.2
+    );
+  }
+
+  private finishAiBattleByLimit(): void {
+    if (this.mode !== "ai_vs_ai" || this.roundOver || this.matchOver) return;
+    if (this.stepIndex < AI_BATTLE_MAX_TURNS_PER_ROUND) return;
+
+    const leftSent = this.battleAttack.left;
+    const rightSent = this.battleAttack.right;
+    const leftScore = this.battleDangerScore(this.human);
+    const rightScore = this.battleDangerScore(this.aiEngine);
+
+    let winner: Winner;
+    let reason: string;
+
+    if (leftSent !== rightSent) {
+      winner = leftSent > rightSent ? "human" : "ai";
+      reason =
+        `turn limit ${AI_BATTLE_MAX_TURNS_PER_ROUND}: ` +
+        `sent ${this.battleLeftName}=${leftSent}, ${this.battleRightName}=${rightSent}`;
+    } else if (Math.abs(leftScore - rightScore) >= 0.001) {
+      winner = leftScore < rightScore ? "human" : "ai";
+      reason =
+        `turn limit ${AI_BATTLE_MAX_TURNS_PER_ROUND}: sent tie ${leftSent}, ` +
+        `danger ${this.battleLeftName}=${leftScore.toFixed(1)}, ${this.battleRightName}=${rightScore.toFixed(1)}`;
+    } else if (this.human.pendingGarbage !== this.aiEngine.pendingGarbage) {
+      winner = this.human.pendingGarbage < this.aiEngine.pendingGarbage ? "human" : "ai";
+      reason =
+        `turn limit ${AI_BATTLE_MAX_TURNS_PER_ROUND}: sent/danger tie, ` +
+        `pending ${this.battleLeftName}=${this.human.pendingGarbage}, ${this.battleRightName}=${this.aiEngine.pendingGarbage}`;
+    } else {
+      winner = (this.roundIndex % 2 === 0) ? "human" : "ai";
+      reason = `turn limit ${AI_BATTLE_MAX_TURNS_PER_ROUND}: full tie, deterministic side`;
+    }
+
+    this.lastRoundLimitReason = reason;
+    this.finishRound(winner);
+  }
+
   battleTurn(side: "left" | "right"): void {
     if (this.mode !== "ai_vs_ai" || this.roundOver || this.matchOver) return;
     if (side === "left") {
       const alive = this.aiAction(this.human, this.aiEngine, this.battleLeftAi, "left");
       if (!alive) { this.finishRound("ai"); return; }
-      if (this.aiEngine.dead) this.finishRound("human");
+      if (this.aiEngine.dead) { this.finishRound("human"); return; }
+      this.finishAiBattleByLimit();
     } else {
       const alive = this.aiAction(this.aiEngine, this.human, this.battleRightAi, "right");
       if (!alive) { this.finishRound("human"); return; }
-      if (this.human.dead) this.finishRound("ai");
+      if (this.human.dead) { this.finishRound("ai"); return; }
+      this.finishAiBattleByLimit();
     }
   }
 
@@ -795,6 +883,9 @@ function render(): void {
     ["Mode", "#38bdf8"],
     [trainer.modeLabel()],
     trainer.mode === "ai_vs_ai" ? [`${trainer.battleLeftName} vs ${trainer.battleRightName}`, "#94a3b8"] : [`Human vs ${trainer.aiName}`, "#94a3b8"],
+    trainer.mode === "ai_vs_ai" ? [`turns: ${trainer.stepIndex}/${AI_BATTLE_MAX_TURNS_PER_ROUND}`, "#94a3b8"] : ["", "#94a3b8"],
+    trainer.mode === "ai_vs_ai" ? [`sent: ${trainer.battleAttack.left} - ${trainer.battleAttack.right}`, "#94a3b8"] : ["", "#94a3b8"],
+    trainer.mode === "ai_vs_ai" ? [`raw/cancel: ${trainer.battleRawAttack.left}/${trainer.battleCanceled.left} - ${trainer.battleRawAttack.right}/${trainer.battleCanceled.right}`, "#64748b"] : ["", "#94a3b8"],
     [""],
     ["AI", "#38bdf8"],
     ...trainer.aiDetails.slice(0, 5).map((line) => [line, "#94a3b8"] as [string, string]),
