@@ -2,23 +2,14 @@
 """
 Download TetraFlux JSONL logs from Cloudflare R2 using the S3-compatible API.
 
-Why this exists:
-  Wrangler v4 has `r2 object get/put/delete`, but not `r2 object list`.
-  So listing + batch download should use the R2 S3-compatible API instead.
-
 Required environment:
   CLOUDFLARE_ACCOUNT_ID
   R2_ACCESS_KEY_ID
   R2_SECRET_ACCESS_KEY
 
-Example:
-  python tools/download_r2_logs.py ^
-    --bucket tetraflux-logs ^
-    --prefix raw/ ^
-    --out-dir collected_logs_r2
-
-Optional:
-  --endpoint-url https://<account_id>.r2.cloudflarestorage.com
+Important defaults:
+  - Use --recent-days to avoid listing the whole bucket forever.
+  - Use --max-objects and --max-total-mb to cap download size.
 """
 
 from __future__ import annotations
@@ -27,6 +18,7 @@ import argparse
 import json
 import os
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -63,24 +55,58 @@ def make_client(endpoint_url: str):
         config=Config(
             signature_version="s3v4",
             retries={"max_attempts": 5, "mode": "standard"},
+            connect_timeout=20,
+            read_timeout=120,
         ),
     )
 
 
-def list_jsonl_objects(client, bucket: str, prefix: str) -> list[dict[str, Any]]:
+def dated_prefixes(base_prefix: str, recent_days: int) -> list[str]:
+    if recent_days <= 0:
+        return [base_prefix]
+
+    prefix = base_prefix if base_prefix.endswith("/") else f"{base_prefix}/"
+    today = datetime.now(timezone.utc).date()
+
+    # R2 keys are like raw/YYYY-MM-DD/... or selfplay/YYYY-MM-DD/...
+    # Listing these narrow prefixes is much faster than listing raw/ forever.
+    prefixes = []
+    for i in range(recent_days):
+        day = today - timedelta(days=i)
+        prefixes.append(f"{prefix}{day.isoformat()}/")
+    return prefixes
+
+
+def list_jsonl_objects(client, bucket: str, prefixes: list[str], max_list_pages: int = 0) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     paginator = client.get_paginator("list_objects_v2")
+    page_count = 0
 
     try:
-        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-            for item in page.get("Contents", []):
-                key = item.get("Key")
-                if isinstance(key, str) and key.endswith(".jsonl"):
-                    out.append({
-                        "key": key,
-                        "size": int(item.get("Size", 0)),
-                        "last_modified": item.get("LastModified").isoformat() if item.get("LastModified") else None,
-                    })
+        for prefix in prefixes:
+            print(f"list prefix: s3://{bucket}/{prefix}", flush=True)
+            for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                page_count += 1
+
+                for item in page.get("Contents", []):
+                    key = item.get("Key")
+                    if isinstance(key, str) and key.endswith(".jsonl"):
+                        last_modified = item.get("LastModified")
+                        out.append({
+                            "key": key,
+                            "size": int(item.get("Size", 0)),
+                            "last_modified": last_modified.isoformat() if last_modified else None,
+                            "last_modified_ts": last_modified.timestamp() if last_modified else 0.0,
+                        })
+
+                if page_count % 10 == 0:
+                    print(f"listed pages={page_count} jsonl_objects={len(out)}", flush=True)
+
+                if max_list_pages > 0 and page_count >= max_list_pages:
+                    print(f"stop listing: max_list_pages={max_list_pages}", flush=True)
+                    out.sort(key=lambda x: (float(x.get("last_modified_ts", 0.0)), str(x["key"])), reverse=True)
+                    return out
+
     except ClientError as e:
         err = e.response.get("Error", {})
         code = err.get("Code")
@@ -88,14 +114,41 @@ def list_jsonl_objects(client, bucket: str, prefix: str) -> list[dict[str, Any]]
         raise SystemExit(
             "R2 list_objects_v2 failed.\n"
             f"bucket={bucket}\n"
-            f"prefix={prefix}\n"
+            f"prefixes={prefixes}\n"
             f"code={code}\n"
             f"message={msg}\n"
             "Check R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY permissions and bucket name."
         ) from e
 
-    out.sort(key=lambda x: str(x["key"]))
+    # Newest first.
+    out.sort(key=lambda x: (float(x.get("last_modified_ts", 0.0)), str(x["key"])), reverse=True)
+    print(f"listed total pages={page_count} jsonl_objects={len(out)}", flush=True)
     return out
+
+
+def select_objects(objects: list[dict[str, Any]], max_objects: int, max_total_bytes: int) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    total = 0
+
+    for obj in objects:
+        size = int(obj.get("size", 0))
+
+        if max_objects > 0 and len(selected) >= max_objects:
+            break
+
+        if max_total_bytes > 0 and selected and total + size > max_total_bytes:
+            break
+
+        if max_total_bytes > 0 and not selected and size > max_total_bytes:
+            # Allow one large object rather than selecting nothing.
+            selected.append(obj)
+            total += size
+            break
+
+        selected.append(obj)
+        total += size
+
+    return selected
 
 
 def main() -> int:
@@ -103,7 +156,10 @@ def main() -> int:
     ap.add_argument("--bucket", required=True)
     ap.add_argument("--prefix", default="raw/")
     ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--max-objects", type=int, default=0, help="0 means unlimited")
+    ap.add_argument("--max-objects", type=int, default=500, help="0 means unlimited")
+    ap.add_argument("--max-total-mb", type=float, default=96.0, help="0 means unlimited")
+    ap.add_argument("--recent-days", type=int, default=14, help="0 means list the whole prefix")
+    ap.add_argument("--max-list-pages", type=int, default=0, help="0 means unlimited")
     ap.add_argument("--endpoint-url", default=None)
     args = ap.parse_args()
 
@@ -116,39 +172,55 @@ def main() -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    max_total_bytes = int(args.max_total_mb * 1024 * 1024) if args.max_total_mb > 0 else 0
+    prefixes = dated_prefixes(args.prefix, args.recent_days)
+
     print(json.dumps({
         "endpoint_url": endpoint_url,
         "bucket": args.bucket,
         "prefix": args.prefix,
+        "prefixes": prefixes,
         "out_dir": str(out_dir),
         "max_objects": args.max_objects,
+        "max_total_mb": args.max_total_mb,
+        "recent_days": args.recent_days,
+        "max_list_pages": args.max_list_pages,
     }, ensure_ascii=False, indent=2), flush=True)
 
     client = make_client(endpoint_url)
-    objects = list_jsonl_objects(client, args.bucket, args.prefix)
-
-    if args.max_objects > 0:
-        objects = objects[-args.max_objects:]
+    objects = list_jsonl_objects(client, args.bucket, prefixes, max_list_pages=args.max_list_pages)
+    selected = select_objects(objects, args.max_objects, max_total_bytes)
 
     downloaded = []
     skipped = []
 
-    if not objects:
+    if not selected:
         summary = {
             "bucket": args.bucket,
             "prefix": args.prefix,
+            "prefixes": prefixes,
             "endpoint_url": endpoint_url,
             "out_dir": str(out_dir),
-            "jsonl_objects": 0,
+            "jsonl_objects_listed": len(objects),
+            "jsonl_objects_selected": 0,
             "downloaded": 0,
             "skipped": 0,
-            "note": "No .jsonl objects found. Check Upload Logs, bucket, and prefix.",
+            "note": "No .jsonl objects selected. Check Upload Logs, bucket, prefix, recent_days, and caps.",
         }
         (out_dir / "_download_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0
 
-    for obj in objects:
+    selected_bytes = sum(int(x.get("size", 0)) for x in selected)
+    print(json.dumps({
+        "jsonl_objects_listed": len(objects),
+        "jsonl_objects_selected": len(selected),
+        "selected_total_mb": round(selected_bytes / 1024 / 1024, 3),
+        "oldest_selected": selected[-1].get("last_modified") if selected else None,
+        "newest_selected": selected[0].get("last_modified") if selected else None,
+    }, ensure_ascii=False, indent=2), flush=True)
+
+    for i, obj in enumerate(selected, 1):
         key = str(obj["key"])
         dest = out_dir / safe_relpath(key)
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -157,7 +229,13 @@ def main() -> int:
             skipped.append({"key": key, "reason": "already_exists", "path": str(dest)})
             continue
 
-        print(f"download s3://{args.bucket}/{key} -> {dest}", flush=True)
+        print(
+            f"download {i}/{len(selected)} "
+            f"{round(int(obj.get('size', 0)) / 1024 / 1024, 3)}MB "
+            f"s3://{args.bucket}/{key} -> {dest}",
+            flush=True,
+        )
+
         try:
             client.download_file(args.bucket, key, str(dest))
         except ClientError as e:
@@ -183,9 +261,12 @@ def main() -> int:
     summary = {
         "bucket": args.bucket,
         "prefix": args.prefix,
+        "prefixes": prefixes,
         "endpoint_url": endpoint_url,
         "out_dir": str(out_dir),
-        "jsonl_objects": len(objects),
+        "jsonl_objects_listed": len(objects),
+        "jsonl_objects_selected": len(selected),
+        "selected_total_mb": round(selected_bytes / 1024 / 1024, 3),
         "downloaded": len(downloaded),
         "skipped": len(skipped),
         "downloaded_files": downloaded[:50],

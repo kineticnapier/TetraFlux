@@ -12,9 +12,17 @@ on:
         type: number
         default: 256
       max_objects:
-        description: "Max newest R2 jsonl objects to download. 0 = all"
+        description: "Max newest R2 jsonl objects to download. 0 = unlimited"
         type: number
-        default: 0
+        default: 500
+      max_total_mb:
+        description: "Max total download size in MB. 0 = unlimited"
+        type: number
+        default: 96
+      recent_days:
+        description: "Only list logs from the last N UTC days. 0 = all"
+        type: number
+        default: 14
       max_holes:
         description: "Filter: max holes"
         type: number
@@ -111,7 +119,9 @@ jobs:
             --bucket "$R2_LOG_BUCKET" \
             --prefix "$R2_LOG_PREFIX" \
             --out-dir "$COLLECTED_DIR" \
-            --max-objects "${{ inputs.max_objects }}"
+            --max-objects "${{ inputs.max_objects }}" \
+            --max-total-mb "${{ inputs.max_total_mb }}" \
+            --recent-days "${{ inputs.recent_days }}"
 
       - name: Merge JSONL logs
         run: |
