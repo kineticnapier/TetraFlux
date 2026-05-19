@@ -73,6 +73,11 @@ const SETTINGS_KEY = "tetraflux_settings_v2_multikey";
 // 1200 total placements is roughly 600 pieces per side.
 const AI_BATTLE_MAX_TURNS_PER_ROUND = 1200;
 
+// Upper bound for simulation speed.
+// Rendering is already throttled separately, so high values mainly affect
+// how many AI placements are processed per animation frame.
+const MAX_AI_PPS = 1000;
+
 const canvas = document.querySelector<HTMLCanvasElement>("#game")!;
 const ctx = canvas.getContext("2d")!;
 const statusEl = document.querySelector<HTMLParagraphElement>("#status")!;
@@ -200,7 +205,7 @@ function applySettingsToDom(): void {
 }
 
 function readSettingsFromDom(): void {
-  settings.aiPps = Math.max(0.1, Math.min(20, numInput(aiPpsInput, DEFAULT_SETTINGS.aiPps)));
+  settings.aiPps = Math.max(0.1, Math.min(MAX_AI_PPS, numInput(aiPpsInput, DEFAULT_SETTINGS.aiPps)));
   settings.dasMs = Math.max(0, Math.min(500, numInput(dasInput, DEFAULT_SETTINGS.dasMs)));
   settings.arrMs = Math.max(0, Math.min(200, numInput(arrInput, DEFAULT_SETTINGS.arrMs)));
   settings.sdfCellsPerSecond = Math.max(1, Math.min(240, numInput(sdfInput, DEFAULT_SETTINGS.sdfCellsPerSecond)));
@@ -704,25 +709,30 @@ class Ft5Trainer {
     if (this.roundOver || this.matchOver) return;
     if (this.mode === "human_vs_ai" && !this.matchStarted) return;
 
-    const pps = Math.max(0.1, Math.min(20, settings.aiPps));
+    const pps = Math.max(0.1, Math.min(MAX_AI_PPS, settings.aiPps));
     const interval = 1000 / pps;
+
+    // The old fixed guard=5 capped real processing speed to roughly
+    // 5 actions/frame/side, so high PPS values barely mattered.
+    // Scale the per-frame simulation budget with PPS.
+    const maxAiActionsPerFrame = Math.max(5, Math.min(200, Math.ceil(pps / 12)));
     if (this.mode === "human_vs_ai") {
       this.input.update(now);
       this.updateHumanGravity(dtMs, now);
       this.aiAccumulatorMs += dtMs;
       let guard = 0;
-      while (this.aiAccumulatorMs >= interval && guard < 5 && !this.roundOver && !this.matchOver) {
+      while (this.aiAccumulatorMs >= interval && guard < maxAiActionsPerFrame && !this.roundOver && !this.matchOver) {
         this.aiTurn(); this.aiAccumulatorMs -= interval; guard++;
       }
     } else {
       this.battleLeftAccumulatorMs += dtMs;
       this.battleRightAccumulatorMs += dtMs;
       let guard = 0;
-      while (this.battleLeftAccumulatorMs >= interval && guard < 5 && !this.roundOver && !this.matchOver) {
+      while (this.battleLeftAccumulatorMs >= interval && guard < maxAiActionsPerFrame && !this.roundOver && !this.matchOver) {
         this.battleTurn("left"); this.battleLeftAccumulatorMs -= interval; guard++;
       }
       guard = 0;
-      while (this.battleRightAccumulatorMs >= interval && guard < 5 && !this.roundOver && !this.matchOver) {
+      while (this.battleRightAccumulatorMs >= interval && guard < maxAiActionsPerFrame && !this.roundOver && !this.matchOver) {
         this.battleTurn("right"); this.battleRightAccumulatorMs -= interval; guard++;
       }
     }
@@ -831,8 +841,8 @@ function shouldSkipFullRender(now: number): boolean {
   }
 
   const stepDelta = trainer.stepIndex - lastFullRenderStep;
-  const minStepDelta = settings.aiPps >= 19 ? 6 : 4;
-  const maxSilentMs = 220;
+  const minStepDelta = settings.aiPps >= 200 ? 80 : settings.aiPps >= 100 ? 40 : settings.aiPps >= 50 ? 20 : settings.aiPps >= 19 ? 8 : 4;
+  const maxSilentMs = settings.aiPps >= 100 ? 350 : 220;
 
   if (stepDelta < minStepDelta && now - lastFullRenderAt < maxSilentMs) {
     return true;
