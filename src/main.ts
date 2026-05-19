@@ -522,8 +522,24 @@ class ZenithTowerSim {
   }
 
   leaders(limit = 10): Array<{ name: string; heightM: number; attack: number; player?: boolean; alive: boolean }> {
-    const rows = this.bots.filter((b) => b.alive).map((b) => ({ name: b.name, heightM: b.heightM, attack: b.attackTotal, alive: b.alive }));
-    rows.push({ name: "you", heightM: this.playerHeightM, attack: this.playerAttackTotal, player: true, alive: !this.runOver });
+    const rows: Array<{ name: string; heightM: number; attack: number; player?: boolean; alive: boolean }> =
+      this.bots
+        .filter((b) => b.alive)
+        .map((b) => ({
+          name: b.name,
+          heightM: b.heightM,
+          attack: b.attackTotal,
+          alive: b.alive,
+        }));
+
+    rows.push({
+      name: "you",
+      heightM: this.playerHeightM,
+      attack: this.playerAttackTotal,
+      player: true,
+      alive: !this.runOver,
+    });
+
     return rows.sort((a, b) => b.heightM - a.heightM).slice(0, limit);
   }
 }
