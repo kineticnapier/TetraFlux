@@ -267,7 +267,7 @@ function applyRemainingGarbageAfterCounter(engine: TetrisEngine, result: { rawAt
   if (result.rawAttack <= 0 && result.linesCleared <= 0) engine.applyPendingGarbage();
 }
 
-type ZenithFeedKind = "join" | "out" | "ko" | "danger";
+type ZenithFeedKind = "join" | "out" | "ko" | "danger" | "floor";
 
 interface ZenithBot {
   id: string;
@@ -301,16 +301,56 @@ const ZENITH_JOIN_INTERVAL_MS = 1_700;
 const ZENITH_NEAR_RANGE_M = 85;
 const ZENITH_REMOVE_BEHIND_M = 260;
 
+// Initial population is pre-simulated from 0.0m. A few climbers should already
+// be near 1000m to match the "tower already in progress" feeling.
+const ZENITH_INITIAL_HIGH_CLIMBERS = 15;
+const ZENITH_HIGH_CLIMBER_MIN_M = 860;
+const ZENITH_HIGH_CLIMBER_MAX_M = 1180;
+
 // Zenith pressure is measured in garbage lines per second.
 // Bot attackRecent is a rolling threat score, not direct garbage.
-// These values keep the mode playable even with ~100 simulated climbers.
-const ZENITH_NEAR_PRESSURE_SCALE = 0.16;
-const ZENITH_TOP_PRESSURE_SCALE = 0.035;
-const ZENITH_PENDING_FEEDBACK_SCALE = 0.0015;
-const ZENITH_GRACE_MS = 8_000;
-const ZENITH_RAMP_MS = 45_000;
-const ZENITH_BASE_MAX_INCOMING = 0.75;
-const ZENITH_MAX_INCOMING = 4.0;
+// Garbage is batched, not streamed every frame.
+const ZENITH_NEAR_PRESSURE_SCALE = 0.075;
+const ZENITH_TOP_PRESSURE_SCALE = 0.012;
+const ZENITH_PENDING_FEEDBACK_SCALE = 0.0007;
+const ZENITH_GRACE_MS = 10_000;
+const ZENITH_RAMP_MS = 75_000;
+const ZENITH_BASE_MAX_INCOMING = 0.18;
+const ZENITH_MAX_INCOMING = 1.35;
+const ZENITH_GARBAGE_BURST_INTERVAL_MS = 3_200;
+const ZENITH_GARBAGE_BURST_MAX_LINES = 6;
+
+interface ZenithFloor {
+  name: string;
+  borderM: number;
+  color: string;
+}
+
+// I found a public description saying Quick Play / Zenith Tower has 10 phases
+// and mentions Hall of Beginnings, The Hotel, and The Casino. Exact current
+// borders are not exposed in a reliable official table, so keep this list
+// editable and approximate for the mock.
+const ZENITH_FLOORS: ZenithFloor[] = [
+  { name: "Hall of Beginnings", borderM: 0, color: "#38bdf8" },
+  { name: "The Hotel", borderM: 250, color: "#a78bfa" },
+  { name: "The Casino", borderM: 500, color: "#f59e0b" },
+  { name: "The Lounge", borderM: 750, color: "#34d399" },
+  { name: "The Skyline", borderM: 1000, color: "#60a5fa" },
+  { name: "The Stratosphere", borderM: 1300, color: "#f472b6" },
+  { name: "The Orbit", borderM: 1650, color: "#fb7185" },
+  { name: "The Singularity", borderM: 2050, color: "#c084fc" },
+  { name: "The Zenith", borderM: 2500, color: "#fde68a" },
+  { name: "Beyond", borderM: 3000, color: "#e5e7eb" },
+];
+
+function zenithFloorAt(heightM: number): { index: number; floor: ZenithFloor; next: ZenithFloor | null } {
+  let index = 0;
+  for (let i = 0; i < ZENITH_FLOORS.length; i++) {
+    if (heightM >= ZENITH_FLOORS[i].borderM) index = i;
+    else break;
+  }
+  return { index, floor: ZENITH_FLOORS[index], next: ZENITH_FLOORS[index + 1] ?? null };
+}
 
 class ZenithTowerSim {
   bots: ZenithBot[] = [];
@@ -324,6 +364,9 @@ class ZenithTowerSim {
   playerReceivedTotal = 0;
   playerIncomingRate = 0;
   playerRank = 1;
+  playerFloorIndex = 0;
+  incomingBurstCarry = 0;
+  nextGarbageBurstAtMs = 0;
   nextJoinAtMs = 0;
   startedAtMs = 0;
   lastUpdateMs = 0;
@@ -344,6 +387,9 @@ class ZenithTowerSim {
     this.playerReceivedTotal = 0;
     this.playerIncomingRate = 0;
     this.playerRank = 1;
+    this.playerFloorIndex = 0;
+    this.incomingBurstCarry = 0;
+    this.nextGarbageBurstAtMs = now + ZENITH_GARBAGE_BURST_INTERVAL_MS;
     this.nextJoinAtMs = now + 900;
     this.startedAtMs = now;
     this.lastUpdateMs = now;
@@ -358,8 +404,18 @@ class ZenithTowerSim {
       this.bots.push(bot);
     }
 
+    for (let i = 0; i < Math.min(ZENITH_INITIAL_HIGH_CLIMBERS, this.bots.length); i++) {
+      const bot = this.bots[i];
+      bot.heightM = this.randRange(ZENITH_HIGH_CLIMBER_MIN_M, ZENITH_HIGH_CLIMBER_MAX_M);
+      bot.boardHeight = this.randRange(4, 14);
+      bot.holes = Math.floor(this.randRange(1, 12));
+      bot.attackTotal += this.randRange(220, 520);
+      bot.attackRecent += this.randRange(2, 8);
+    }
+
     this.sortBots();
     this.pushFeed("join", `tower already active: ${this.bots.length} climbers`, now);
+    this.pushFeed("floor", `${ZENITH_INITIAL_HIGH_CLIMBERS} climbers are already around 1000m`, now);
   }
 
   private rand(): number {
@@ -412,6 +468,26 @@ class ZenithTowerSim {
     this.feed = this.feed.slice(0, 8);
   }
 
+  private activeBotsSortedByHeight(): ZenithBot[] {
+    return this.bots.filter((b) => b.alive).sort((a, b) => b.heightM - a.heightM);
+  }
+
+  private pickBotKiller(victim: ZenithBot): ZenithBot | null {
+    const candidates = this.bots
+      .filter((b) => b.alive && b.id !== victim.id)
+      .map((b) => ({
+        bot: b,
+        score:
+          b.attackRecent * 2.5 +
+          b.attackRate * 0.8 -
+          Math.abs(b.heightM - victim.heightM) * 0.01 +
+          this.randRange(-0.7, 0.7),
+      }))
+      .sort((a, b) => b.score - a.score);
+
+    return candidates[0]?.bot ?? null;
+  }
+
   private simulateBot(bot: ZenithBot, dtMs: number, now: number, prewarm = false): void {
     if (!bot.alive || dtMs <= 0) return;
     const dt = Math.min(30, dtMs / 1000);
@@ -440,7 +516,9 @@ class ZenithTowerSim {
 
     if (!prewarm && this.rand() < deathPressure * dt) {
       bot.alive = false;
-      this.pushFeed("out", `${bot.name} topped out at ${bot.heightM.toFixed(1)}m`, now);
+      const killer = this.pickBotKiller(bot);
+      if (killer) this.pushFeed("ko", `${killer.name} KO'd ${bot.name} at ${bot.heightM.toFixed(1)}m`, now);
+      else this.pushFeed("out", `${bot.name} topped out at ${bot.heightM.toFixed(1)}m`, now);
     }
     bot.lastUpdateMs = now;
   }
@@ -498,17 +576,39 @@ class ZenithTowerSim {
         playerPendingGarbage * ZENITH_PENDING_FEEDBACK_SCALE
       ) * heightRamp * graceRamp;
 
-    // Hard cap. Without this, 100 nearby mock bots can accidentally behave like
-    // 100 real attackers and produce dozens of garbage lines per second.
     const cap =
-      (ZENITH_BASE_MAX_INCOMING + Math.min(ZENITH_MAX_INCOMING - ZENITH_BASE_MAX_INCOMING, this.playerHeightM / 180)) *
-      (0.35 + 0.65 * graceRamp);
+      (ZENITH_BASE_MAX_INCOMING + Math.min(ZENITH_MAX_INCOMING - ZENITH_BASE_MAX_INCOMING, this.playerHeightM / 420)) *
+      (0.2 + 0.8 * graceRamp);
 
     this.playerIncomingRate = Math.max(0, Math.min(cap, rawIncoming));
+
+    const floorInfo = zenithFloorAt(this.playerHeightM);
+    if (floorInfo.index !== this.playerFloorIndex) {
+      this.playerFloorIndex = floorInfo.index;
+      this.pushFeed("floor", `entered ${floorInfo.floor.name} at ${this.playerHeightM.toFixed(1)}m`, now);
+    }
 
     this.sortBots();
     this.playerRank = 1 + active.filter((b) => b.heightM > this.playerHeightM).length;
     return this.playerIncomingRate * dt;
+  }
+
+  consumeGarbageBurst(dtMs: number, now: number): number {
+    if (this.runOver) return 0;
+
+    this.incomingBurstCarry += this.playerIncomingRate * Math.max(0, dtMs / 1000);
+    if (now < this.nextGarbageBurstAtMs) return 0;
+
+    this.nextGarbageBurstAtMs =
+      now + ZENITH_GARBAGE_BURST_INTERVAL_MS * this.randRange(0.72, 1.45);
+
+    const lines = Math.min(ZENITH_GARBAGE_BURST_MAX_LINES, Math.floor(this.incomingBurstCarry));
+    if (lines <= 0) return 0;
+
+    this.incomingBurstCarry -= lines;
+    this.playerReceivedTotal += lines;
+    this.pushFeed("danger", `${lines} garbage queued`, now);
+    return lines;
   }
 
   applyPlayerAttack(amount: number, now: number): void {
@@ -530,7 +630,7 @@ class ZenithTowerSim {
       bot.holes += share * 0.04;
       if (bot.boardHeight + bot.pendingGarbage * 0.18 + bot.holes * 0.12 > 27 + bot.skill * 5) {
         bot.alive = false;
-        this.pushFeed("ko", `${bot.name} was spiked by you`, now);
+        this.pushFeed("ko", `you KO'd ${bot.name} at ${bot.heightM.toFixed(1)}m`, now);
       }
     }
   }
@@ -552,7 +652,7 @@ class ZenithTowerSim {
 
   playerTopout(now: number): void {
     this.runOver = true;
-    this.runResult = `Topped out at ${this.playerHeightM.toFixed(1)}m, rank #${this.playerRank}`;
+    this.runResult = `Topped out at ${this.playerHeightM.toFixed(1)}m (${zenithFloorAt(this.playerHeightM).floor.name}), rank #${this.playerRank}`;
     this.pushFeed("out", this.runResult, now);
   }
 
@@ -910,11 +1010,10 @@ class Ft5Trainer {
       canceled += cancelPending;
     }
 
-    // Then cancel fractional incoming pressure that has not become a full
-    // pending garbage line yet.
-    const cancelCarry = Math.min(this.zenithIncomingCarry, outgoing);
+    // Then cancel incoming pressure that has accumulated for the next burst.
+    const cancelCarry = Math.min(this.zenith.incomingBurstCarry, outgoing);
     if (cancelCarry > 0) {
-      this.zenithIncomingCarry -= cancelCarry;
+      this.zenith.incomingBurstCarry -= cancelCarry;
       outgoing -= cancelCarry;
       canceled += cancelCarry;
     }
@@ -1091,13 +1190,9 @@ class Ft5Trainer {
     this.input.update(now);
     this.updateHumanGravity(dtMs, now);
 
-    this.zenithIncomingCarry += this.zenith.update(dtMs, now, this.human.pendingGarbage);
-    const garbage = Math.floor(this.zenithIncomingCarry);
-    if (garbage > 0) {
-      this.zenithIncomingCarry -= garbage;
-      this.human.queueGarbage(garbage);
-      this.zenith.playerReceivedTotal += garbage;
-    }
+    this.zenith.update(dtMs, now, this.human.pendingGarbage);
+    const garbage = this.zenith.consumeGarbageBurst(dtMs, now);
+    if (garbage > 0) this.human.queueGarbage(garbage);
 
     if (this.human.dead) {
       this.zenith.playerTopout(now);
@@ -1265,17 +1360,23 @@ function shouldSkipFullRender(now: number): boolean {
 
 function drawZenithTower(ctx: CanvasRenderingContext2D, trainer: Ft5Trainer, x: number, y: number, w: number, h: number): void {
   const z = trainer.zenith;
+  const floorInfo = zenithFloorAt(z.playerHeightM);
+  const nextText = floorInfo.next
+    ? `next ${floorInfo.next.name} @ ${floorInfo.next.borderM}m`
+    : "top floor";
   drawPanel(ctx, x, y, w, h, "Zenith Tower", [
     [`height: ${z.playerHeightM.toFixed(1)}m`, "#e5e7eb"],
+    [`floor: ${floorInfo.floor.name}`, floorInfo.floor.color],
+    [nextText, "#64748b"],
     [`rank: #${z.playerRank} / ${z.activeCount()}`, "#34d399"],
-    [`nearby: ${z.nearbyCount()}  incoming: ${z.playerIncomingRate.toFixed(2)}/s`, "#94a3b8"],
-    [`pressure cap: ${ZENITH_MAX_INCOMING.toFixed(1)}/s max`, "#64748b"],
+    [`nearby: ${z.nearbyCount()}  pressure: ${z.playerIncomingRate.toFixed(2)}/s`, "#94a3b8"],
+    [`next burst: ${z.incomingBurstCarry.toFixed(1)} / max ${ZENITH_GARBAGE_BURST_MAX_LINES}`, "#64748b"],
     [`sent: ${Math.round(z.playerAttackTotal)}  cancel: ${Math.round(z.playerCanceledTotal)}`, "#94a3b8"],
     [`received: ${Math.round(z.playerReceivedTotal)}`, "#94a3b8"],
     [`population: ${z.bots.filter((b) => b.alive).length} bots`, "#94a3b8"],
   ]);
 
-  let yy = y + 156;
+  let yy = y + 198;
   ctx.fillStyle = "#38bdf8";
   ctx.font = "bold 18px Consolas";
   ctx.fillText("Leaderboard", x + 16, yy);
@@ -1298,6 +1399,7 @@ function drawZenithTower(ctx: CanvasRenderingContext2D, trainer: Ft5Trainer, x: 
       item.kind === "ko" ? "#fbbf24" :
       item.kind === "out" ? "#f87171" :
       item.kind === "danger" ? "#fb7185" :
+      item.kind === "floor" ? "#38bdf8" :
       "#94a3b8";
     ctx.fillText(item.text.slice(0, 48), x + 16, yy);
     yy += 18;
@@ -1362,13 +1464,13 @@ function render(): void {
     ["Mode", "#38bdf8"],
     [trainer.modeLabel()],
     trainer.mode === "ai_vs_ai" ? [`${trainer.battleLeftName} vs ${trainer.battleRightName}`, "#94a3b8"] :
-      trainer.mode === "zenith" ? [`height ${trainer.zenith.playerHeightM.toFixed(1)}m / rank #${trainer.zenith.playerRank}`, "#94a3b8"] :
+      trainer.mode === "zenith" ? [`height ${trainer.zenith.playerHeightM.toFixed(1)}m / ${zenithFloorAt(trainer.zenith.playerHeightM).floor.name}`, "#94a3b8"] :
       [`Human vs ${trainer.aiName}`, "#94a3b8"],
     trainer.mode === "ai_vs_ai" ? [`turns: ${trainer.stepIndex}/${AI_BATTLE_MAX_TURNS_PER_ROUND}`, "#94a3b8"] :
       trainer.mode === "zenith" ? [`alive: ${trainer.zenith.activeCount()}  nearby: ${trainer.zenith.nearbyCount()}`, "#94a3b8"] :
       ["", "#94a3b8"],
     trainer.mode === "ai_vs_ai" ? [`sent: ${trainer.battleAttack.left} - ${trainer.battleAttack.right}`, "#94a3b8"] :
-      trainer.mode === "zenith" ? [`sent: ${Math.round(trainer.zenith.playerAttackTotal)}  cancel: ${Math.round(trainer.zenith.playerCanceledTotal)}  incoming: ${trainer.zenith.playerIncomingRate.toFixed(2)}/s`, "#94a3b8"] :
+      trainer.mode === "zenith" ? [`sent: ${Math.round(trainer.zenith.playerAttackTotal)}  cancel: ${Math.round(trainer.zenith.playerCanceledTotal)}  burst: ${trainer.zenith.incomingBurstCarry.toFixed(1)}`, "#94a3b8"] :
       ["", "#94a3b8"],
     trainer.mode === "ai_vs_ai" ? [`raw/cancel: ${trainer.battleRawAttack.left}/${trainer.battleCanceled.left} - ${trainer.battleRawAttack.right}/${trainer.battleCanceled.right}`, "#64748b"] :
       trainer.mode === "zenith" ? [`bots join at 0.0m; initial bots are prewarmed from 0.0m`, "#64748b"] :
