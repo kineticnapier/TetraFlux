@@ -31,10 +31,14 @@ on:
         description: "Model name embedded into web_policy.json"
         type: string
         default: "ga_r2_clean"
+      trigger_pages_deploy:
+        description: "Trigger normal Cloudflare Pages deploy after uploading model to R2"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
-  actions: read
+  actions: write
 
 concurrency:
   group: train-from-r2
@@ -42,7 +46,7 @@ concurrency:
 
 jobs:
   train:
-    name: Download R2 logs, train, export, deploy
+    name: Download R2 logs, train, export, upload model
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
@@ -51,10 +55,6 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-
-      CF_PAGES_PROJECT_NAME: ${{ vars.CF_PAGES_PROJECT_NAME }}
-      VITE_BASE: /
-      VITE_LOG_UPLOAD_URL: ${{ vars.VITE_LOG_UPLOAD_URL }}
 
       R2_LOG_BUCKET: ${{ vars.R2_LOG_BUCKET || 'tetraflux-logs' }}
       R2_LOG_PREFIX: ${{ vars.R2_LOG_PREFIX || 'raw/' }}
@@ -88,15 +88,11 @@ jobs:
       - name: Validate settings
         shell: bash
         run: |
-          test -n "$CLOUDFLARE_API_TOKEN" || (echo "Missing secret: CLOUDFLARE_API_TOKEN" && exit 1)
-          test -n "$CLOUDFLARE_ACCOUNT_ID" || (echo "Missing secret: CLOUDFLARE_ACCOUNT_ID" && exit 1)
           test -n "$R2_ACCESS_KEY_ID" || (echo "Missing secret: R2_ACCESS_KEY_ID" && exit 1)
           test -n "$R2_SECRET_ACCESS_KEY" || (echo "Missing secret: R2_SECRET_ACCESS_KEY" && exit 1)
-          test -n "$CF_PAGES_PROJECT_NAME" || (echo "Missing repository variable: CF_PAGES_PROJECT_NAME" && exit 1)
           echo "R2_LOG_BUCKET=$R2_LOG_BUCKET"
           echo "R2_LOG_PREFIX=$R2_LOG_PREFIX"
           echo "R2_MODEL_KEY=$R2_MODEL_KEY"
-          echo "CF_PAGES_PROJECT_NAME=$CF_PAGES_PROJECT_NAME"
 
       - name: Install frontend dependencies
         shell: bash
@@ -165,6 +161,12 @@ jobs:
             --out "$PUBLIC_MODEL_JSON" \
             --model-name "${{ inputs.model_name }}_run${{ github.run_number }}_${{ github.run_attempt }}"
 
+      - name: Inspect exported model
+        run: |
+          "$PY" tools/inspect_web_policy_json.py \
+            --file "$PUBLIC_MODEL_JSON" \
+            --label "EXPORTED MODEL BEFORE R2 UPLOAD"
+
       - name: Upload latest model JSON to R2
         run: |
           "$PY" tools/sync_web_policy_r2.py upload \
@@ -172,28 +174,17 @@ jobs:
             --key "$R2_MODEL_KEY" \
             --file "$PUBLIC_MODEL_JSON"
 
-      - name: Inspect exported model before build
+      - name: Trigger normal frontend deploy
+        if: ${{ inputs.trigger_pages_deploy }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          "$PY" tools/inspect_web_policy_json.py \
-            --file public/models/web_policy.json \
-            --label "PUBLIC MODEL BEFORE BUILD"
-
-      - name: Build frontend with trained model
-        run: npm run build
-
-      - name: Inspect dist model before deploy
-        run: |
-          "$PY" tools/inspect_web_policy_json.py \
-            --file dist/models/web_policy.json \
-            --label "DIST MODEL BEFORE DEPLOY"
-
-      - name: Deploy Cloudflare Pages with trained model
-        run: |
-          npx wrangler@latest pages deploy dist \
-            --project-name="$CF_PAGES_PROJECT_NAME" \
-            --branch="${GITHUB_REF_NAME}" \
-            --commit-hash="${GITHUB_SHA}" \
-            --commit-message="trained-model-run-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          echo "Triggering deploy-cloudflare.yml so the latest app code builds normally and syncs the model from R2."
+          gh workflow run deploy-cloudflare.yml \
+            --ref "${GITHUB_REF_NAME}" \
+            -f deploy_pages=true \
+            -f deploy_worker=false
 
       - name: Upload training artifacts
         uses: actions/upload-artifact@v4
@@ -203,8 +194,6 @@ jobs:
           retention-days: 30
           path: |
             public/models/web_policy.json
-            dist/models/web_policy.json
-            dist/_headers
             models/web_human_policy_r2/best_policy.pt
             models/web_human_policy_r2/summary.json
             models/web_human_policy_r2/history.json
