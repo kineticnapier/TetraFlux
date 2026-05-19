@@ -704,7 +704,18 @@ async function loadValueModelInfo(): Promise<void> {
       return;
     }
 
-    const data = await res.json();
+    const contentType = res.headers.get("content-type") || "";
+    const text = await res.text();
+    const trimmed = text.trim();
+
+    // Cloudflare Pages may return index.html for missing files.
+    // Treat HTML fallback as "no value model" instead of throwing JSON parse errors.
+    if (contentType.includes("text/html") || trimmed.startsWith("<!doctype") || trimmed.startsWith("<html") || !trimmed) {
+      trainer.setValueInfo({ loaded: false, lines: ["value: none"] });
+      return;
+    }
+
+    const data = JSON.parse(trimmed);
     trainer.setValueInfo({ loaded: true, lines: valueModelLines(data) });
   } catch (err) {
     console.warn("[TetraFlux] failed to load value model info", err);

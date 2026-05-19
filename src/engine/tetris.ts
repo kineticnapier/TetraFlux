@@ -224,30 +224,50 @@ function isDifficultClear(lines: number, spin: SpinType): boolean {
 }
 
 export function attackFor(lines: number, spin: SpinType, combo: number, b2bBeforeClear: number): number {
+  if (lines <= 0) return 0;
+
   let attack = 0;
+  const isSpin = spin === "tspin" || spin === "tspin-mini" || spin === "spin";
+  const isQuad = spin === "none" && lines >= 4;
+  const difficult = isSpin || isQuad;
 
   if (spin === "tspin") {
     if (lines === 1) attack = 2;
     else if (lines === 2) attack = 4;
     else if (lines === 3) attack = 6;
+    else if (lines >= 4) attack = 8;
   } else if (spin === "tspin-mini") {
     if (lines === 1) attack = 1;
     else if (lines === 2) attack = 3;
+    else if (lines >= 3) attack = 4;
   } else if (spin === "spin") {
-    // Approximate all-piece spin table. This is intentionally conservative
-    // compared with full TETR.IO all-spin scoring.
+    // Conservative sandbox all-spin table.
     if (lines === 1) attack = 1;
     else if (lines === 2) attack = 2;
     else if (lines === 3) attack = 4;
     else if (lines >= 4) attack = 6;
   } else {
-    if (lines === 2) attack = 1;
+    // Ordinary line clears:
+    // Single 0, Double 1, Triple 2, Quad/Tetris 4.
+    // For non-quad ordinary clears, total attack must stay below cleared line count.
+    if (lines === 1) attack = 0;
+    else if (lines === 2) attack = 1;
     else if (lines === 3) attack = 2;
     else if (lines >= 4) attack = 4;
   }
 
-  if (attack > 0 && b2bBeforeClear > 0 && isDifficultClear(lines, spin)) attack += 1;
-  if (lines > 0 && combo > 0) attack += Math.min(4, Math.floor((combo + 1) / 2));
+  if (attack > 0 && b2bBeforeClear > 0 && difficult) attack += 1;
+
+  // Combo exists, but ordinary single/double/triple must not become stronger
+  // than the number of cleared lines. This prevents cases like 3-line clear -> 5 attack.
+  if (combo > 0) {
+    const comboBonus = Math.min(4, Math.floor((combo + 1) / 2));
+    attack += comboBonus;
+
+    if (spin === "none" && lines < 4) {
+      attack = Math.min(attack, Math.max(0, lines - 1));
+    }
+  }
 
   return attack;
 }
