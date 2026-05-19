@@ -14,6 +14,38 @@ type AutoUploadStatus = "idle" | "uploading" | "uploaded" | "failed" | "skipped"
 
 interface AiLike { choose(engine: TetrisEngine): AiChoice | null; }
 
+interface ValueModelInfo {
+  loaded: boolean;
+  lines: string[];
+}
+
+function valueModelLines(data: unknown): string[] {
+  if (!data || typeof data !== "object") return ["value: none"];
+  const obj = data as Record<string, unknown>;
+
+  const name = String(obj.model_name ?? obj.model_id ?? obj.checkpoint_name ?? "value model");
+  const exportedAt = String(obj.exported_at ?? obj.trained_at ?? obj.created_at ?? "unknown");
+  const summary = obj.training_summary && typeof obj.training_summary === "object"
+    ? obj.training_summary as Record<string, unknown>
+    : null;
+
+  const lines: string[] = [
+    `model: ${name.length > 38 ? `${name.slice(0, 37)}…` : name}`,
+    `trained: ${exportedAt}`
+  ];
+
+  const trainN = summary?.train_n;
+  const datasetN = summary?.dataset_n ?? summary?.n ?? summary?.total_n;
+  const bestLoss = summary?.best_val_loss ?? summary?.best_val_mae ?? summary?.val_loss;
+
+  if (typeof trainN === "number") lines.push(`value ops: ${trainN.toLocaleString()}`);
+  else if (typeof datasetN === "number") lines.push(`value data: ${datasetN.toLocaleString()}`);
+
+  if (typeof bestLoss === "number") lines.push(`val: ${bestLoss.toFixed(4)}`);
+
+  return lines;
+}
+
 interface KeyBindings {
   left: string[]; right: string[]; softDrop: string[]; rotateCw: string[]; rotateCcw: string[];
   rotate180: string[]; hold: string[]; hardDrop: string[]; nextRound: string[]; reset: string[];
@@ -234,6 +266,7 @@ class Ft5Trainer {
   ai: AiLike = new HeuristicAI();
   aiName = "HeuristicAI";
   aiDetails: string[] = ["No model JSON found, fallback"];
+  valueInfo: ValueModelInfo = { loaded: false, lines: ["value: none"] };
 
   battleLeftAi: AiLike = new HeuristicAI();
   battleLeftName = "HybridAI";
@@ -272,6 +305,10 @@ class Ft5Trainer {
     this.battleRightAi = new HeuristicAI();
     this.battleRightName = "HeuristicAI";
     setStatus(`AI loaded: ${name}`);
+  }
+
+  setValueInfo(info: ValueModelInfo): void {
+    this.valueInfo = info;
   }
 
   setMode(mode: GameMode): void {
@@ -654,6 +691,27 @@ async function loadAiModel(): Promise<void> {
   else trainer.setLoadedAi(new HeuristicAI(), "HeuristicAI fallback", [`No model JSON found at ${modelUrl}`]);
 }
 
+async function loadValueModelInfo(): Promise<void> {
+  const url = `${import.meta.env.BASE_URL}models/web_value.json?t=${Date.now()}`;
+  try {
+    const res = await fetch(url, {
+      cache: "no-store",
+      headers: { "cache-control": "no-cache", "pragma": "no-cache" }
+    });
+
+    if (!res.ok) {
+      trainer.setValueInfo({ loaded: false, lines: ["value: none"] });
+      return;
+    }
+
+    const data = await res.json();
+    trainer.setValueInfo({ loaded: true, lines: valueModelLines(data) });
+  } catch (err) {
+    console.warn("[TetraFlux] failed to load value model info", err);
+    trainer.setValueInfo({ loaded: false, lines: ["value: load failed"] });
+  }
+}
+
 function resizeCanvasForDisplay(): void {
   const rect = canvas.getBoundingClientRect();
   const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
@@ -728,7 +786,10 @@ function render(): void {
     trainer.mode === "ai_vs_ai" ? [`${trainer.battleLeftName} vs ${trainer.battleRightName}`, "#94a3b8"] : [`Human vs ${trainer.aiName}`, "#94a3b8"],
     [""],
     ["AI", "#38bdf8"],
-    ...trainer.aiDetails.slice(0, 6).map((line) => [line, "#94a3b8"] as [string, string]),
+    ...trainer.aiDetails.slice(0, 5).map((line) => [line, "#94a3b8"] as [string, string]),
+    [""],
+    ["Value", "#38bdf8"],
+    ...trainer.valueInfo.lines.slice(0, 4).map((line) => [line, trainer.valueInfo.loaded ? "#94a3b8" : "#64748b"] as [string, string]),
     [""],
     ["Upload", "#38bdf8"],
     [`${trainer.autoUploadStatus}`],
@@ -804,5 +865,6 @@ uploadBtn.addEventListener("click", async () => {
 });
 
 loadAiModel();
+loadValueModelInfo();
 render();
 requestAnimationFrame(tick);

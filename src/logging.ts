@@ -160,8 +160,31 @@ export class MatchLogger {
     URL.revokeObjectURL(url);
   }
 
-  persistLocal(): void { localStorage.setItem("tetraflux_last_match_log", this.toJsonl(true)); }
-  clearLocal(): void { localStorage.removeItem("tetraflux_last_match_log"); }
+  persistLocal(): void {
+    // Do not store full JSONL in localStorage.
+    // FT15 human matches can exceed browser quota and throw QuotaExceededError,
+    // which can stop the game loop if it happens during finishRound().
+    try {
+      localStorage.removeItem("tetraflux_last_match_log");
+      localStorage.setItem("tetraflux_last_match_log_meta", JSON.stringify({
+        matchId: this.matchId,
+        records: this.records.length,
+        currentRound: this.roundBuffer.length,
+        updatedAt: Date.now()
+      }));
+    } catch (err) {
+      console.warn("[TetraFlux] failed to persist human log metadata", err);
+    }
+  }
+
+  clearLocal(): void {
+    try {
+      localStorage.removeItem("tetraflux_last_match_log");
+      localStorage.removeItem("tetraflux_last_match_log_meta");
+    } catch (err) {
+      console.warn("[TetraFlux] failed to clear human log metadata", err);
+    }
+  }
 }
 
 export class SelfplayLogger {
@@ -232,9 +255,9 @@ export class SelfplayLogger {
   }
 
   persistLocal(): void {
-    // Keep this method for compatibility, but do not store the full selfplay JSONL.
-    // It is too large for localStorage in long AI Battle matches.
+    // Keep only small metadata; full selfplay logs are too large for localStorage.
     try {
+      localStorage.removeItem("tetraflux_last_selfplay_log");
       localStorage.setItem("tetraflux_last_selfplay_log_meta", JSON.stringify({
         matchId: this.matchId,
         records: this.records.length,
@@ -247,8 +270,12 @@ export class SelfplayLogger {
   }
 
   clearLocal(): void {
-    localStorage.removeItem("tetraflux_last_selfplay_log");
-    localStorage.removeItem("tetraflux_last_selfplay_log_meta");
+    try {
+      localStorage.removeItem("tetraflux_last_selfplay_log");
+      localStorage.removeItem("tetraflux_last_selfplay_log_meta");
+    } catch (err) {
+      console.warn("[TetraFlux] failed to clear selfplay log metadata", err);
+    }
   }
 }
 

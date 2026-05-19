@@ -1,12 +1,9 @@
 import { defineConfig } from "vite";
 
-function githubPagesBase(): string {
-  const repo = process.env.GITHUB_REPOSITORY?.split("/")[1];
-  if (process.env.GITHUB_ACTIONS === "true" && repo) return `/${repo}/`;
-  return "/";
-}
-
 export default defineConfig({
-  base: process.env.VITE_BASE ?? githubPagesBase(),
+  // Cloudflare Pages is deployed at the domain root.
+  // Do not infer /TetraFlux/ from GITHUB_REPOSITORY in GitHub Actions,
+  // because that breaks asset URLs on https://tetraflux.pages.dev/.
+  base: process.env.VITE_BASE ?? "/",
   server: { port: 5173 }
 });
