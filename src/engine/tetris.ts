@@ -227,6 +227,14 @@ function isDifficultClear(lines: number, spin: SpinType): boolean {
   return lines === 4 || ((spin === "tspin" || spin === "tspin-mini" || spin === "spin") && lines > 0);
 }
 
+interface AttackCalc {
+  total: number;
+  base: number;
+  b2bBonus: number;
+  comboBonus: number;
+  capped: boolean;
+}
+
 function calcAttack(lines: number, spin: SpinType, combo: number, b2bBeforeClear: number): AttackCalc {
   if (lines <= 0) return { total: 0, base: 0, b2bBonus: 0, comboBonus: 0, capped: false };
 
