@@ -187,6 +187,118 @@ export class MatchLogger {
   }
 }
 
+
+const SELFPLAY_UPLOAD_MAX_ROWS = 3000;
+const SELFPLAY_UPLOAD_STRIDE = 12;
+const SELFPLAY_UPLOAD_LAST_ROWS_PER_ROUND = 16;
+const SELFPLAY_UPLOAD_MIN_ROUND_ROWS = 16;
+const SELFPLAY_UPLOAD_MAX_HOLES_SOFT = 32;
+const SELFPLAY_UPLOAD_MAX_HEIGHT_SOFT = 19;
+const SELFPLAY_UPLOAD_MAX_PENDING_SOFT = 16;
+
+function rowBoardMetrics(row: SelfplayMoveLog) {
+  return boardMetrics(row.state_after.board);
+}
+
+function rowIsTerminalOrEndgame(row: SelfplayMoveLog): boolean {
+  return (
+    row.result.topout ||
+    row.round_winner !== null ||
+    row.match_winner !== null ||
+    row.terminal_reward !== null
+  );
+}
+
+function rowIsTactical(row: SelfplayMoveLog): boolean {
+  return (
+    row.result.attack_sent > 0 ||
+    row.result.raw_attack > 0 ||
+    row.result.lines_cleared >= 2 ||
+    (row.result.spin !== "none" && row.result.lines_cleared > 0)
+  );
+}
+
+function rowIsTrainingCleanEnough(row: SelfplayMoveLog): boolean {
+  const m = rowBoardMetrics(row);
+  return (
+    m.holes <= SELFPLAY_UPLOAD_MAX_HOLES_SOFT &&
+    m.maxHeight <= SELFPLAY_UPLOAD_MAX_HEIGHT_SOFT &&
+    row.state_after.pendingGarbage <= SELFPLAY_UPLOAD_MAX_PENDING_SOFT
+  );
+}
+
+function groupSelfplayRowsByRound(rows: SelfplayMoveLog[]): Map<number, SelfplayMoveLog[]> {
+  const rounds = new Map<number, SelfplayMoveLog[]>();
+  for (const row of rows) {
+    if (!rounds.has(row.round_index)) rounds.set(row.round_index, []);
+    rounds.get(row.round_index)!.push(row);
+  }
+  return rounds;
+}
+
+function selfplayRowKey(row: SelfplayMoveLog): string {
+  return `${row.round_index}:${row.step_index}:${row.side}`;
+}
+
+function clientThinSelfplayRowsForTrainingUpload(rows: SelfplayMoveLog[]): SelfplayMoveLog[] {
+  if (rows.length <= SELFPLAY_UPLOAD_MAX_ROWS) return rows;
+
+  const keep = new Map<string, SelfplayMoveLog>();
+  const rounds = groupSelfplayRowsByRound(rows);
+
+  for (const roundRows of rounds.values()) {
+    if (roundRows.length < SELFPLAY_UPLOAD_MIN_ROUND_ROWS) continue;
+
+    const sorted = [...roundRows].sort((a, b) => (a.step_index - b.step_index) || a.side.localeCompare(b.side));
+
+    for (let localIndex = 0; localIndex < sorted.length; localIndex++) {
+      const row = sorted[localIndex];
+
+      const keepTerminal = rowIsTerminalOrEndgame(row);
+      const keepTactical = rowIsTactical(row);
+      const keepPeriodicClean = localIndex % SELFPLAY_UPLOAD_STRIDE === 0 && rowIsTrainingCleanEnough(row);
+
+      if (keepTerminal || keepTactical || keepPeriodicClean) {
+        keep.set(selfplayRowKey(row), row);
+      }
+    }
+
+    for (const row of sorted.slice(-SELFPLAY_UPLOAD_LAST_ROWS_PER_ROUND)) {
+      keep.set(selfplayRowKey(row), row);
+    }
+  }
+
+  let out = [...keep.values()].sort((a, b) =>
+    (a.round_index - b.round_index) ||
+    (a.step_index - b.step_index) ||
+    a.side.localeCompare(b.side)
+  );
+
+  if (out.length <= SELFPLAY_UPLOAD_MAX_ROWS) return out;
+
+  // Preserve tactical/terminal rows first, then add a spread of clean periodic rows.
+  const priority = out.filter((row) => rowIsTerminalOrEndgame(row) || rowIsTactical(row));
+  const regular = out.filter((row) => !(rowIsTerminalOrEndgame(row) || rowIsTactical(row)));
+
+  if (priority.length >= SELFPLAY_UPLOAD_MAX_ROWS) {
+    const step = Math.ceil(priority.length / SELFPLAY_UPLOAD_MAX_ROWS);
+    return priority.filter((_, i) => i % step === 0).slice(0, SELFPLAY_UPLOAD_MAX_ROWS);
+  }
+
+  const remaining = SELFPLAY_UPLOAD_MAX_ROWS - priority.length;
+  const step = Math.max(1, Math.ceil(regular.length / Math.max(1, remaining)));
+  const sampledRegular = regular.filter((_, i) => i % step === 0).slice(0, remaining);
+
+  return [...priority, ...sampledRegular]
+    .sort((a, b) =>
+      (a.round_index - b.round_index) ||
+      (a.step_index - b.step_index) ||
+      a.side.localeCompare(b.side)
+    )
+    .slice(0, SELFPLAY_UPLOAD_MAX_ROWS);
+}
+
+
 export class SelfplayLogger {
   matchId = uuid();
   anonymousPlayerId = getAnonymousPlayerId();
@@ -239,8 +351,22 @@ export class SelfplayLogger {
   }
 
   toJsonl(includeCurrentRound = false): string {
+    // Upload/export path: apply the same kind of thinning we would otherwise do
+    // during dataset construction. This keeps R2 payloads small and avoids
+    // sending tens of thousands of nearly identical selfplay rows.
+    const rows = includeCurrentRound ? [...this.records, ...this.roundBuffer] : this.records;
+    const thinned = clientThinSelfplayRowsForTrainingUpload(rows);
+    return thinned.map((r) => JSON.stringify(r)).join("\n") + (thinned.length ? "\n" : "");
+  }
+
+  fullJsonl(includeCurrentRound = false): string {
     const rows = includeCurrentRound ? [...this.records, ...this.roundBuffer] : this.records;
     return rows.map((r) => JSON.stringify(r)).join("\n") + (rows.length ? "\n" : "");
+  }
+
+  uploadRowCount(includeCurrentRound = false): number {
+    const rows = includeCurrentRound ? [...this.records, ...this.roundBuffer] : this.records;
+    return clientThinSelfplayRowsForTrainingUpload(rows).length;
   }
 
   download(filename = `tetraflux_selfplay_${this.matchId}.jsonl`): void {
