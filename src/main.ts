@@ -320,6 +320,7 @@ class ZenithTowerSim {
   playerHeightM = 0;
   playerAttackTotal = 0;
   playerAttackRecent = 0;
+  playerCanceledTotal = 0;
   playerReceivedTotal = 0;
   playerIncomingRate = 0;
   playerRank = 1;
@@ -339,6 +340,7 @@ class ZenithTowerSim {
     this.playerHeightM = 0;
     this.playerAttackTotal = 0;
     this.playerAttackRecent = 0;
+    this.playerCanceledTotal = 0;
     this.playerReceivedTotal = 0;
     this.playerIncomingRate = 0;
     this.playerRank = 1;
@@ -533,13 +535,19 @@ class ZenithTowerSim {
     }
   }
 
-  onPlayerLock(result: LockResult, now: number): void {
+  onPlayerLock(result: LockResult, now: number, attackToBots: number, canceled: number): void {
     const lineEnergy = result.linesCleared * 0.38;
     const attackEnergy = result.attackSent * 0.19;
     const survivalEnergy = 0.018;
     const spinEnergy = result.spin !== "none" ? 0.22 : 0;
     this.playerHeightM += lineEnergy + attackEnergy + survivalEnergy + spinEnergy;
-    this.applyPlayerAttack(result.attackSent, now);
+
+    if (canceled > 0) {
+      this.playerCanceledTotal += canceled;
+      this.pushFeed("danger", `you canceled ${Math.floor(canceled)} garbage`, now);
+    }
+
+    this.applyPlayerAttack(attackToBots, now);
   }
 
   playerTopout(now: number): void {
@@ -890,9 +898,34 @@ class Ft5Trainer {
     this.logger.logHumanMove({ roundIndex: this.roundIndex, stepIndex: this.stepIndex, state: stateBefore, aiState: aiStateBefore, action, result });
   }
 
+  private resolveZenithAttackCancel(attackSent: number): { sentToBots: number; canceled: number } {
+    let outgoing = Math.max(0, Math.floor(attackSent));
+    let canceled = 0;
+
+    // Cancel already queued garbage first.
+    const cancelPending = Math.min(this.human.pendingGarbage, outgoing);
+    if (cancelPending > 0) {
+      this.human.pendingGarbage -= cancelPending;
+      outgoing -= cancelPending;
+      canceled += cancelPending;
+    }
+
+    // Then cancel fractional incoming pressure that has not become a full
+    // pending garbage line yet.
+    const cancelCarry = Math.min(this.zenithIncomingCarry, outgoing);
+    if (cancelCarry > 0) {
+      this.zenithIncomingCarry -= cancelCarry;
+      outgoing -= cancelCarry;
+      canceled += cancelCarry;
+    }
+
+    return { sentToBots: outgoing, canceled };
+  }
+
   private handlePlayerLockResult(result: LockResult, now: number): void {
     if (this.mode === "zenith") {
-      this.zenith.onPlayerLock(result, now);
+      const cancel = this.resolveZenithAttackCancel(result.attackSent);
+      this.zenith.onPlayerLock(result, now, cancel.sentToBots, cancel.canceled);
       applyRemainingGarbageAfterCounter(this.human, result);
       if (this.human.dead || result.topout) {
         this.zenith.playerTopout(now);
@@ -1237,7 +1270,8 @@ function drawZenithTower(ctx: CanvasRenderingContext2D, trainer: Ft5Trainer, x: 
     [`rank: #${z.playerRank} / ${z.activeCount()}`, "#34d399"],
     [`nearby: ${z.nearbyCount()}  incoming: ${z.playerIncomingRate.toFixed(2)}/s`, "#94a3b8"],
     [`pressure cap: ${ZENITH_MAX_INCOMING.toFixed(1)}/s max`, "#64748b"],
-    [`sent: ${Math.round(z.playerAttackTotal)}  received: ${Math.round(z.playerReceivedTotal)}`, "#94a3b8"],
+    [`sent: ${Math.round(z.playerAttackTotal)}  cancel: ${Math.round(z.playerCanceledTotal)}`, "#94a3b8"],
+    [`received: ${Math.round(z.playerReceivedTotal)}`, "#94a3b8"],
     [`population: ${z.bots.filter((b) => b.alive).length} bots`, "#94a3b8"],
   ]);
 
@@ -1334,7 +1368,7 @@ function render(): void {
       trainer.mode === "zenith" ? [`alive: ${trainer.zenith.activeCount()}  nearby: ${trainer.zenith.nearbyCount()}`, "#94a3b8"] :
       ["", "#94a3b8"],
     trainer.mode === "ai_vs_ai" ? [`sent: ${trainer.battleAttack.left} - ${trainer.battleAttack.right}`, "#94a3b8"] :
-      trainer.mode === "zenith" ? [`sent: ${Math.round(trainer.zenith.playerAttackTotal)}  incoming: ${trainer.zenith.playerIncomingRate.toFixed(2)}/s`, "#94a3b8"] :
+      trainer.mode === "zenith" ? [`sent: ${Math.round(trainer.zenith.playerAttackTotal)}  cancel: ${Math.round(trainer.zenith.playerCanceledTotal)}  incoming: ${trainer.zenith.playerIncomingRate.toFixed(2)}/s`, "#94a3b8"] :
       ["", "#94a3b8"],
     trainer.mode === "ai_vs_ai" ? [`raw/cancel: ${trainer.battleRawAttack.left}/${trainer.battleCanceled.left} - ${trainer.battleRawAttack.right}/${trainer.battleCanceled.right}`, "#64748b"] :
       trainer.mode === "zenith" ? [`bots join at 0.0m; initial bots are prewarmed from 0.0m`, "#64748b"] :
@@ -1408,6 +1442,7 @@ copyBtn.addEventListener("click", async () => {
       rank: trainer.zenith.playerRank,
       alive: trainer.zenith.activeCount(),
       sent: trainer.zenith.playerAttackTotal,
+      canceled: trainer.zenith.playerCanceledTotal,
       received: trainer.zenith.playerReceivedTotal,
     }, null, 2));
     setStatus("Copied Zenith summary to clipboard.");
