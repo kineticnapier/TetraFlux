@@ -25,6 +25,11 @@
 
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/tetraflux-icon.svg" />
+
+    <!-- Raw-source fallback.
+         Correct Vite deploys use hashed /assets/*.css from dist/index.html.
+         This protects against accidentally serving repository root. -->
+    <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <div id="app">
@@ -46,7 +51,7 @@
 
       <p id="status"></p>
 
-      <div id="settingsModal" class="modal hidden" aria-hidden="true">
+      <div id="settingsModal" class="modal hidden" hidden aria-hidden="true">
         <div class="modal-card">
           <div class="modal-header">
             <h2>Settings</h2>

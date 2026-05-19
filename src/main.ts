@@ -173,8 +173,18 @@ function readSettingsFromDom(): void {
   saveSettingsToStorage();
 }
 
-function openSettings(): void { applySettingsToDom(); settingsModal.classList.remove("hidden"); settingsModal.setAttribute("aria-hidden", "false"); }
-function closeSettings(): void { settingsModal.classList.add("hidden"); settingsModal.setAttribute("aria-hidden", "true"); }
+function openSettings(): void {
+  applySettingsToDom();
+  settingsModal.hidden = false;
+  settingsModal.classList.remove("hidden");
+  settingsModal.setAttribute("aria-hidden", "false");
+}
+
+function closeSettings(): void {
+  settingsModal.hidden = true;
+  settingsModal.classList.add("hidden");
+  settingsModal.setAttribute("aria-hidden", "true");
+}
 
 function bindSettingsUi(): void {
   for (const input of Object.values(keyInputs)) input.addEventListener("keydown", (e) => { e.preventDefault(); input.value = keyLabel(e.key); });
