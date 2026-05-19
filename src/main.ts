@@ -320,6 +320,23 @@ const ZENITH_MAX_INCOMING = 1.35;
 const ZENITH_GARBAGE_BURST_INTERVAL_MS = 3_200;
 const ZENITH_GARBAGE_BURST_MAX_LINES = 6;
 
+// Climb energy tuning.
+// Rough target:
+//   1 attack  -> about 1.2m
+//   big spike -> about 8m
+//   KO        -> about 25m
+//   combo     -> stretches climb further
+const ZENITH_ATTACK_M_PER_LINE = 1.2;
+const ZENITH_BIG_ATTACK_SOFT_CAP_M = 8.0;
+const ZENITH_BIG_ATTACK_EXTRA_M = 0.22;
+const ZENITH_KO_BONUS_M = 25.0;
+const ZENITH_LINE_CLEAR_M = 0.22;
+const ZENITH_SPIN_BONUS_M = 0.45;
+const ZENITH_PIECE_SURVIVAL_M = 0.035;
+const ZENITH_COMBO_M = 0.32;
+const ZENITH_COMBO_QUAD_M = 0.018;
+const ZENITH_COMBO_MAX_M = 5.5;
+
 interface ZenithFloor {
   name: string;
   borderM: number;
@@ -350,6 +367,21 @@ function zenithFloorAt(heightM: number): { index: number; floor: ZenithFloor; ne
     else break;
   }
   return { index, floor: ZENITH_FLOORS[index], next: ZENITH_FLOORS[index + 1] ?? null };
+}
+
+function zenithAttackClimbMeters(attack: number): number {
+  const atk = Math.max(0, attack);
+  const raw = atk * ZENITH_ATTACK_M_PER_LINE;
+
+  if (raw <= ZENITH_BIG_ATTACK_SOFT_CAP_M) return raw;
+
+  // Big attacks should be strong, but not linearly absurd.
+  return ZENITH_BIG_ATTACK_SOFT_CAP_M + (raw - ZENITH_BIG_ATTACK_SOFT_CAP_M) * ZENITH_BIG_ATTACK_EXTRA_M;
+}
+
+function zenithComboClimbMeters(combo: number): number {
+  const c = Math.max(0, combo);
+  return Math.min(ZENITH_COMBO_MAX_M, c * ZENITH_COMBO_M + c * c * ZENITH_COMBO_QUAD_M);
 }
 
 class ZenithTowerSim {
@@ -611,15 +643,19 @@ class ZenithTowerSim {
     return lines;
   }
 
-  applyPlayerAttack(amount: number, now: number): void {
+  applyPlayerAttack(amount: number, now: number): number {
     const attack = Math.max(0, amount);
-    if (attack <= 0) return;
+    if (attack <= 0) return 0;
+
     this.playerAttackTotal += attack;
     this.playerAttackRecent += attack;
+
     const targets = this.bots
       .filter((b) => b.alive)
       .sort((a, b) => Math.abs(a.heightM - this.playerHeightM) - Math.abs(b.heightM - this.playerHeightM))
       .slice(0, 4);
+
+    let kills = 0;
 
     for (let i = 0; i < targets.length; i++) {
       const bot = targets[i];
@@ -628,26 +664,43 @@ class ZenithTowerSim {
       bot.receivedTotal += share;
       bot.boardHeight += share * 0.12;
       bot.holes += share * 0.04;
+
       if (bot.boardHeight + bot.pendingGarbage * 0.18 + bot.holes * 0.12 > 27 + bot.skill * 5) {
         bot.alive = false;
-        this.pushFeed("ko", `you KO'd ${bot.name} at ${bot.heightM.toFixed(1)}m`, now);
+        kills++;
+        this.pushFeed("ko", `you KO'd ${bot.name} at ${bot.heightM.toFixed(1)}m (+${ZENITH_KO_BONUS_M.toFixed(0)}m)`, now);
       }
     }
+
+    return kills;
   }
 
   onPlayerLock(result: LockResult, now: number, attackToBots: number, canceled: number): void {
-    const lineEnergy = result.linesCleared * 0.38;
-    const attackEnergy = result.attackSent * 0.19;
-    const survivalEnergy = 0.018;
-    const spinEnergy = result.spin !== "none" ? 0.22 : 0;
-    this.playerHeightM += lineEnergy + attackEnergy + survivalEnergy + spinEnergy;
+    const combo = Math.max(0, result.combo ?? 0);
+    const attackEnergy = zenithAttackClimbMeters(result.attackSent);
+    const lineEnergy = result.linesCleared * ZENITH_LINE_CLEAR_M;
+    const survivalEnergy = ZENITH_PIECE_SURVIVAL_M;
+    const spinEnergy = result.spin !== "none" ? ZENITH_SPIN_BONUS_M : 0;
+    const comboEnergy = zenithComboClimbMeters(combo);
+
+    const kills = this.applyPlayerAttack(attackToBots, now);
+    const koEnergy = kills * ZENITH_KO_BONUS_M;
+
+    const gained = attackEnergy + lineEnergy + survivalEnergy + spinEnergy + comboEnergy + koEnergy;
+    this.playerHeightM += gained;
 
     if (canceled > 0) {
       this.playerCanceledTotal += canceled;
       this.pushFeed("danger", `you canceled ${Math.floor(canceled)} garbage`, now);
     }
 
-    this.applyPlayerAttack(attackToBots, now);
+    if (gained >= 6 || kills > 0 || combo >= 4) {
+      this.pushFeed(
+        "floor",
+        `+${gained.toFixed(1)}m atk=${result.attackSent} combo=${combo}${kills ? ` KO=${kills}` : ""}`,
+        now
+      );
+    }
   }
 
   playerTopout(now: number): void {
@@ -1372,7 +1425,7 @@ function drawZenithTower(ctx: CanvasRenderingContext2D, trainer: Ft5Trainer, x: 
     [`nearby: ${z.nearbyCount()}  pressure: ${z.playerIncomingRate.toFixed(2)}/s`, "#94a3b8"],
     [`next burst: ${z.incomingBurstCarry.toFixed(1)} / max ${ZENITH_GARBAGE_BURST_MAX_LINES}`, "#64748b"],
     [`sent: ${Math.round(z.playerAttackTotal)}  cancel: ${Math.round(z.playerCanceledTotal)}`, "#94a3b8"],
-    [`received: ${Math.round(z.playerReceivedTotal)}`, "#94a3b8"],
+    [`received: ${Math.round(z.playerReceivedTotal)}  KO +${ZENITH_KO_BONUS_M.toFixed(0)}m`, "#94a3b8"],
     [`population: ${z.bots.filter((b) => b.alive).length} bots`, "#94a3b8"],
   ]);
 
