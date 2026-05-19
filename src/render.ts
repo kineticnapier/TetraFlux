@@ -185,7 +185,15 @@ export function drawBoard(ctx: CanvasRenderingContext2D, engine: TetrisEngine, o
   drawText(ctx, `combo=${engine.combo} b2b=${engine.b2b} holes=${metrics.holes} height=${metrics.maxHeight}`, boardX, infoY + 40, "#94a3b8", "14px Consolas");
   if (engine.lastResult) {
     const r = engine.lastResult;
-    drawText(ctx, `last: ${r.linesCleared}L ${r.spin} atk=${r.attackSent}`, boardX, infoY + 60, "#94a3b8", "14px Consolas");
+    const parts = [
+      `last: ${r.linesCleared}L ${r.spin}`,
+      `atk=${r.attackSent}`,
+      `base=${r.attackBase ?? "?"}`,
+      `b2b=${r.attackB2bBonus ?? 0}`,
+      `cmb=${r.attackComboBonus ?? 0}`,
+      r.attackCapped ? "cap" : ""
+    ].filter(Boolean).join(" ");
+    drawText(ctx, parts, boardX, infoY + 60, r.attackSent >= 8 ? "#fca5a5" : "#94a3b8", "14px Consolas");
   }
 }
 

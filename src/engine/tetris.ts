@@ -34,6 +34,10 @@ export interface LockResult {
   linesCleared: number;
   attackSent: number;
   rawAttack: number;
+  attackBase?: number;
+  attackB2bBonus?: number;
+  attackComboBonus?: number;
+  attackCapped?: boolean;
   combo: number;
   b2b: number;
   spin: SpinType;
@@ -223,53 +227,58 @@ function isDifficultClear(lines: number, spin: SpinType): boolean {
   return lines === 4 || ((spin === "tspin" || spin === "tspin-mini" || spin === "spin") && lines > 0);
 }
 
-export function attackFor(lines: number, spin: SpinType, combo: number, b2bBeforeClear: number): number {
-  if (lines <= 0) return 0;
+function calcAttack(lines: number, spin: SpinType, combo: number, b2bBeforeClear: number): AttackCalc {
+  if (lines <= 0) return { total: 0, base: 0, b2bBonus: 0, comboBonus: 0, capped: false };
 
-  let attack = 0;
+  let base = 0;
   const isSpin = spin === "tspin" || spin === "tspin-mini" || spin === "spin";
   const isQuad = spin === "none" && lines >= 4;
   const difficult = isSpin || isQuad;
 
   if (spin === "tspin") {
-    if (lines === 1) attack = 2;
-    else if (lines === 2) attack = 4;
-    else if (lines === 3) attack = 6;
-    else if (lines >= 4) attack = 8;
+    if (lines === 1) base = 2;
+    else if (lines === 2) base = 4;
+    else if (lines === 3) base = 6;
+    else if (lines >= 4) base = 8;
   } else if (spin === "tspin-mini") {
-    if (lines === 1) attack = 1;
-    else if (lines === 2) attack = 3;
-    else if (lines >= 3) attack = 4;
+    if (lines === 1) base = 1;
+    else if (lines === 2) base = 3;
+    else if (lines >= 3) base = 4;
   } else if (spin === "spin") {
-    // Conservative sandbox all-spin table.
-    if (lines === 1) attack = 1;
-    else if (lines === 2) attack = 2;
-    else if (lines === 3) attack = 4;
-    else if (lines >= 4) attack = 6;
+    if (lines === 1) base = 1;
+    else if (lines === 2) base = 2;
+    else if (lines === 3) base = 4;
+    else if (lines >= 4) base = 6;
   } else {
-    // Ordinary line clears:
-    // Single 0, Double 1, Triple 2, Quad/Tetris 4.
-    // For non-quad ordinary clears, total attack must stay below cleared line count.
-    if (lines === 1) attack = 0;
-    else if (lines === 2) attack = 1;
-    else if (lines === 3) attack = 2;
-    else if (lines >= 4) attack = 4;
+    // Ordinary line clears: Single 0, Double 1, Triple 2, Quad/Tetris 4.
+    if (lines === 1) base = 0;
+    else if (lines === 2) base = 1;
+    else if (lines === 3) base = 2;
+    else if (lines >= 4) base = 4;
   }
 
-  if (attack > 0 && b2bBeforeClear > 0 && difficult) attack += 1;
+  const b2bBonus = base > 0 && b2bBeforeClear > 0 && difficult ? 1 : 0;
+  let comboBonus = combo > 0 ? Math.min(4, Math.floor((combo + 1) / 2)) : 0;
 
-  // Combo exists, but ordinary single/double/triple must not become stronger
-  // than the number of cleared lines. This prevents cases like 3-line clear -> 5 attack.
-  if (combo > 0) {
-    const comboBonus = Math.min(4, Math.floor((combo + 1) / 2));
-    attack += comboBonus;
+  let total = base + b2bBonus + comboBonus;
+  let capped = false;
 
-    if (spin === "none" && lines < 4) {
-      attack = Math.min(attack, Math.max(0, lines - 1));
+  // Ordinary single/double/triple should never become stronger than the
+  // cleared line count. This prevents cases like normal Triple -> 5 attack.
+  if (spin === "none" && lines < 4) {
+    const cap = Math.max(0, lines - 1);
+    if (total > cap) {
+      total = cap;
+      comboBonus = Math.max(0, total - base - b2bBonus);
+      capped = true;
     }
   }
 
-  return attack;
+  return { total, base, b2bBonus, comboBonus, capped };
+}
+
+export function attackFor(lines: number, spin: SpinType, combo: number, b2bBeforeClear: number): number {
+  return calcAttack(lines, spin, combo, b2bBeforeClear).total;
 }
 
 export function boardMetrics(rows: string[]): BoardMetrics {
@@ -339,6 +348,7 @@ export class TetrisEngine {
 
   private lastActionWasRotation = false;
   private lastKickIndex = 0;
+  private placementActionMode = false;
 
   // Garbage holes are intentionally "sticky" so incoming garbage looks closer
   // to TETR.IO-style garbage instead of fully random cheese every line.
@@ -375,6 +385,7 @@ export class TetrisEngine {
     e.lastResult = this.lastResult ? { ...this.lastResult } : null;
     e.lastActionWasRotation = this.lastActionWasRotation;
     e.lastKickIndex = this.lastKickIndex;
+    e.placementActionMode = this.placementActionMode;
     e.garbageHole = this.garbageHole;
     e.garbageHoleRunRemaining = this.garbageHoleRunRemaining;
     return e;
@@ -555,6 +566,13 @@ export class TetrisEngine {
   private detectSpin(linesCleared: number, lockedPiece: PieceState, lockedCells: Set<string>): SpinType {
     if (!this.lastActionWasRotation) return "none";
 
+    // AI/applyAction places a final (x, rot) directly, without a key path.
+    // Awarding spin credit here makes impossible fake spins extremely common,
+    // because many final placements are immobile even though they were not
+    // actually rotated into the slot. Human-controlled rotations still use
+    // normal spin detection.
+    if (this.placementActionMode) return "none";
+
     if (lockedPiece.kind === "T") {
       const cx = lockedPiece.x + 1;
       const cy = lockedPiece.y + 1;
@@ -609,6 +627,7 @@ export class TetrisEngine {
           boardAfter: boardToStrings(this.board, true)
         };
         this.lastResult = result;
+        this.placementActionMode = false;
         return result;
       }
     }
@@ -631,7 +650,8 @@ export class TetrisEngine {
 
     const b2bBefore = this.b2b;
     const difficult = isDifficultClear(lines, spin);
-    const rawAttack = attackFor(lines, spin, this.combo, b2bBefore);
+    const attack = calcAttack(lines, spin, this.combo, b2bBefore);
+    const rawAttack = attack.total;
 
     if (lines > 0) {
       if (difficult) this.b2b += 1;
@@ -664,6 +684,10 @@ export class TetrisEngine {
       linesCleared: lines,
       attackSent: rawAttack,
       rawAttack,
+      attackBase: attack.base,
+      attackB2bBonus: attack.b2bBonus,
+      attackComboBonus: attack.comboBonus,
+      attackCapped: attack.capped,
       combo: comboBefore,
       b2b: b2bBefore,
       spin,
@@ -675,6 +699,7 @@ export class TetrisEngine {
     this.lastResult = result;
     this.lastActionWasRotation = false;
     this.lastKickIndex = 0;
+    this.placementActionMode = false;
     return result;
   }
 
@@ -749,10 +774,11 @@ export class TetrisEngine {
       return this.makeFail("spawn_collision_after_action");
     }
 
-    // Placement-level AI has no key-by-key rotation path. Marking the placement
-    // as rotation-derived lets final spin slots receive spin credit in sandbox
-    // evaluation. This is an approximation, not an input-sequence proof.
-    this.lastActionWasRotation = true;
+    // Placement-level AI has no key-by-key rotation path. Do not award spin
+    // credit to direct placements; otherwise immobile final positions become
+    // impossible fake spins and generate too much attack.
+    this.placementActionMode = true;
+    this.lastActionWasRotation = false;
     this.lastKickIndex = 0;
 
     return this.hardDrop();
