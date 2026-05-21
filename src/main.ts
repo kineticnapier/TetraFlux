@@ -9,7 +9,7 @@ import { PresenceClient } from "./presence";
 import { drawBoard, drawPanel } from "./render";
 
 type Winner = "human" | "ai";
-type GameMode = "human_vs_ai" | "ai_vs_ai" | "zenith";
+type GameMode = "human_vs_ai" | "ai_vs_ai" | "lab" | "zenith";
 type AutoUploadStatus = "idle" | "uploading" | "uploaded" | "failed" | "skipped" | "selfplay" | "disabled";
 
 interface AiLike { choose(engine: TetrisEngine): AiChoice | null; }
@@ -33,7 +33,6 @@ interface PendingAiAction {
 }
 
 type BattleOpponentKind =
-  | "mirror"
   | "heuristic"
   | "aggressive"
   | "defensive"
@@ -100,7 +99,6 @@ class NoisyAi implements AiLike {
 }
 
 const BATTLE_OPPONENTS: BattleOpponentSpec[] = [
-  { kind: "mirror", name: "Mirror Hybrid", make: (base) => base },
   { kind: "heuristic", name: "Heuristic", make: () => new HeuristicAI() },
   { kind: "aggressive", name: "Aggressive", make: () => new WeightedHeuristicAI("Aggressive", { attackBonus: 5.2, lineBonus: 4.8, holeWeight: 6.4, heightWeight: 0.62, bumpWeight: 0.28, wellWeight: 0.08, holdPenalty: 0.02 }) },
   { kind: "defensive", name: "Defensive", make: () => new WeightedHeuristicAI("Defensive", { holeWeight: 13.0, heightWeight: 1.35, bumpWeight: 0.72, wellWeight: 0.28, lineBonus: 2.8, attackBonus: 0.9, holdPenalty: 0.03 }) },
@@ -154,7 +152,7 @@ interface KeyBindings {
 
 interface GameSettings {
   aiOpsPerSecond: number; dasMs: number; arrMs: number; sdfCellsPerSecond: number;
-  gravityCellsPerSecond: number; lockDelayMs: number; keys: KeyBindings;
+  gravityCellsPerSecond: number; lockDelayMs: number; labGarbagePerBag: number; keys: KeyBindings;
 }
 
 type QuickPlayModId =
@@ -286,7 +284,7 @@ function isQuickPlayModActive(): boolean {
 
 const DEFAULT_SETTINGS: GameSettings = {
   aiOpsPerSecond: 10, dasMs: 130, arrMs: 10, sdfCellsPerSecond: 30,
-  gravityCellsPerSecond: 1, lockDelayMs: 500,
+  gravityCellsPerSecond: 1, lockDelayMs: 500, labGarbagePerBag: 4,
   keys: {
     left: ["ArrowLeft"], right: ["ArrowRight"], softDrop: ["ArrowDown"], hardDrop: [" "],
     rotateCcw: ["Control", "z"], rotateCw: ["ArrowUp", "x"], rotate180: ["a"],
@@ -351,8 +349,12 @@ function isAiBattleScreen(mode: GameMode): boolean {
   return mode === "ai_vs_ai";
 }
 
+function usesQuickPlayMod(mode: GameMode): boolean {
+  return mode === "ai_vs_ai" || mode === "lab";
+}
+
 function updateQuickPlayModSelectUi(mode: GameMode): void {
-  const active = mode === "ai_vs_ai";
+  const active = usesQuickPlayMod(mode);
   quickPlayModSelect.hidden = !active;
   quickPlayModSelect.disabled = !active;
   quickPlayModSelect.style.display = active ? "" : "none";
@@ -363,7 +365,7 @@ function updateQuickPlayModSelectUi(mode: GameMode): void {
   const rect = canvas.getBoundingClientRect();
   const selectW = Math.max(178, quickPlayModSelect.offsetWidth || 178);
   quickPlayModSelect.style.left = `${Math.round(rect.left + 482 - selectW / 2)}px`;
-  quickPlayModSelect.style.top = `${Math.round(rect.top + 82)}px`;
+  quickPlayModSelect.style.top = `${Math.round(rect.top + 132)}px`;
 }
 
 const settingsModal = document.querySelector<HTMLDivElement>("#settingsModal")!;
@@ -383,6 +385,19 @@ const aiOpsLabel =
   aiOpsInput.closest("label");
 if (aiOpsLabel) aiOpsLabel.childNodes[0].textContent = "AI ops/s ";
 aiOpsInput.title = "AI操作量/秒。left/right/rotate/hold/harddropを1操作として数えます。";
+
+const labGarbageInput = document.createElement("input");
+labGarbageInput.type = "number";
+labGarbageInput.min = "0";
+labGarbageInput.max = "30";
+labGarbageInput.step = "1";
+labGarbageInput.id = "labGarbagePerBag";
+labGarbageInput.style.width = "70px";
+
+const labGarbageLabel = document.createElement("label");
+labGarbageLabel.textContent = "Lab garbage/bag ";
+labGarbageLabel.appendChild(labGarbageInput);
+lockDelayInput.closest("label")?.after(labGarbageLabel);
 
 const keyInputs = {
   left: document.querySelector<HTMLInputElement>("#keyLeft")!,
@@ -491,6 +506,7 @@ function applySettingsToDom(): void {
   sdfInput.value = String(settings.sdfCellsPerSecond);
   gravityInput.value = String(settings.gravityCellsPerSecond);
   lockDelayInput.value = String(settings.lockDelayMs);
+  labGarbageInput.value = String(settings.labGarbagePerBag);
   for (const [k, input] of Object.entries(keyInputs) as Array<[keyof KeyBindings, HTMLInputElement]>) input.value = keysLabel(settings.keys[k]);
 }
 
@@ -501,6 +517,7 @@ function readSettingsFromDom(): void {
   settings.sdfCellsPerSecond = Math.max(1, Math.min(240, numInput(sdfInput, DEFAULT_SETTINGS.sdfCellsPerSecond)));
   settings.gravityCellsPerSecond = Math.max(0, Math.min(60, numInput(gravityInput, DEFAULT_SETTINGS.gravityCellsPerSecond)));
   settings.lockDelayMs = Math.max(0, Math.min(3000, numInput(lockDelayInput, DEFAULT_SETTINGS.lockDelayMs)));
+  settings.labGarbagePerBag = Math.max(0, Math.min(30, Math.floor(numInput(labGarbageInput, DEFAULT_SETTINGS.labGarbagePerBag))));
   for (const [k, input] of Object.entries(keyInputs) as Array<[keyof KeyBindings, HTMLInputElement]>) settings.keys[k] = parseKeyList(input.value, DEFAULT_SETTINGS.keys[k]);
   saveSettingsToStorage();
 }
@@ -1083,7 +1100,7 @@ class Ft5Trainer {
   battleLeftName = "HybridAI";
   battleRightAi: AiLike = new HeuristicAI();
   battleRightName = "HeuristicAI";
-  battleOpponentKind: BattleOpponentKind = "mirror";
+  battleOpponentKind: BattleOpponentKind = "heuristic";
 
   logger = new MatchLogger();
   selfplayLogger = new SelfplayLogger();
@@ -1102,6 +1119,10 @@ class Ft5Trainer {
   battleCanceled = { left: 0, right: 0 };
   allSpinClearStreak = { player: 0, left: 0, right: 0 };
   allSpinBreakRows = { player: 0, left: 0, right: 0 };
+
+  labBagsInjected = 0;
+  labGarbageInjected = 0;
+  labDeaths = 0;
 
   autoUploadStatus: AutoUploadStatus = "idle";
   autoUploadDetail = "match end upload enabled";
@@ -1129,7 +1150,7 @@ class Ft5Trainer {
     this.battleLeftName = name;
     this.battleRightAi = ai;
     this.battleRightName = name;
-    this.battleOpponentKind = "mirror";
+    this.battleOpponentKind = "heuristic";
 
     setStatus(`AI loaded: ${name}`);
   }
@@ -1148,7 +1169,8 @@ class Ft5Trainer {
   toggleMode(): void {
     const next: GameMode =
       this.mode === "human_vs_ai" ? "ai_vs_ai" :
-      this.mode === "ai_vs_ai" ? "zenith" :
+      this.mode === "ai_vs_ai" ? "lab" :
+      this.mode === "lab" ? "zenith" :
       "human_vs_ai";
     this.setMode(next);
   }
@@ -1156,6 +1178,7 @@ class Ft5Trainer {
   modeLabel(): string {
     if (this.mode === "human_vs_ai") return "Human vs AI";
     if (this.mode === "ai_vs_ai") return "AI Battle";
+    if (this.mode === "lab") return "実験場";
     return "Zenith Tower";
   }
   updateModeButton(): void { toggleModeBtn.textContent = `Mode: ${this.modeLabel()}`; }
@@ -1163,7 +1186,7 @@ class Ft5Trainer {
   inputSettings() { return { dasMs: settings.dasMs, arrMs: settings.arrMs, sdfCellsPerSecond: settings.sdfCellsPerSecond }; }
 
   applyCurrentModToEngines(): void {
-    const options = isAiBattleScreen(this.mode) ? currentGarbageOptions() : {};
+    const options = usesQuickPlayMod(this.mode) ? currentGarbageOptions() : {};
     this.human?.setGarbageOptions?.(options);
     this.aiEngine?.setGarbageOptions?.(options);
     this.zenith?.setMod?.(QUICK_PLAY_MODS[0]);
@@ -1206,6 +1229,7 @@ class Ft5Trainer {
     this.autoUploadDetail =
       this.mode === "human_vs_ai" ? "human logs upload to raw/" :
       isAiBattleScreen(this.mode) ? "selfplay upload to selfplay/" :
+      this.mode === "lab" ? "Lab mode does not upload logs" :
       "Zenith mode does not upload logs";
     this.autoUploadInFlight = false;
     this.autoUploadedMatchId = null;
@@ -1214,12 +1238,13 @@ class Ft5Trainer {
     setStatus(
       this.mode === "human_vs_ai" ? "Press R to start Human vs AI FT15." :
       this.mode === "ai_vs_ai" ? "Press R to start AI Battle." :
+      this.mode === "lab" ? "Press R to start 実験場." :
       "Press R to start Zenith Tower."
     );
   }
 
   startPlayableMatch(): void {
-    if (this.mode !== "human_vs_ai" && this.mode !== "ai_vs_ai" && this.mode !== "zenith") {
+    if (this.mode !== "human_vs_ai" && this.mode !== "ai_vs_ai" && this.mode !== "lab" && this.mode !== "zenith") {
       this.resetMatch();
       return;
     }
@@ -1230,6 +1255,7 @@ class Ft5Trainer {
 
     setStatus(
       this.mode === "zenith" ? "Zenith Tower started." :
+      this.mode === "lab" ? `実験場 started: ${this.aiName} / ${settings.labGarbagePerBag} garbage per bag.` :
       this.mode === "ai_vs_ai" ? `AI Battle started: ${this.battleLeftName} vs ${this.battleRightName}.` :
       "Human vs AI FT15 started."
     );
@@ -1248,6 +1274,10 @@ class Ft5Trainer {
       this.battleRightAi = opponent.ai;
       this.battleRightName = opponent.name;
       this.battleOpponentKind = opponent.kind;
+    } else if (this.mode === "lab") {
+      this.battleLeftAi = this.ai;
+      this.battleLeftName = this.aiName;
+      this.battleRightName = "Garbage Lab";
     }
 
     this.aiAccumulatorMs = 0;
@@ -1269,6 +1299,8 @@ class Ft5Trainer {
     this.battleCanceled = { left: 0, right: 0 };
     this.allSpinClearStreak = { player: 0, left: 0, right: 0 };
     this.allSpinBreakRows = { player: 0, left: 0, right: 0 };
+    this.labBagsInjected = 0;
+    this.labGarbageInjected = 0;
     this.applyCurrentModToEngines();
     this.message =
       this.mode === "human_vs_ai"
@@ -1277,7 +1309,11 @@ class Ft5Trainer {
           ? (this.matchStarted
             ? `Round ${this.roundIndex + 1}: ${this.battleLeftName} vs ${this.battleRightName}. Mod: ${currentQuickPlayMod.name}.`
             : "Press R to start AI Battle.")
-          : (this.matchStarted ? "Climb Zenith Tower. New climbers always start at 0.0m." : "Press R to start Zenith Tower.");
+          : this.mode === "lab"
+            ? (this.matchStarted
+              ? `実験場: ${this.aiName} clears garbage forever. +${settings.labGarbagePerBag} garbage/bag.`
+              : "Press R to start 実験場.")
+            : (this.matchStarted ? "Climb Zenith Tower. New climbers always start at 0.0m." : "Press R to start Zenith Tower.");
   }
 
   finishRound(winner: Winner): void {
@@ -1496,7 +1532,7 @@ class Ft5Trainer {
   }
 
   private applyQuickPlayModToResult(result: LockResult, action?: PlacementAction): LockResult {
-    if (!isAiBattleScreen(this.mode)) return result;
+    if (!usesQuickPlayMod(this.mode)) return result;
 
     let attackSent = result.attackSent;
     let rawAttack = result.rawAttack;
@@ -1521,14 +1557,14 @@ class Ft5Trainer {
   }
 
   private applyQuickPlayModToAction(action: PlacementAction): PlacementAction {
-    if (isAiBattleScreen(this.mode) && currentQuickPlayMod.disableHold && action.hold) {
+    if (usesQuickPlayMod(this.mode) && currentQuickPlayMod.disableHold && action.hold) {
       return { ...action, hold: false, key: action.key.replace(/^H:/, "") };
     }
     return action;
   }
 
   private applyAllSpinBreakGarbage(engine: TetrisEngine, slot: "player" | "left" | "right", result: LockResult): void {
-    if (!isAiBattleScreen(this.mode) || !currentQuickPlayMod.allSpin || result.linesCleared <= 0) return;
+    if (!usesQuickPlayMod(this.mode) || !currentQuickPlayMod.allSpin || result.linesCleared <= 0) return;
 
     this.allSpinClearStreak[slot] += 1;
 
@@ -1822,6 +1858,47 @@ class Ft5Trainer {
     }
   }
 
+  private updateLabAfterLock(): void {
+    const completedBags = Math.floor(this.human.piecesLocked / 7);
+    while (this.labBagsInjected < completedBags) {
+      const base = Math.max(0, Math.floor(settings.labGarbagePerBag));
+      const amount = Math.max(0, Math.floor(base * (currentQuickPlayMod.incomingMultiplier ?? 1)));
+      if (amount > 0) {
+        this.human.queueGarbage(amount);
+        this.labGarbageInjected += amount;
+        if (currentQuickPlayMod.instantEntry) this.human.applyPendingGarbage();
+      }
+      this.labBagsInjected++;
+    }
+  }
+
+  private updateLab(dtMs: number): void {
+    if (this.mode !== "lab" || !this.matchStarted || this.matchOver) return;
+
+    if (this.human.dead) {
+      this.labDeaths++;
+      this.resetRound();
+      this.matchStarted = true;
+      this.message = `実験場 reset after topout. deaths=${this.labDeaths}`;
+      return;
+    }
+
+    const opsPerSecond = Math.max(1, Math.min(MAX_AI_OPS_PER_SECOND, settings.aiOpsPerSecond));
+    const opsThisFrame = (dtMs / 1000) * opsPerSecond;
+    const maxOpsPerFrame = Math.max(8, Math.min(400, Math.ceil(opsPerSecond / 12)));
+
+    this.aiAccumulatorMs += opsThisFrame;
+    let guard = 0;
+    while (this.aiAccumulatorMs >= 1 && guard < maxOpsPerFrame && !this.human.dead) {
+      this.aiAccumulatorMs -= 1;
+      const before = this.human.piecesLocked;
+      const alive = this.aiActionStep(this.human, this.aiEngine, this.ai);
+      if (!alive || this.human.dead) break;
+      if (this.human.piecesLocked !== before) this.updateLabAfterLock();
+      guard++;
+    }
+  }
+
   private updateZenith(dtMs: number, now: number): void {
     if (this.mode !== "zenith" || !this.matchStarted || this.matchOver || this.human.dead) return;
     this.input.update(now);
@@ -1846,6 +1923,10 @@ class Ft5Trainer {
     if (this.roundOver || this.matchOver) return;
     if (this.mode === "zenith") {
       this.updateZenith(dtMs, now);
+      return;
+    }
+    if (this.mode === "lab") {
+      this.updateLab(dtMs);
       return;
     }
     if (this.mode === "human_vs_ai" && !this.matchStarted) return;
@@ -1889,7 +1970,7 @@ class Ft5Trainer {
     if (!settingsModal.classList.contains("hidden")) return;
     if (gameKeys().has(e.key)) e.preventDefault();
     if (isBound(e, settings.keys.reset)) {
-      if (this.mode === "human_vs_ai" || this.mode === "ai_vs_ai" || this.mode === "zenith") this.startPlayableMatch();
+      if (this.mode === "human_vs_ai" || this.mode === "ai_vs_ai" || this.mode === "lab" || this.mode === "zenith") this.startPlayableMatch();
       else this.resetMatch();
       return;
     }
@@ -2074,28 +2155,32 @@ function render(): void {
   ctx.font = "16px Consolas";
   ctx.fillStyle = "#34d399";
   const leftName =
-    (trainer.mode === "ai_vs_ai") ? trainer.battleLeftName :
+    trainer.mode === "ai_vs_ai" ? trainer.battleLeftName :
+    trainer.mode === "lab" ? trainer.aiName :
     trainer.mode === "zenith" ? "You" :
     "Human";
   const rightName =
-    (trainer.mode === "ai_vs_ai") ? trainer.battleRightName :
+    trainer.mode === "ai_vs_ai" ? trainer.battleRightName :
+    trainer.mode === "lab" ? "Garbage Lab" :
     trainer.mode === "zenith" ? "Tower" :
     "AI";
   const startState =
-    (trainer.mode === "human_vs_ai" || trainer.mode === "ai_vs_ai" || trainer.mode === "zenith") && !trainer.matchStarted
+    (trainer.mode === "human_vs_ai" || trainer.mode === "ai_vs_ai" || trainer.mode === "lab" || trainer.mode === "zenith") && !trainer.matchStarted
       ? "WAITING: press R"
       : trainer.modeLabel();
   const scoreText =
     trainer.mode === "zenith"
       ? `${trainer.zenith.playerHeightM.toFixed(1)}m  rank #${trainer.zenith.playerRank}/${trainer.zenith.activeCount()}`
-      : `${leftName} ${trainer.score.human} - ${trainer.score.ai} ${rightName}`;
+      : trainer.mode === "lab"
+        ? `bags ${trainer.labBagsInjected}  garbage ${trainer.labGarbageInjected}  deaths ${trainer.labDeaths}`
+        : `${leftName} ${trainer.score.human} - ${trainer.score.ai} ${rightName}`;
   ctx.fillText(`${trainer.mode === "zenith" ? "Zenith" : `FT${trainer.firstTo}`}   ${scoreText}   |   ${startState}   |   ${playingText}`, 26, 70);
   ctx.fillStyle = trainer.roundOver ? "#fbbf24" : "#94a3b8";
   ctx.fillText(trainer.message, 26, 94);
   const boardY = 180;
   const cell = Math.max(15, Math.min(20, Math.floor((h - boardY - 120) / 20)));
   const invisibleActive =
-    currentQuickPlayMod.invisible && (trainer.mode === "zenith");
+    currentQuickPlayMod.invisible && usesQuickPlayMod(trainer.mode);
   const invisibleReveal = !invisibleActive || (Math.floor(now / 5000) % 2 === 0 && now % 5000 < 750);
 
   drawBoard(ctx, trainer.human, {
@@ -2107,10 +2192,20 @@ function render(): void {
     active: true,
     invisibleLocked: invisibleActive,
     revealInvisible: invisibleReveal,
-    holdDisabled: isAiBattleScreen(trainer.mode) && currentQuickPlayMod.disableHold,
+    holdDisabled: usesQuickPlayMod(trainer.mode) && currentQuickPlayMod.disableHold,
   });
   if (trainer.mode === "zenith") {
     drawZenithTower(ctx, trainer, 540, boardY, 500, Math.max(520, h - boardY - 18));
+  } else if (trainer.mode === "lab") {
+    drawPanel(ctx, 540, boardY, 500, 260, "実験場", [
+      [`AI: ${trainer.aiName}`, "#e5e7eb"],
+      [`garbage/bag: ${settings.labGarbagePerBag}`, "#94a3b8"],
+      [`bags survived: ${trainer.labBagsInjected}`, "#34d399"],
+      [`garbage injected: ${trainer.labGarbageInjected}`, "#94a3b8"],
+      [`pieces: ${trainer.human.piecesLocked}`, "#94a3b8"],
+      [`pending: ${trainer.human.pendingGarbage}`, "#fb7185"],
+      [`mod: ${currentQuickPlayMod.name}`, "#38bdf8"],
+    ]);
   } else {
     drawBoard(ctx, trainer.aiEngine, {
       x: 540,
@@ -2121,7 +2216,7 @@ function render(): void {
       active: true,
       invisibleLocked: invisibleActive,
       revealInvisible: invisibleReveal,
-      holdDisabled: isAiBattleScreen(trainer.mode) && currentQuickPlayMod.disableHold,
+      holdDisabled: usesQuickPlayMod(trainer.mode) && currentQuickPlayMod.disableHold,
     });
   }
   const panelX = 1068;
@@ -2132,6 +2227,7 @@ function render(): void {
     ["Mode", "#38bdf8"],
     [trainer.modeLabel()],
     isAiBattleScreen(trainer.mode) ? [`${trainer.battleLeftName} vs ${trainer.battleRightName}`, "#94a3b8"] :
+      trainer.mode === "lab" ? [`${trainer.aiName} solo garbage lab`, "#94a3b8"] :
       trainer.mode === "zenith" ? [`height ${trainer.zenith.playerHeightM.toFixed(1)}m / ${zenithFloorAt(trainer.zenith.playerHeightM).floor.name}`, "#94a3b8"] :
       [`Human vs ${trainer.aiName}`, "#94a3b8"],
     isAiBattleScreen(trainer.mode) ? [`opponent: ${trainer.battleOpponentKind}`, "#64748b"] : ["", "#64748b"],
@@ -2145,10 +2241,10 @@ function render(): void {
       trainer.mode === "zenith" ? [`bots join at 0.0m; initial bots are prewarmed from 0.0m`, "#64748b"] :
       ["", "#94a3b8"],
     [""],
-    isAiBattleScreen(trainer.mode) ? ["Mod", "#38bdf8"] : ["", "#38bdf8"],
-    isAiBattleScreen(trainer.mode) ? [`${currentQuickPlayMod.name}`, "#94a3b8"] : ["", "#94a3b8"],
-    isAiBattleScreen(trainer.mode) ? [short(currentQuickPlayMod.description, 48), "#64748b"] : ["", "#64748b"],
-    isAiBattleScreen(trainer.mode) && currentQuickPlayMod.allSpin ? [`breaks: L${trainer.allSpinBreakRows.left} R${trainer.allSpinBreakRows.right}  streak ${trainer.allSpinClearStreak.left}/${trainer.allSpinClearStreak.right}`, "#fb7185"] : ["", "#64748b"],
+    usesQuickPlayMod(trainer.mode) ? ["Mod", "#38bdf8"] : ["", "#38bdf8"],
+    usesQuickPlayMod(trainer.mode) ? [`${currentQuickPlayMod.name}`, "#94a3b8"] : ["", "#94a3b8"],
+    usesQuickPlayMod(trainer.mode) ? [short(currentQuickPlayMod.description, 48), "#64748b"] : ["", "#64748b"],
+    usesQuickPlayMod(trainer.mode) && currentQuickPlayMod.allSpin ? [`breaks: L${trainer.allSpinBreakRows.left} R${trainer.allSpinBreakRows.right}  streak ${trainer.allSpinClearStreak.left}/${trainer.allSpinClearStreak.right}`, "#fb7185"] : ["", "#64748b"],
     [""],
     ["AI", "#38bdf8"],
     ...trainer.aiDetails.slice(0, 5).map((line) => [line, "#94a3b8"] as [string, string]),
@@ -2178,7 +2274,9 @@ function render(): void {
       ? "Zenith Tower mock bots all join at 0.0m; initial population is pre-simulated from 0.0m."
       : isAiBattleScreen(trainer.mode)
         ? `AI Battle self-training auto-loops and uploads selfplay logs. Opponent: ${trainer.battleRightName}. Mod: ${currentQuickPlayMod.name}.`
-        : "AI Battle uploads to selfplay/ and is never mixed into human raw/ logs.",
+        : trainer.mode === "lab"
+          ? `実験場: every bag queues ${settings.labGarbagePerBag} modded garbage.`
+          : "AI Battle uploads to selfplay/ and is never mixed into human raw/ logs.",
     26,
     h - 18
   );
