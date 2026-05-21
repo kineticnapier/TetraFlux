@@ -14,7 +14,7 @@ type AutoUploadStatus = "idle" | "uploading" | "uploaded" | "failed" | "skipped"
 
 interface AiLike { choose(engine: TetrisEngine): AiChoice | null; }
 
-type AiMoveOp = "hold" | "left" | "right" | "cw" | "ccw" | "180";
+type AiMoveOp = "hold" | "left" | "right" | "cw" | "ccw" | "180" | "soft";
 
 interface AiMoveExecution {
   result: LockResult;
@@ -1629,6 +1629,7 @@ class Ft5Trainer {
     if (op === "cw") return engine.rotateCw();
     if (op === "ccw") return engine.rotateCcw();
     if (op === "180") return engine.rotate180();
+    if (op === "soft") return engine.move(0, 1);
     return false;
   }
 
@@ -1645,17 +1646,25 @@ class Ft5Trainer {
 
     if (start.active.kind !== action.piece) return null;
 
+    const targetProbe = start.clone();
+    targetProbe.active = { kind: action.piece, x: targetX, y: 0, rot: targetRot };
+    if (targetProbe.collides(targetProbe.active)) return null;
+    const targetY = targetProbe.hardDropDistance(targetProbe.active);
+
     const isTarget = (e: TetrisEngine) =>
       e.active.kind === action.piece &&
       e.active.x === targetX &&
+      e.active.y === targetY &&
       this.normalizeRot(e.active.rot) === targetRot;
 
     if (isTarget(start)) return prefix;
 
-    const ops: AiMoveOp[] = ["cw", "ccw", "180", "left", "right"];
+    const isRotationOp = (op: AiMoveOp | undefined) => op === "cw" || op === "ccw" || op === "180";
+    const ops: AiMoveOp[] = ["cw", "ccw", "180", "left", "right", "soft"];
     const seen = new Set<string>([this.activeKey(start)]);
     const queue: Array<{ engine: TetrisEngine; path: AiMoveOp[] }> = [{ engine: start, path: [] }];
-    const maxPath = 28;
+    const maxPath = 54;
+    let fallbackTargetPath: AiMoveOp[] | null = null;
 
     for (let head = 0; head < queue.length; head++) {
       const item = queue[head];
@@ -1670,13 +1679,22 @@ class Ft5Trainer {
         seen.add(key);
 
         const path = [...item.path, op];
-        if (isTarget(next)) return [...prefix, ...path];
+        if (isTarget(next)) {
+          const fullPath = [...prefix, ...path];
+
+          // Prefer a path whose final visible operation is rotation. This makes
+          // T-spin / all-spin routes possible instead of always reaching the
+          // same final cell by horizontal movement + soft drop.
+          if (isRotationOp(fullPath[fullPath.length - 1])) return fullPath;
+          if (!fallbackTargetPath) fallbackTargetPath = fullPath;
+          continue;
+        }
 
         queue.push({ engine: next, path });
       }
     }
 
-    return null;
+    return fallbackTargetPath;
   }
 
   private executeAiPlacementByMoves(engine: TetrisEngine, action: PlacementAction): AiMoveExecution {
@@ -1728,13 +1746,41 @@ class Ft5Trainer {
     this[this.pendingActionRef(side)] = value;
   }
 
+  private adjustedAiCandidateScore(engine: TetrisEngine, action: PlacementAction, baseScore: number): { score: number; info: Record<string, unknown> } {
+    const execution = this.executeAiPlacementByMoves(engine, action);
+    const result = execution.result;
+    let score = baseScore;
+    const info: Record<string, unknown> = {
+      reachedTarget: execution.reachedTarget,
+      routeOps: execution.ops.length + 1,
+    };
+
+    if (!execution.reachedTarget) {
+      score += 8;
+      info.routeFailed = true;
+    }
+
+    if (result.spin !== "none") {
+      const attackBonus = Math.max(0, result.attackSent) * 2.0;
+      const lineBonus = result.linesCleared > 0 ? 4 + result.linesCleared * 2 : 1.5;
+      const tBonus = result.piece === "T" ? 4 : (currentQuickPlayMod.allSpin ? 3 : 1.25);
+
+      score -= 9 + attackBonus + lineBonus + tBonus;
+      info.spinBonus = true;
+      info.spinType = result.spin;
+      info.spinLines = result.linesCleared;
+      info.spinAttack = result.attackSent;
+    }
+
+    return { score, info };
+  }
+
   private chooseAiAction(engine: TetrisEngine, ai: AiLike): AiChoice | null {
     const normal = ai.choose(engine);
     if (!normal) return null;
 
     const metrics = boardMetrics(engine.stateDict().board);
     const danger = metrics.maxHeight >= 14 || engine.pendingGarbage >= 6;
-    if (danger || Math.random() >= 0.10) return normal;
 
     const scorer = (ai as unknown as { scoreAfter?: (e: TetrisEngine, a: PlacementAction) => { score: number; info: Record<string, unknown> } }).scoreAfter;
     const fallback = (ai as unknown as { fallback?: { scoreAfter?: (e: TetrisEngine, a: PlacementAction) => { score: number; info: Record<string, unknown> } } }).fallback;
@@ -1747,21 +1793,53 @@ class Ft5Trainer {
     const legal = engine.legalPlacements(true);
     if (legal.length < 2) return normal;
 
-    const ranked = legal
+    const baseRanked = legal
       .map((action) => ({ action, ...scoreAfter(engine, action) }))
       .filter((x) => Number.isFinite(x.score))
       .sort((a, b) => a.score - b.score);
 
-    if (ranked.length < 2) return normal;
+    if (baseRanked.length === 0) return normal;
 
-    const maxAltIndex = Math.min(2, ranked.length - 1);
-    const altIndex = maxAltIndex >= 2 && Math.random() < 0.20 ? 2 : 1;
-    const alt = ranked[altIndex];
+    const candidates = baseRanked.slice(0, Math.min(56, baseRanked.length))
+      .map((candidate) => {
+        const adjusted = this.adjustedAiCandidateScore(engine, candidate.action, candidate.score);
+        return {
+          ...candidate,
+          score: adjusted.score,
+          info: { ...candidate.info, ...adjusted.info },
+        };
+      })
+      .sort((a, b) => a.score - b.score);
+
+    let chosen = candidates[0];
+    if (!chosen) return normal;
+
+    // Small human-like imperfection: about 10% choose the next-best candidate.
+    // Disable it when the board is high or incoming garbage is scary.
+    if (!danger && Math.random() < 0.10 && candidates.length >= 2) {
+      const maxAltIndex = Math.min(2, candidates.length - 1);
+      const altIndex = maxAltIndex >= 2 && Math.random() < 0.20 ? 2 : 1;
+      chosen = candidates[altIndex];
+      return {
+        ...chosen.action,
+        aiScore: chosen.score,
+        aiInfo: {
+          ...chosen.info,
+          randomVariant: true,
+          randomVariantRank: altIndex + 1,
+          normalScore: normal.aiScore,
+        },
+      };
+    }
 
     return {
-      ...alt.action,
-      aiScore: alt.score,
-      aiInfo: { ...alt.info, randomVariant: true, randomVariantRank: altIndex + 1, normalScore: normal.aiScore },
+      ...chosen.action,
+      aiScore: chosen.score,
+      aiInfo: {
+        ...chosen.info,
+        spinAwareRerank: true,
+        normalScore: normal.aiScore,
+      },
     };
   }
 
