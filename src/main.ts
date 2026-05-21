@@ -32,6 +32,11 @@ interface PendingAiAction {
   side?: BattleSide;
 }
 
+interface LabIncomingGarbage {
+  amount: number;
+  readyAtMs: number;
+}
+
 type BattleOpponentKind =
   | "heuristic"
   | "aggressive"
@@ -303,6 +308,7 @@ const AI_BATTLE_MAX_TURNS_PER_ROUND = 1200;
 // One operation is left/right/rotate/hold/harddrop. Placements with longer
 // movement paths consume more operations and therefore take longer.
 const MAX_AI_OPS_PER_SECOND = 3000;
+const LAB_GARBAGE_DELAY_MS = 2500;
 
 const canvas = document.querySelector<HTMLCanvasElement>("#game")!;
 const ctx = canvas.getContext("2d")!;
@@ -1122,6 +1128,8 @@ class Ft5Trainer {
 
   labBagsInjected = 0;
   labGarbageInjected = 0;
+  labGarbageMaterialized = 0;
+  labIncomingGarbage: LabIncomingGarbage[] = [];
   labDeaths = 0;
 
   autoUploadStatus: AutoUploadStatus = "idle";
@@ -1178,7 +1186,7 @@ class Ft5Trainer {
   modeLabel(): string {
     if (this.mode === "human_vs_ai") return "Human vs AI";
     if (this.mode === "ai_vs_ai") return "AI Battle";
-    if (this.mode === "lab") return "実験場";
+    if (this.mode === "lab") return "Garbage Lab";
     return "Zenith Tower";
   }
   updateModeButton(): void { toggleModeBtn.textContent = `Mode: ${this.modeLabel()}`; }
@@ -1238,7 +1246,7 @@ class Ft5Trainer {
     setStatus(
       this.mode === "human_vs_ai" ? "Press R to start Human vs AI FT15." :
       this.mode === "ai_vs_ai" ? "Press R to start AI Battle." :
-      this.mode === "lab" ? "Press R to start 実験場." :
+      this.mode === "lab" ? "Press R to start Garbage Lab." :
       "Press R to start Zenith Tower."
     );
   }
@@ -1255,7 +1263,7 @@ class Ft5Trainer {
 
     setStatus(
       this.mode === "zenith" ? "Zenith Tower started." :
-      this.mode === "lab" ? `実験場 started: ${this.aiName} / ${settings.labGarbagePerBag} garbage per bag.` :
+      this.mode === "lab" ? `Garbage Lab started: ${this.aiName} / ${settings.labGarbagePerBag} garbage per bag.` :
       this.mode === "ai_vs_ai" ? `AI Battle started: ${this.battleLeftName} vs ${this.battleRightName}.` :
       "Human vs AI FT15 started."
     );
@@ -1301,6 +1309,8 @@ class Ft5Trainer {
     this.allSpinBreakRows = { player: 0, left: 0, right: 0 };
     this.labBagsInjected = 0;
     this.labGarbageInjected = 0;
+    this.labGarbageMaterialized = 0;
+    this.labIncomingGarbage = [];
     this.applyCurrentModToEngines();
     this.message =
       this.mode === "human_vs_ai"
@@ -1311,8 +1321,8 @@ class Ft5Trainer {
             : "Press R to start AI Battle.")
           : this.mode === "lab"
             ? (this.matchStarted
-              ? `実験場: ${this.aiName} clears garbage forever. +${settings.labGarbagePerBag} garbage/bag.`
-              : "Press R to start 実験場.")
+              ? `Garbage Lab: ${this.aiName} clears garbage forever. +${settings.labGarbagePerBag} garbage/bag.`
+              : "Press R to start Garbage Lab.")
             : (this.matchStarted ? "Climb Zenith Tower. New climbers always start at 0.0m." : "Press R to start Zenith Tower.");
   }
 
@@ -1858,18 +1868,54 @@ class Ft5Trainer {
     }
   }
 
-  private updateLabAfterLock(): void {
+  private scheduleLabGarbageAfterLock(now: number): void {
     const completedBags = Math.floor(this.human.piecesLocked / 7);
     while (this.labBagsInjected < completedBags) {
       const base = Math.max(0, Math.floor(settings.labGarbagePerBag));
       const amount = Math.max(0, Math.floor(base * (currentQuickPlayMod.incomingMultiplier ?? 1)));
       if (amount > 0) {
-        this.human.queueGarbage(amount);
+        this.labIncomingGarbage.push({ amount, readyAtMs: now + LAB_GARBAGE_DELAY_MS });
         this.labGarbageInjected += amount;
-        if (currentQuickPlayMod.instantEntry) this.human.applyPendingGarbage();
       }
       this.labBagsInjected++;
     }
+  }
+
+  private labQueuedGarbage(): number {
+    return this.labIncomingGarbage.reduce((sum, item) => sum + item.amount, 0);
+  }
+
+  private labReadyGarbage(now: number): number {
+    return this.labIncomingGarbage
+      .filter((item) => item.readyAtMs <= now)
+      .reduce((sum, item) => sum + item.amount, 0);
+  }
+
+  private nextLabGarbageSeconds(now: number): string {
+    if (this.labIncomingGarbage.length === 0) return "-";
+    const nextReady = Math.min(...this.labIncomingGarbage.map((item) => item.readyAtMs));
+    return (Math.max(0, nextReady - now) / 1000).toFixed(1);
+  }
+
+  private materializeReadyLabGarbageAfterLock(now: number): void {
+    const ready = this.labIncomingGarbage.filter((item) => item.readyAtMs <= now);
+    if (ready.length === 0) return;
+
+    const amount = ready.reduce((sum, item) => sum + item.amount, 0);
+    this.labIncomingGarbage = this.labIncomingGarbage.filter((item) => item.readyAtMs > now);
+
+    if (amount <= 0) return;
+
+    // The garbage only enters the board after it has become ready and the AI
+    // places a mino. At this point it is no longer just a warning queue.
+    this.human.queueGarbage(amount);
+    this.human.applyPendingGarbage();
+    this.labGarbageMaterialized += amount;
+  }
+
+  private updateLabAfterLock(now: number): void {
+    this.scheduleLabGarbageAfterLock(now);
+    this.materializeReadyLabGarbageAfterLock(now);
   }
 
   private updateLab(dtMs: number): void {
@@ -1879,7 +1925,7 @@ class Ft5Trainer {
       this.labDeaths++;
       this.resetRound();
       this.matchStarted = true;
-      this.message = `実験場 reset after topout. deaths=${this.labDeaths}`;
+      this.message = `Garbage Lab reset after topout. deaths=${this.labDeaths}`;
       return;
     }
 
@@ -1894,7 +1940,7 @@ class Ft5Trainer {
       const before = this.human.piecesLocked;
       const alive = this.aiActionStep(this.human, this.aiEngine, this.ai);
       if (!alive || this.human.dead) break;
-      if (this.human.piecesLocked !== before) this.updateLabAfterLock();
+      if (this.human.piecesLocked !== before) this.updateLabAfterLock(performance.now());
       guard++;
     }
   }
@@ -2172,7 +2218,7 @@ function render(): void {
     trainer.mode === "zenith"
       ? `${trainer.zenith.playerHeightM.toFixed(1)}m  rank #${trainer.zenith.playerRank}/${trainer.zenith.activeCount()}`
       : trainer.mode === "lab"
-        ? `bags ${trainer.labBagsInjected}  garbage ${trainer.labGarbageInjected}  deaths ${trainer.labDeaths}`
+        ? `bags ${trainer.labBagsInjected}  queued ${trainer.labQueuedGarbage()}  ready ${trainer.labReadyGarbage(now)}  entered ${trainer.labGarbageMaterialized}`
         : `${leftName} ${trainer.score.human} - ${trainer.score.ai} ${rightName}`;
   ctx.fillText(`${trainer.mode === "zenith" ? "Zenith" : `FT${trainer.firstTo}`}   ${scoreText}   |   ${startState}   |   ${playingText}`, 26, 70);
   ctx.fillStyle = trainer.roundOver ? "#fbbf24" : "#94a3b8";
@@ -2197,13 +2243,17 @@ function render(): void {
   if (trainer.mode === "zenith") {
     drawZenithTower(ctx, trainer, 540, boardY, 500, Math.max(520, h - boardY - 18));
   } else if (trainer.mode === "lab") {
-    drawPanel(ctx, 540, boardY, 500, 260, "実験場", [
+    drawPanel(ctx, 540, boardY, 500, 300, "Garbage Lab", [
       [`AI: ${trainer.aiName}`, "#e5e7eb"],
       [`garbage/bag: ${settings.labGarbagePerBag}`, "#94a3b8"],
+      [`delay: ${(LAB_GARBAGE_DELAY_MS / 1000).toFixed(1)}s`, "#94a3b8"],
       [`bags survived: ${trainer.labBagsInjected}`, "#34d399"],
-      [`garbage injected: ${trainer.labGarbageInjected}`, "#94a3b8"],
+      [`scheduled: ${trainer.labGarbageInjected}`, "#94a3b8"],
+      [`queued warning: ${trainer.labQueuedGarbage()}`, "#fbbf24"],
+      [`ready: ${trainer.labReadyGarbage(now)}`, "#fb7185"],
+      [`next ready: ${trainer.nextLabGarbageSeconds(now)}s`, "#94a3b8"],
+      [`entered board: ${trainer.labGarbageMaterialized}`, "#94a3b8"],
       [`pieces: ${trainer.human.piecesLocked}`, "#94a3b8"],
-      [`pending: ${trainer.human.pendingGarbage}`, "#fb7185"],
       [`mod: ${currentQuickPlayMod.name}`, "#38bdf8"],
     ]);
   } else {
@@ -2275,7 +2325,7 @@ function render(): void {
       : isAiBattleScreen(trainer.mode)
         ? `AI Battle self-training auto-loops and uploads selfplay logs. Opponent: ${trainer.battleRightName}. Mod: ${currentQuickPlayMod.name}.`
         : trainer.mode === "lab"
-          ? `実験場: every bag queues ${settings.labGarbagePerBag} modded garbage.`
+          ? `Garbage Lab: every bag schedules ${settings.labGarbagePerBag} modded garbage; it enters after ${LAB_GARBAGE_DELAY_MS / 1000}s and the next lock.`
           : "AI Battle uploads to selfplay/ and is never mixed into human raw/ logs.",
     26,
     h - 18
