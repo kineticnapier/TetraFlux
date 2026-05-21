@@ -20,6 +20,7 @@ interface AiMoveExecution {
   result: LockResult;
   ops: AiMoveOp[];
   reachedTarget: boolean;
+  engineAfter: TetrisEngine;
 }
 
 interface PendingAiAction {
@@ -1701,12 +1702,16 @@ class Ft5Trainer {
     const ops = this.findAiMovePath(engine, action);
 
     if (!ops) {
+      const fallback = engine.clone();
+      const result = fallback.hardDrop();
+
       // Do not teleport to the requested placement. If the target cannot be
       // reached through normal movement, lock the current reachable position.
       return {
-        result: engine.clone().hardDrop(),
+        result,
         ops: [],
         reachedTarget: false,
+        engineAfter: fallback,
       };
     }
 
@@ -1725,10 +1730,13 @@ class Ft5Trainer {
       preview.active.x === action.x &&
       this.normalizeRot(preview.active.rot) === this.normalizeRot(action.rot);
 
+    const result = preview.hardDrop();
+
     return {
-      result: preview.hardDrop(),
+      result,
       ops,
       reachedTarget: targetReached,
+      engineAfter: preview,
     };
   }
 
@@ -1746,7 +1754,67 @@ class Ft5Trainer {
     this[this.pendingActionRef(side)] = value;
   }
 
-  private adjustedAiCandidateScore(engine: TetrisEngine, action: PlacementAction, baseScore: number): { score: number; info: Record<string, unknown> } {
+  private spinResultBonus(result: LockResult): number {
+    if (result.spin === "none") return 0;
+
+    const attackBonus = Math.max(0, result.attackSent) * 2.0;
+    const lineBonus = result.linesCleared > 0 ? 4 + result.linesCleared * 2 : 1.5;
+    const tBonus = result.piece === "T" ? 4 : (currentQuickPlayMod.allSpin ? 3 : 1.25);
+
+    return 9 + attackBonus + lineBonus + tBonus;
+  }
+
+  private estimateNextSpinOpportunity(
+    engineAfter: TetrisEngine,
+    scoreAfter: ((e: TetrisEngine, a: PlacementAction) => { score: number; info: Record<string, unknown> }) | null,
+  ): { bonus: number; actionKey?: string; spinType?: string; attack?: number; lines?: number } {
+    if (engineAfter.dead) return { bonus: 0 };
+
+    const legal = engineAfter.legalPlacements(true);
+    if (legal.length === 0) return { bonus: 0 };
+
+    const ranked = legal
+      .map((action) => {
+        const base = scoreAfter ? scoreAfter(engineAfter, action).score : 0;
+        return { action, base };
+      })
+      .filter((x) => Number.isFinite(x.base))
+      .sort((a, b) => a.base - b.base)
+      .slice(0, Math.min(14, legal.length));
+
+    let best: { bonus: number; actionKey?: string; spinType?: string; attack?: number; lines?: number } = { bonus: 0 };
+
+    for (const candidate of ranked) {
+      const execution = this.executeAiPlacementByMoves(engineAfter, candidate.action);
+      if (!execution.reachedTarget) continue;
+
+      const result = execution.result;
+      const spinBonus = this.spinResultBonus(result);
+      if (spinBonus <= 0) continue;
+
+      // Future spin is useful, but less certain than an immediate spin.
+      const setupBonus = spinBonus * 0.55;
+      if (setupBonus > best.bonus) {
+        best = {
+          bonus: setupBonus,
+          actionKey: candidate.action.key,
+          spinType: result.spin,
+          attack: result.attackSent,
+          lines: result.linesCleared,
+        };
+      }
+    }
+
+    return best;
+  }
+
+  private adjustedAiCandidateScore(
+    engine: TetrisEngine,
+    action: PlacementAction,
+    baseScore: number,
+    scoreAfter: ((e: TetrisEngine, a: PlacementAction) => { score: number; info: Record<string, unknown> }) | null,
+    danger: boolean,
+  ): { score: number; info: Record<string, unknown> } {
     const execution = this.executeAiPlacementByMoves(engine, action);
     const result = execution.result;
     let score = baseScore;
@@ -1760,16 +1828,28 @@ class Ft5Trainer {
       info.routeFailed = true;
     }
 
-    if (result.spin !== "none") {
-      const attackBonus = Math.max(0, result.attackSent) * 2.0;
-      const lineBonus = result.linesCleared > 0 ? 4 + result.linesCleared * 2 : 1.5;
-      const tBonus = result.piece === "T" ? 4 : (currentQuickPlayMod.allSpin ? 3 : 1.25);
-
-      score -= 9 + attackBonus + lineBonus + tBonus;
+    const immediateSpinBonus = this.spinResultBonus(result);
+    if (immediateSpinBonus > 0) {
+      score -= immediateSpinBonus;
       info.spinBonus = true;
       info.spinType = result.spin;
       info.spinLines = result.linesCleared;
       info.spinAttack = result.attackSent;
+    }
+
+    // If the current move creates a next-piece spin, reward the setup.
+    // Disable setup greed when the board is dangerous.
+    if (!danger && execution.reachedTarget && !execution.engineAfter.dead) {
+      const nextSpin = this.estimateNextSpinOpportunity(execution.engineAfter, scoreAfter);
+      if (nextSpin.bonus > 0) {
+        score -= nextSpin.bonus;
+        info.nextSpinSetup = true;
+        info.nextSpinBonus = nextSpin.bonus;
+        info.nextSpinAction = nextSpin.actionKey;
+        info.nextSpinType = nextSpin.spinType;
+        info.nextSpinAttack = nextSpin.attack;
+        info.nextSpinLines = nextSpin.lines;
+      }
     }
 
     return { score, info };
@@ -1800,9 +1880,9 @@ class Ft5Trainer {
 
     if (baseRanked.length === 0) return normal;
 
-    const candidates = baseRanked.slice(0, Math.min(56, baseRanked.length))
+    const candidates = baseRanked.slice(0, Math.min(32, baseRanked.length))
       .map((candidate) => {
-        const adjusted = this.adjustedAiCandidateScore(engine, candidate.action, candidate.score);
+        const adjusted = this.adjustedAiCandidateScore(engine, candidate.action, candidate.score, scoreAfter, danger);
         return {
           ...candidate,
           score: adjusted.score,
