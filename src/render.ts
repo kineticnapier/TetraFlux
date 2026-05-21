@@ -9,7 +9,8 @@ const COLORS: Record<string, string> = {
   S: "#4ade80",
   T: "#c084fc",
   Z: "#f87171",
-  G: "#787887"
+  G: "#787887",
+  B: "#a1a1aa"
 };
 
 function drawText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, color = "#e5e7eb", font = "16px Consolas"): void {
@@ -153,7 +154,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, engine: TetrisEngine, o
       const px = boardX + col * cell;
       const py = boardY + row * cell;
       const c = visible[row][col];
-      const hideLocked = opts.invisibleLocked && !opts.revealInvisible && c !== null && c !== "G";
+      const hideLocked = opts.invisibleLocked && !opts.revealInvisible && c !== null && c !== "G" && c !== "B";
       ctx.fillStyle = hideLocked ? cellColor(null) : cellColor(c);
       ctx.fillRect(px, py, cell, cell);
       ctx.strokeStyle = "#2b2f3a";

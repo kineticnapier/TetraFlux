@@ -5,7 +5,7 @@ export const HEIGHT = VISIBLE_HEIGHT + HIDDEN_ROWS;
 export const PIECES = ["I", "J", "L", "O", "S", "T", "Z"] as const;
 
 export type PieceKind = typeof PIECES[number];
-export type Cell = PieceKind | "G" | null;
+export type Cell = PieceKind | "G" | "B" | null;
 export type SpinType = "none" | "tspin" | "tspin-mini" | "spin";
 
 export interface PieceState {
@@ -656,6 +656,7 @@ export class TetrisEngine {
     const lines = this.countFullLines();
     const spin = this.detectSpin(lines, p, lockedCells);
     this.clearLines();
+    if (lines > 0) this.convertBrokenGarbageToNormal();
     this.lines += lines;
     this.piecesLocked++;
 
@@ -778,6 +779,27 @@ export class TetrisEngine {
     }
 
     return [...holes];
+  }
+
+  private convertBrokenGarbageToNormal(): void {
+    for (const row of this.board) {
+      for (let x = 0; x < WIDTH; x++) {
+        if (row[x] === "B") row[x] = "G";
+      }
+    }
+  }
+
+  addBrokenGarbageRows(n = 1): void {
+    const rows = Math.max(0, Math.floor(n));
+    for (let i = 0; i < rows; i++) {
+      const holes = new Set<number>([this.nextGarbageHole()]);
+      const row: Cell[] = Array.from({ length: WIDTH }, (_, x) => holes.has(x) ? null : "B");
+      this.board.shift();
+      this.board.push(row);
+    }
+
+    const hiddenOccupied = this.board.slice(0, HIDDEN_ROWS).some((row) => row.some((c) => c !== null));
+    if (hiddenOccupied) this.dead = true;
   }
 
   applyPendingGarbage(): void {
