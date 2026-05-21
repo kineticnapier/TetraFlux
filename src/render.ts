@@ -76,33 +76,73 @@ export function drawNextQueue(ctx: CanvasRenderingContext2D, queue: PieceKind[],
   }
 }
 
-export function drawGarbageMeter(ctx: CanvasRenderingContext2D, amount: number, x: number, y: number, h: number): void {
-  const w = 14;
-  const clamped = Math.max(0, Math.min(20, amount));
+export interface GarbageMeterSegment {
+  label: string;
+  amount: number;
+  color: string;
+}
 
-  drawText(ctx, "G", x - 1, y - 10, amount > 0 ? "#fb7185" : "#64748b", "bold 13px Consolas");
+export function drawGarbageMeter(ctx: CanvasRenderingContext2D, amount: number, x: number, y: number, h: number, segments?: GarbageMeterSegment[]): void {
+  const w = 14;
+  const cleanSegments = (segments ?? [])
+    .map((s) => ({ ...s, amount: Math.max(0, Math.floor(s.amount)) }))
+    .filter((s) => s.amount > 0);
+  const total = cleanSegments.length > 0
+    ? cleanSegments.reduce((sum, s) => sum + s.amount, 0)
+    : Math.max(0, Math.floor(amount));
+  const clamped = Math.max(0, Math.min(20, total));
+
+  drawText(ctx, "G", x - 1, y - 10, total > 0 ? "#fb7185" : "#64748b", "bold 13px Consolas");
 
   ctx.fillStyle = "#111827";
   ctx.fillRect(x, y, w, h);
-  ctx.strokeStyle = amount > 0 ? "#fb7185" : "#334155";
+  ctx.strokeStyle = total > 0 ? "#fb7185" : "#334155";
   ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
 
-  for (let i = 0; i < clamped; i++) {
-    const rowH = Math.max(2, Math.floor(h / 20));
-    const yy = y + h - (i + 1) * rowH;
-    ctx.fillStyle = i < 8 ? "#f97316" : i < 14 ? "#ef4444" : "#be123c";
-    ctx.fillRect(x + 2, yy + 1, w - 4, Math.max(1, rowH - 2));
+  const rowH = Math.max(2, Math.floor(h / 20));
+  let drawn = 0;
+
+  if (cleanSegments.length > 0) {
+    for (const segment of cleanSegments) {
+      const rows = Math.min(20 - drawn, segment.amount);
+      for (let i = 0; i < rows; i++) {
+        const yy = y + h - (drawn + 1) * rowH;
+        ctx.fillStyle = segment.color;
+        ctx.fillRect(x + 2, yy + 1, w - 4, Math.max(1, rowH - 2));
+        drawn++;
+      }
+      if (drawn >= clamped) break;
+    }
+  } else {
+    for (let i = 0; i < clamped; i++) {
+      const yy = y + h - (i + 1) * rowH;
+      ctx.fillStyle = i < 8 ? "#f97316" : i < 14 ? "#ef4444" : "#be123c";
+      ctx.fillRect(x + 2, yy + 1, w - 4, Math.max(1, rowH - 2));
+    }
   }
 
-  if (amount > 20) {
+  if (total > 20) {
     ctx.fillStyle = "#e5e7eb";
     ctx.font = "10px Consolas";
-    ctx.fillText(`+${amount - 20}`, x - 1, y + 10);
+    ctx.fillText(`+${total - 20}`, x - 1, y + 10);
   }
 
-  ctx.fillStyle = amount > 0 ? "#fecaca" : "#64748b";
+  ctx.fillStyle = total > 0 ? "#fecaca" : "#64748b";
   ctx.font = "12px Consolas";
-  ctx.fillText(String(amount), x - 2, y + h + 14);
+  ctx.fillText(String(total), x - 2, y + h + 14);
+
+  if (cleanSegments.length > 0) {
+    let yy = y + h + 30;
+    ctx.font = "10px Consolas";
+    ctx.fillStyle = "#fbbf24";
+    ctx.fillText(`queued:${total}`, x - 38, yy);
+    yy += 12;
+    for (const segment of cleanSegments.slice(0, 4)) {
+      ctx.fillStyle = segment.color;
+      ctx.fillText(`${segment.label}:${segment.amount}`, x - 38, yy);
+      yy += 12;
+    }
+  }
 }
 
 export interface DrawBoardOptions {
@@ -115,6 +155,7 @@ export interface DrawBoardOptions {
   invisibleLocked?: boolean;
   revealInvisible?: boolean;
   holdDisabled?: boolean;
+  garbageSegments?: GarbageMeterSegment[];
 }
 
 /**
@@ -153,7 +194,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, engine: TetrisEngine, o
   }
 
   // Visible garbage queue: between HOLD and board.
-  drawGarbageMeter(ctx, engine.pendingGarbage, x + sideW + gap, y, boardH);
+  drawGarbageMeter(ctx, engine.pendingGarbage, x + sideW + gap, y, boardH, opts.garbageSegments);
 
   // Board: center.
   const visible = engine.board.slice(HIDDEN_ROWS);

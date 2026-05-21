@@ -2348,6 +2348,10 @@ function render(): void {
     invisibleLocked: invisibleActive,
     revealInvisible: invisibleReveal,
     holdDisabled: usesQuickPlayMod(trainer.mode) && currentQuickPlayMod.disableHold,
+    garbageSegments: trainer.mode === "lab" ? [
+      { label: "scheduled", amount: trainer.labGrayGarbage(now), color: "#9ca3af" },
+      { label: "ready", amount: trainer.labReadyGarbage(now), color: "#ef4444" },
+    ] : undefined,
   });
   if (trainer.mode === "zenith") {
     drawZenithTower(ctx, trainer, 540, boardY, 500, Math.max(520, h - boardY - 18));
@@ -2357,10 +2361,7 @@ function render(): void {
       [`garbage/bag: ${settings.labGarbagePerBag}`, "#94a3b8"],
       [`delay: ${(LAB_GARBAGE_DELAY_MS / 1000).toFixed(1)}s`, "#94a3b8"],
       [`bags survived: ${trainer.labBagsInjected}`, "#34d399"],
-      [`scheduled: ${trainer.labGarbageInjected}`, "#94a3b8"],
-      [`gray incoming: ${trainer.labGrayGarbage(now)}`, "#9ca3af"],
-      [`red ready: ${trainer.labReadyGarbage(now)}`, "#fb7185"],
-      [`total warning: ${trainer.labQueuedGarbage()}`, "#fbbf24"],
+      [`incoming shown on left G meter`, "#fbbf24"],
       [`next ready: ${trainer.nextLabGarbageSeconds(now)}s`, "#94a3b8"],
       [`entered board: ${trainer.labGarbageMaterialized}`, "#94a3b8"],
       [`pieces: ${trainer.human.piecesLocked}`, "#94a3b8"],
