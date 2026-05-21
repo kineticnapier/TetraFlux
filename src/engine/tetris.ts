@@ -46,6 +46,11 @@ export interface LockResult {
   boardAfter?: string[];
 }
 
+export interface GarbageOptions {
+  scatterChance?: number;
+  doubleHoleChance?: number;
+}
+
 export interface EngineState {
   board: string[];
   board22: string[];
@@ -364,6 +369,7 @@ export class TetrisEngine {
   // About 5% of rows still become scattered single-line holes.
   private garbageHole: number | null = null;
   private garbageHoleRunRemaining = 0;
+  private garbageOptions: GarbageOptions = {};
 
   constructor(seed: number, garbageSeed?: number) {
     this.bag = new SevenBag(seed);
@@ -396,6 +402,7 @@ export class TetrisEngine {
     e.placementActionMode = this.placementActionMode;
     e.garbageHole = this.garbageHole;
     e.garbageHoleRunRemaining = this.garbageHoleRunRemaining;
+    e.garbageOptions = { ...this.garbageOptions };
     return e;
   }
 
@@ -727,13 +734,19 @@ export class TetrisEngine {
     if (this.collides(this.active)) this.dead = true;
   }
 
+  setGarbageOptions(options: GarbageOptions = {}): void {
+    this.garbageOptions = { ...options };
+  }
+
   queueGarbage(n: number): void {
     this.pendingGarbage += Math.max(0, Math.floor(n));
   }
 
   private nextGarbageHole(): number {
-    // 5%: scatter one row without consuming/changing the current clean streak.
-    if (this.garbageRng.next() < 0.05) return this.garbageRng.int(WIDTH);
+    const scatterChance = this.garbageOptions.scatterChance ?? 0.05;
+
+    // Scatter one row without consuming/changing the current clean streak.
+    if (this.garbageRng.next() < scatterChance) return this.garbageRng.int(WIDTH);
 
     if (this.garbageHole === null || this.garbageHoleRunRemaining <= 0) {
       const prev = this.garbageHole;
@@ -754,11 +767,24 @@ export class TetrisEngine {
     return this.garbageHole;
   }
 
+  private nextGarbageHoles(): number[] {
+    const holes = new Set<number>([this.nextGarbageHole()]);
+    const doubleHoleChance = this.garbageOptions.doubleHoleChance ?? 0;
+
+    if (this.garbageRng.next() < doubleHoleChance) {
+      for (let i = 0; i < 6 && holes.size < 2; i++) {
+        holes.add(this.garbageRng.int(WIDTH));
+      }
+    }
+
+    return [...holes];
+  }
+
   applyPendingGarbage(): void {
     if (this.pendingGarbage <= 0) return;
     for (let i = 0; i < this.pendingGarbage; i++) {
-      const hole = this.nextGarbageHole();
-      const row: Cell[] = Array.from({ length: WIDTH }, (_, x) => x === hole ? null : "G");
+      const holes = new Set(this.nextGarbageHoles());
+      const row: Cell[] = Array.from({ length: WIDTH }, (_, x) => holes.has(x) ? null : "G");
       this.board.shift();
       this.board.push(row);
     }

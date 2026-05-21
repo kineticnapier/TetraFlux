@@ -111,6 +111,8 @@ export interface DrawBoardOptions {
   title: string;
   showGhost?: boolean;
   active?: boolean;
+  invisibleLocked?: boolean;
+  revealInvisible?: boolean;
 }
 
 /**
@@ -150,7 +152,9 @@ export function drawBoard(ctx: CanvasRenderingContext2D, engine: TetrisEngine, o
     for (let col = 0; col < 10; col++) {
       const px = boardX + col * cell;
       const py = boardY + row * cell;
-      ctx.fillStyle = cellColor(visible[row][col]);
+      const c = visible[row][col];
+      const hideLocked = opts.invisibleLocked && !opts.revealInvisible && c !== null && c !== "G";
+      ctx.fillStyle = hideLocked ? cellColor(null) : cellColor(c);
       ctx.fillRect(px, py, cell, cell);
       ctx.strokeStyle = "#2b2f3a";
       ctx.strokeRect(px + 0.5, py + 0.5, cell - 1, cell - 1);
