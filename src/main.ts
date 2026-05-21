@@ -41,6 +41,23 @@ interface TimedIncomingGarbage {
 
 type EngineSlot = "human" | "ai";
 
+interface GridCell {
+  x: number;
+  y: number;
+}
+
+interface SpinPlanTarget {
+  kind: "TSD" | "TST" | "STSD" | "TSlot";
+  cx: number;
+  cy: number;
+  rot: number;
+  requiredCells: GridCell[];
+  forbiddenCells: GridCell[];
+  slotCells: GridCell[];
+  missingRequired: number;
+  alreadyComplete: boolean;
+}
+
 type TouchAction = "left" | "right" | "down" | "cw" | "ccw" | "180" | "hold" | "drop" | "start" | "next";
 
 type BattleOpponentKind =
@@ -1825,6 +1842,162 @@ class Ft5Trainer {
     return cells.every(([x, y]) => this.boardCellEmpty(board, x, y));
   }
 
+  private sameCell(a: GridCell, b: GridCell): boolean {
+    return a.x === b.x && a.y === b.y;
+  }
+
+  private uniqueCells(cells: GridCell[]): GridCell[] {
+    const seen = new Set<string>();
+    const out: GridCell[] = [];
+    for (const c of cells) {
+      const key = `${c.x}:${c.y}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(c);
+    }
+    return out;
+  }
+
+  private cellFilled(board: string[], cell: GridCell): boolean {
+    return this.boardCellBlocked(board, cell.x, cell.y);
+  }
+
+  private cellEmpty(board: string[], cell: GridCell): boolean {
+    return !this.cellFilled(board, cell);
+  }
+
+  private tFootprintCells(cx: number, cy: number, rot: number): GridCell[] {
+    const raw =
+      rot === 0 ? [[cx, cy], [cx - 1, cy], [cx + 1, cy], [cx, cy - 1]] :
+      rot === 1 ? [[cx, cy], [cx, cy - 1], [cx, cy + 1], [cx + 1, cy]] :
+      rot === 2 ? [[cx, cy], [cx - 1, cy], [cx + 1, cy], [cx, cy + 1]] :
+      [[cx, cy], [cx, cy - 1], [cx, cy + 1], [cx - 1, cy]];
+
+    return raw.map(([x, y]) => ({ x, y }));
+  }
+
+  private classifySpinPlan(cx: number, cy: number, rot: number, missingRequired: number, blockedCorners: number): SpinPlanTarget["kind"] {
+    if (blockedCorners >= 4 && missingRequired <= 1) return "TST";
+    if (rot === 0 && missingRequired <= 2) return "STSD";
+    if (missingRequired <= 1) return "TSD";
+    return "TSlot";
+  }
+
+  private findSpinPlanTargets(board: string[]): SpinPlanTarget[] {
+    const targets: SpinPlanTarget[] = [];
+
+    for (let cy = 1; cy < board.length - 1; cy++) {
+      for (let cx = 0; cx < 10; cx++) {
+        const cornerCells = [
+          { x: cx - 1, y: cy - 1 },
+          { x: cx + 1, y: cy - 1 },
+          { x: cx - 1, y: cy + 1 },
+          { x: cx + 1, y: cy + 1 },
+        ];
+
+        const blockedCorners = cornerCells.filter((cell) => this.cellFilled(board, cell)).length;
+        const missingCorners = cornerCells.filter((cell) => this.cellEmpty(board, cell));
+
+        // Need at least some existing structure; otherwise every empty area looks like a "plan".
+        if (blockedCorners < 1 || missingCorners.length > 3) continue;
+
+        for (let rot = 0; rot < 4; rot++) {
+          const slotCells = this.tFootprintCells(cx, cy, rot);
+          if (!slotCells.every((cell) => this.cellEmpty(board, cell))) continue;
+
+          const entryCells = this.uniqueCells([
+            { x: cx, y: cy - 2 },
+            { x: cx, y: cy - 1 },
+            { x: cx - 1, y: cy - 1 },
+            { x: cx + 1, y: cy - 1 },
+          ]);
+          const forbiddenCells = this.uniqueCells([...slotCells, ...entryCells]);
+
+          const requiredCells = missingCorners.filter(
+            (cell) => !forbiddenCells.some((bad) => this.sameCell(bad, cell)),
+          );
+
+          const missingRequired = Math.max(0, 3 - blockedCorners);
+          if (missingRequired > 2) continue;
+
+          targets.push({
+            kind: this.classifySpinPlan(cx, cy, rot, missingRequired, blockedCorners),
+            cx,
+            cy,
+            rot,
+            requiredCells,
+            forbiddenCells,
+            slotCells,
+            missingRequired,
+            alreadyComplete: blockedCorners >= 3,
+          });
+        }
+      }
+    }
+
+    return targets
+      .sort((a, b) => {
+        const priority = (kind: SpinPlanTarget["kind"]) => kind === "TST" ? 0 : kind === "TSD" ? 1 : kind === "STSD" ? 2 : 3;
+        return priority(a.kind) - priority(b.kind) || a.missingRequired - b.missingRequired || b.cy - a.cy;
+      })
+      .slice(0, 8);
+  }
+
+  private evaluateSpinPlanProgress(before: string[], after: string[]): { bonus: number; info?: Record<string, unknown> } {
+    const targets = this.findSpinPlanTargets(before);
+    if (targets.length === 0) return { bonus: 0 };
+
+    let bestBonus = 0;
+    let bestInfo: Record<string, unknown> | undefined;
+
+    for (const target of targets) {
+      const slotBroken = target.slotCells.some((cell) => this.cellEmpty(before, cell) && this.cellFilled(after, cell));
+      const forbiddenBroken = target.forbiddenCells.some((cell) => this.cellEmpty(before, cell) && this.cellFilled(after, cell));
+      if (slotBroken || forbiddenBroken) {
+        const penalty = slotBroken ? -5000 : -1400;
+        if (Math.abs(penalty) > Math.abs(bestBonus)) {
+          bestBonus = penalty;
+          bestInfo = { spinPlanKind: target.kind, spinPlanBroken: true, spinPlanX: target.cx, spinPlanY: target.cy };
+        }
+        continue;
+      }
+
+      const requiredFilled = target.requiredCells.filter((cell) => this.cellEmpty(before, cell) && this.cellFilled(after, cell)).length;
+      const afterCorners =
+        (this.boardCellBlocked(after, target.cx - 1, target.cy - 1) ? 1 : 0) +
+        (this.boardCellBlocked(after, target.cx + 1, target.cy - 1) ? 1 : 0) +
+        (this.boardCellBlocked(after, target.cx - 1, target.cy + 1) ? 1 : 0) +
+        (this.boardCellBlocked(after, target.cx + 1, target.cy + 1) ? 1 : 0);
+      const afterSlotOpen = target.slotCells.every((cell) => this.cellEmpty(after, cell));
+      const complete = afterCorners >= 3 && afterSlotOpen;
+
+      let bonus = 0;
+      if (complete) bonus += 10000;
+      else if (target.missingRequired <= 1) bonus += 3000;
+      else if (target.missingRequired <= 2) bonus += 1000;
+
+      bonus += requiredFilled * 650;
+      if (target.alreadyComplete && afterSlotOpen) bonus += 900;
+      if (target.kind === "TST") bonus += 900;
+      else if (target.kind === "TSD") bonus += 650;
+      else if (target.kind === "STSD") bonus += 500;
+
+      if (bonus > bestBonus) {
+        bestBonus = bonus;
+        bestInfo = {
+          spinPlanKind: target.kind,
+          spinPlanComplete: complete,
+          spinPlanMissing: target.missingRequired,
+          spinPlanRequiredFilled: requiredFilled,
+          spinPlanX: target.cx,
+          spinPlanY: target.cy,
+        };
+      }
+    }
+
+    return bestInfo ? { bonus: bestBonus, info: bestInfo } : { bonus: 0 };
+  }
+
   private estimateStaticSpinSetup(engineAfter: TetrisEngine): { bonus: number; kind?: string; x?: number; y?: number } {
     const state = engineAfter.stateDict();
     const board = state.board;
@@ -1929,9 +2102,18 @@ class Ft5Trainer {
       info.spinAttack = result.attackSent;
     }
 
-    // Cheap static setup bonus: no second-ply legalPlacements(), no nested BFS.
-    // This avoids UI freezes while still encouraging T-slot creation.
+    // Plan-based spin targeting: detect slot plans first, then reward only
+    // moves that fill required cells or preserve/complete the slot.
     if (!danger && execution.reachedTarget && !execution.engineAfter.dead) {
+      const beforeBoard = engine.stateDict().board;
+      const afterBoard = execution.engineAfter.stateDict().board;
+      const plan = this.evaluateSpinPlanProgress(beforeBoard, afterBoard);
+      if (plan.bonus !== 0) {
+        score -= plan.bonus;
+        Object.assign(info, plan.info ?? {});
+        info.spinPlanBonus = plan.bonus;
+      }
+
       const setup = this.estimateStaticSpinSetup(execution.engineAfter);
       if (setup.bonus > 0) {
         score -= setup.bonus;
@@ -2206,8 +2388,9 @@ class Ft5Trainer {
     return usesQuickPlayMod(this.mode) ? (currentQuickPlayMod.incomingMultiplier ?? 1) : 1;
   }
 
-  private scheduleIncomingGarbage(slot: EngineSlot, amount: number, now = performance.now()): void {
-    const scaled = Math.max(0, Math.floor(amount * this.incomingMultiplierForCurrentMode()));
+  private scheduleIncomingGarbage(slot: EngineSlot, amount: number, now = performance.now(), applyIncomingMultiplier = true): void {
+    const multiplier = applyIncomingMultiplier ? this.incomingMultiplierForCurrentMode() : 1;
+    const scaled = Math.max(0, Math.floor(amount * multiplier));
     if (scaled <= 0) return;
     this.delayedIncomingGarbage[slot].push({
       amount: scaled,
@@ -2261,7 +2444,7 @@ class Ft5Trainer {
     }
 
     const sent = Math.max(0, outgoing);
-    if (sent > 0) this.scheduleIncomingGarbage(this.slotForEngine(receiver), sent, now);
+    if (sent > 0) this.scheduleIncomingGarbage(this.slotForEngine(receiver), sent, now, false);
 
     return { rawAttack, canceled, sent };
   }
