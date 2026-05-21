@@ -1881,17 +1881,17 @@ class Ft5Trainer {
     }
   }
 
-  private labQueuedGarbage(): number {
+  labQueuedGarbage(): number {
     return this.labIncomingGarbage.reduce((sum, item) => sum + item.amount, 0);
   }
 
-  private labReadyGarbage(now: number): number {
+  labReadyGarbage(now: number): number {
     return this.labIncomingGarbage
       .filter((item) => item.readyAtMs <= now)
       .reduce((sum, item) => sum + item.amount, 0);
   }
 
-  private nextLabGarbageSeconds(now: number): string {
+  nextLabGarbageSeconds(now: number): string {
     if (this.labIncomingGarbage.length === 0) return "-";
     const nextReady = Math.min(...this.labIncomingGarbage.map((item) => item.readyAtMs));
     return (Math.max(0, nextReady - now) / 1000).toFixed(1);
