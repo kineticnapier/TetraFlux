@@ -1651,7 +1651,12 @@ class Ft5Trainer {
     return false;
   }
 
-  private findAiMovePath(engine: TetrisEngine, action: PlacementAction): AiMoveOp[] | null {
+  private moveOpsEndWithRotation(ops: AiMoveOp[]): boolean {
+    const last = ops[ops.length - 1];
+    return last === "cw" || last === "ccw" || last === "180";
+  }
+
+  private findAiMovePath(engine: TetrisEngine, action: PlacementAction, preferSpinFinish = false): AiMoveOp[] | null {
     const targetX = action.x;
     const targetRot = this.normalizeRot(action.rot);
     const start = engine.clone();
@@ -1681,16 +1686,21 @@ class Ft5Trainer {
       this.normalizeRot(e.active.rot) === targetRot &&
       e.hardDropDistance(e.active) === targetY;
 
+    const acceptFast = (ops: AiMoveOp[]) =>
+      !preferSpinFinish || this.moveOpsEndWithRotation(ops);
+
     // Fast path: if the chosen placement is exactly below the spawn/current
-    // state, hard drop only. This avoids wasting visible ops like soft-soft...
-    if (isTargetBeforeDrop(start)) return prefix;
+    // state, hard drop only. For spin firing, do not take this shortcut because
+    // a spin must end with a rotation input.
+    if (!preferSpinFinish && isTargetBeforeDrop(start)) return prefix;
 
     const tryOps = (ops: AiMoveOp[]): AiMoveOp[] | null => {
       const e = start.clone();
       for (const op of ops) {
         if (!this.applyAiMoveOp(e, op)) return null;
       }
-      return isTargetBeforeDrop(e) ? [...prefix, ...ops] : null;
+      const full = [...prefix, ...ops];
+      return isTargetBeforeDrop(e) && acceptFast(full) ? full : null;
     };
 
     const rotDiff = (targetRot - this.normalizeRot(start.active.rot) + 4) % 4;
@@ -1702,11 +1712,22 @@ class Ft5Trainer {
     const dx = targetX - start.active.x;
     const xOps: AiMoveOp[] = Array.from({ length: Math.abs(dx) }, () => dx > 0 ? "right" : "left");
 
-    // Most placements should be just rotate/move/harddrop. Try these without BFS.
-    const fastCandidates: AiMoveOp[][] = [
-      [...rotOps, ...xOps],
-      [...xOps, ...rotOps],
-    ];
+    // Most placements should be just rotate/move/harddrop. For spin firing,
+    // prefer horizontal -> rotation so the final visible input is rotation.
+    const fastCandidates: AiMoveOp[][] = preferSpinFinish
+      ? [
+          [...xOps, ...rotOps],
+          [...rotOps, ...xOps],
+          [...xOps, "cw", "ccw"],
+          [...xOps, "ccw", "cw"],
+          [...rotOps, ...xOps, "cw", "ccw"],
+          [...rotOps, ...xOps, "ccw", "cw"],
+        ]
+      : [
+          [...rotOps, ...xOps],
+          [...xOps, ...rotOps],
+        ];
+
     for (const ops of fastCandidates) {
       const ok = tryOps(ops);
       if (ok) return ok;
@@ -1716,10 +1737,10 @@ class Ft5Trainer {
     const ops: AiMoveOp[] = ["cw", "ccw", "180", "left", "right", "soft"];
     const seen = new Set<string>([this.activeKey(start)]);
     const queue: Array<{ engine: TetrisEngine; path: AiMoveOp[] }> = [{ engine: start, path: [] }];
-    const maxPath = 28;
-    const maxStates = 140;
+    const maxPath = preferSpinFinish ? 34 : 28;
+    const maxStates = preferSpinFinish ? 190 : 140;
     const startMs = performance.now();
-    const maxMs = 1.8;
+    const maxMs = preferSpinFinish ? 2.8 : 1.8;
     let fallbackTargetPath: AiMoveOp[] | null = null;
 
     for (let head = 0; head < queue.length && seen.size <= maxStates; head++) {
@@ -1740,10 +1761,11 @@ class Ft5Trainer {
         if (isTarget(next)) {
           const fullPath = [...prefix, ...path];
 
-          // Prefer a path whose final visible operation is rotation. This makes
-          // T-spin / all-spin routes possible, but the search is tightly capped.
+          // Prefer a path whose final visible operation is rotation. For spin
+          // firing, non-rotation paths are rejected to avoid "made the shape
+          // but never actually spun it".
           if (isRotationOp(fullPath[fullPath.length - 1])) return fullPath;
-          if (!fallbackTargetPath) fallbackTargetPath = fullPath;
+          if (!preferSpinFinish && !fallbackTargetPath) fallbackTargetPath = fullPath;
           continue;
         }
 
@@ -1755,8 +1777,8 @@ class Ft5Trainer {
     return fallbackTargetPath;
   }
 
-  private executeAiPlacementByMoves(engine: TetrisEngine, action: PlacementAction): AiMoveExecution {
-    const ops = this.findAiMovePath(engine, action);
+  private executeAiPlacementByMoves(engine: TetrisEngine, action: PlacementAction, preferSpinFinish = false): AiMoveExecution {
+    const ops = this.findAiMovePath(engine, action, preferSpinFinish);
 
     if (!ops) {
       const fallback = engine.clone();
@@ -1876,6 +1898,40 @@ class Ft5Trainer {
     return raw.map(([x, y]) => ({ x, y }));
   }
 
+  private hasPlausibleTRotationEntry(board: string[], cx: number, cy: number, finalRot: number): boolean {
+    const predecessorRots = [
+      (finalRot + 3) % 4,
+      (finalRot + 1) % 4,
+      (finalRot + 2) % 4,
+    ];
+
+    // Approximate T SRS kick reach. This is a cheap terrain filter, not a full
+    // path search. It rejects sealed slots that look like TSD/TST geometrically
+    // but cannot be rotated into.
+    const kickLikeOffsets: GridCell[] = [
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: -1, y: 0 },
+      { x: 0, y: -1 },
+      { x: 0, y: 1 },
+      { x: 1, y: -1 },
+      { x: -1, y: -1 },
+      { x: 1, y: 1 },
+      { x: -1, y: 1 },
+      { x: 0, y: -2 },
+      { x: 0, y: 2 },
+    ];
+
+    for (const prevRot of predecessorRots) {
+      for (const d of kickLikeOffsets) {
+        const cells = this.tFootprintCells(cx + d.x, cy + d.y, prevRot);
+        if (cells.every((cell) => this.cellEmpty(board, cell))) return true;
+      }
+    }
+
+    return false;
+  }
+
   private classifySpinPlan(cx: number, cy: number, rot: number, missingRequired: number, blockedCorners: number): SpinPlanTarget["kind"] {
     if (blockedCorners >= 4 && missingRequired <= 1) return "TST";
     if (rot === 0 && missingRequired <= 2) return "STSD";
@@ -1919,6 +1975,7 @@ class Ft5Trainer {
 
           const missingRequired = Math.max(0, 3 - blockedCorners);
           if (missingRequired > 2) continue;
+          if (!this.hasPlausibleTRotationEntry(board, cx, cy, rot)) continue;
 
           targets.push({
             kind: this.classifySpinPlan(cx, cy, rot, missingRequired, blockedCorners),
@@ -2079,7 +2136,7 @@ class Ft5Trainer {
     useRouteSearch: boolean,
   ): { score: number; info: Record<string, unknown> } {
     const execution = useRouteSearch
-      ? this.executeAiPlacementByMoves(engine, action)
+      ? this.executeAiPlacementByMoves(engine, action, action.piece === "T" || currentQuickPlayMod.allSpin)
       : this.previewActionDirect(engine, action);
     const result = execution.result;
     let score = baseScore;
@@ -2128,6 +2185,54 @@ class Ft5Trainer {
     return { score, info };
   }
 
+  private findSpinFireAction(engine: TetrisEngine, legal: PlacementAction[], scoreAfter: ((e: TetrisEngine, a: PlacementAction) => { score: number; info: Record<string, unknown> }) | null): AiChoice | null {
+    let best: AiChoice | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+    const startMs = performance.now();
+
+    // Only a few realistic spin-fire candidates are needed. This is not setup
+    // search; it is a final verification that the already-built slot can be
+    // entered by an SRS-like route ending in rotation.
+    const spinCandidates = legal
+      .filter((action) => action.piece === "T" || currentQuickPlayMod.allSpin)
+      .slice(0, 72);
+
+    for (const action of spinCandidates) {
+      if (performance.now() - startMs > 3.5) break;
+
+      const execution = this.executeAiPlacementByMoves(engine, action, true);
+      if (!execution.reachedTarget || !this.moveOpsEndWithRotation(execution.ops)) continue;
+
+      const result = execution.result;
+      if (result.spin === "none" || result.linesCleared <= 0) continue;
+
+      const base = scoreAfter ? scoreAfter(engine, action).score : 0;
+      const fireValue =
+        result.attackSent * 120 +
+        result.linesCleared * 40 +
+        (result.spin === "tspin" ? 90 : result.spin === "tspin-mini" ? 35 : 50);
+      const score = base - 20000 - fireValue + execution.ops.length * 0.08;
+
+      if (score < bestScore) {
+        bestScore = score;
+        best = {
+          ...action,
+          aiScore: score,
+          aiInfo: {
+            spinFire: true,
+            spinFireType: result.spin,
+            spinFireAttack: result.attackSent,
+            spinFireLines: result.linesCleared,
+            spinFireOps: execution.ops.join(","),
+            srsVerified: true,
+          },
+        };
+      }
+    }
+
+    return best;
+  }
+
   private chooseAiAction(engine: TetrisEngine, ai: AiLike): AiChoice | null {
     const normal = ai.choose(engine);
     if (!normal) return null;
@@ -2145,6 +2250,9 @@ class Ft5Trainer {
 
     const legal = engine.legalPlacements(true);
     if (legal.length < 2) return normal;
+
+    const spinFire = this.findSpinFireAction(engine, legal, scoreAfter);
+    if (spinFire) return spinFire;
 
     const baseRanked = legal
       .map((action) => ({ action, ...scoreAfter(engine, action) }))
