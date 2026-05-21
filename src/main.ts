@@ -1658,16 +1658,56 @@ class Ft5Trainer {
       e.active.y === targetY &&
       this.normalizeRot(e.active.rot) === targetRot;
 
-    if (isTarget(start)) return prefix;
+    const isTargetBeforeDrop = (e: TetrisEngine) =>
+      e.active.kind === action.piece &&
+      e.active.x === targetX &&
+      this.normalizeRot(e.active.rot) === targetRot &&
+      e.hardDropDistance(e.active) === targetY;
+
+    // Fast path: if the chosen placement is exactly below the spawn/current
+    // state, hard drop only. This avoids wasting visible ops like soft-soft...
+    if (isTargetBeforeDrop(start)) return prefix;
+
+    const tryOps = (ops: AiMoveOp[]): AiMoveOp[] | null => {
+      const e = start.clone();
+      for (const op of ops) {
+        if (!this.applyAiMoveOp(e, op)) return null;
+      }
+      return isTargetBeforeDrop(e) ? [...prefix, ...ops] : null;
+    };
+
+    const rotDiff = (targetRot - this.normalizeRot(start.active.rot) + 4) % 4;
+    const rotOps: AiMoveOp[] =
+      rotDiff === 0 ? [] :
+      rotDiff === 1 ? ["cw"] :
+      rotDiff === 2 ? ["180"] :
+      ["ccw"];
+    const dx = targetX - start.active.x;
+    const xOps: AiMoveOp[] = Array.from({ length: Math.abs(dx) }, () => dx > 0 ? "right" : "left");
+
+    // Most placements should be just rotate/move/harddrop. Try these without BFS.
+    const fastCandidates: AiMoveOp[][] = [
+      [...rotOps, ...xOps],
+      [...xOps, ...rotOps],
+    ];
+    for (const ops of fastCandidates) {
+      const ok = tryOps(ops);
+      if (ok) return ok;
+    }
 
     const isRotationOp = (op: AiMoveOp | undefined) => op === "cw" || op === "ccw" || op === "180";
     const ops: AiMoveOp[] = ["cw", "ccw", "180", "left", "right", "soft"];
     const seen = new Set<string>([this.activeKey(start)]);
     const queue: Array<{ engine: TetrisEngine; path: AiMoveOp[] }> = [{ engine: start, path: [] }];
-    const maxPath = 54;
+    const maxPath = 28;
+    const maxStates = 140;
+    const startMs = performance.now();
+    const maxMs = 1.8;
     let fallbackTargetPath: AiMoveOp[] | null = null;
 
-    for (let head = 0; head < queue.length; head++) {
+    for (let head = 0; head < queue.length && seen.size <= maxStates; head++) {
+      if (performance.now() - startMs > maxMs) break;
+
       const item = queue[head];
       if (item.path.length >= maxPath) continue;
 
@@ -1684,14 +1724,14 @@ class Ft5Trainer {
           const fullPath = [...prefix, ...path];
 
           // Prefer a path whose final visible operation is rotation. This makes
-          // T-spin / all-spin routes possible instead of always reaching the
-          // same final cell by horizontal movement + soft drop.
+          // T-spin / all-spin routes possible, but the search is tightly capped.
           if (isRotationOp(fullPath[fullPath.length - 1])) return fullPath;
           if (!fallbackTargetPath) fallbackTargetPath = fullPath;
           continue;
         }
 
         queue.push({ engine: next, path });
+        if (seen.size > maxStates) break;
       }
     }
 
@@ -1847,13 +1887,27 @@ class Ft5Trainer {
     return best;
   }
 
+  private previewActionDirect(engine: TetrisEngine, action: PlacementAction): AiMoveExecution {
+    const preview = engine.clone();
+    const result = preview.applyAction(action);
+    return {
+      result,
+      ops: [],
+      reachedTarget: result.ok,
+      engineAfter: preview,
+    };
+  }
+
   private adjustedAiCandidateScore(
     engine: TetrisEngine,
     action: PlacementAction,
     baseScore: number,
     danger: boolean,
+    useRouteSearch: boolean,
   ): { score: number; info: Record<string, unknown> } {
-    const execution = this.executeAiPlacementByMoves(engine, action);
+    const execution = useRouteSearch
+      ? this.executeAiPlacementByMoves(engine, action)
+      : this.previewActionDirect(engine, action);
     const result = execution.result;
     let score = baseScore;
     const info: Record<string, unknown> = {
@@ -1917,16 +1971,31 @@ class Ft5Trainer {
 
     if (baseRanked.length === 0) return normal;
 
-    const candidates = baseRanked.slice(0, Math.min(48, baseRanked.length))
-      .map((candidate) => {
-        const adjusted = this.adjustedAiCandidateScore(engine, candidate.action, candidate.score, danger);
-        return {
-          ...candidate,
-          score: adjusted.score,
-          info: { ...candidate.info, ...adjusted.info },
-        };
-      })
-      .sort((a, b) => a.score - b.score);
+    const candidates: Array<{
+      action: PlacementAction;
+      score: number;
+      info: Record<string, unknown>;
+    }> = [];
+    const rerankStartMs = performance.now();
+    const maxCandidates = Math.min(18, baseRanked.length);
+    const routeSearchLimit = danger ? 3 : 6;
+    const rerankBudgetMs = danger ? 2.0 : 4.5;
+
+    for (let i = 0; i < maxCandidates; i++) {
+      if (performance.now() - rerankStartMs > rerankBudgetMs && candidates.length > 0) break;
+
+      const candidate = baseRanked[i];
+      const useRouteSearch = i < routeSearchLimit;
+      const adjusted = this.adjustedAiCandidateScore(engine, candidate.action, candidate.score, danger, useRouteSearch);
+
+      candidates.push({
+        ...candidate,
+        score: adjusted.score,
+        info: { ...candidate.info, ...adjusted.info, routeSearch: useRouteSearch },
+      });
+    }
+
+    candidates.sort((a, b) => a.score - b.score);
 
     let chosen = candidates[0];
     if (!chosen) return normal;
