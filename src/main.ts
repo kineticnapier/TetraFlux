@@ -1764,44 +1764,83 @@ class Ft5Trainer {
     return 9 + attackBonus + lineBonus + tBonus;
   }
 
-  private estimateNextSpinOpportunity(
-    engineAfter: TetrisEngine,
-    scoreAfter: ((e: TetrisEngine, a: PlacementAction) => { score: number; info: Record<string, unknown> }) | null,
-  ): { bonus: number; actionKey?: string; spinType?: string; attack?: number; lines?: number } {
-    if (engineAfter.dead) return { bonus: 0 };
+  private boardCellBlocked(board: string[], x: number, y: number): boolean {
+    if (x < 0 || x >= 10) return true;
+    if (y >= board.length) return true;
+    if (y < 0) return false;
+    return board[y]?.[x] !== ".";
+  }
 
-    const legal = engineAfter.legalPlacements(true);
-    if (legal.length === 0) return { bonus: 0 };
+  private boardCellEmpty(board: string[], x: number, y: number): boolean {
+    return !this.boardCellBlocked(board, x, y);
+  }
 
-    const ranked = legal
-      .map((action) => {
-        const base = scoreAfter ? scoreAfter(engineAfter, action).score : 0;
-        return { action, base };
-      })
-      .filter((x) => Number.isFinite(x.base))
-      .sort((a, b) => a.base - b.base)
-      .slice(0, Math.min(14, legal.length));
+  private tFootprintEmpty(board: string[], cx: number, cy: number, rot: number): boolean {
+    const cells =
+      rot === 0 ? [[cx, cy], [cx - 1, cy], [cx + 1, cy], [cx, cy - 1]] :
+      rot === 1 ? [[cx, cy], [cx, cy - 1], [cx, cy + 1], [cx + 1, cy]] :
+      rot === 2 ? [[cx, cy], [cx - 1, cy], [cx + 1, cy], [cx, cy + 1]] :
+      [[cx, cy], [cx, cy - 1], [cx, cy + 1], [cx - 1, cy]];
 
-    let best: { bonus: number; actionKey?: string; spinType?: string; attack?: number; lines?: number } = { bonus: 0 };
+    return cells.every(([x, y]) => this.boardCellEmpty(board, x, y));
+  }
 
-    for (const candidate of ranked) {
-      const execution = this.executeAiPlacementByMoves(engineAfter, candidate.action);
-      if (!execution.reachedTarget) continue;
+  private estimateStaticSpinSetup(engineAfter: TetrisEngine): { bonus: number; kind?: string; x?: number; y?: number } {
+    const state = engineAfter.stateDict();
+    const board = state.board;
+    const metrics = boardMetrics(board);
 
-      const result = execution.result;
-      const spinBonus = this.spinResultBonus(result);
-      if (spinBonus <= 0) continue;
+    // Do not sacrifice survival for setup.
+    if (metrics.maxHeight >= 15 || engineAfter.pendingGarbage >= 6) return { bonus: 0 };
 
-      // Future spin is useful, but less certain than an immediate spin.
-      const setupBonus = spinBonus * 0.55;
-      if (setupBonus > best.bonus) {
-        best = {
-          bonus: setupBonus,
-          actionKey: candidate.action.key,
-          spinType: result.spin,
-          attack: result.attackSent,
-          lines: result.linesCleared,
-        };
+    let best = { bonus: 0, kind: undefined as string | undefined, x: undefined as number | undefined, y: undefined as number | undefined };
+
+    // Cheap T-slot scan. This is O(10*20*4) and does not call legalPlacements()
+    // or BFS, so it will not freeze even when many candidates are evaluated.
+    for (let cy = 1; cy < board.length - 1; cy++) {
+      for (let cx = 0; cx < 10; cx++) {
+        const corners =
+          (this.boardCellBlocked(board, cx - 1, cy - 1) ? 1 : 0) +
+          (this.boardCellBlocked(board, cx + 1, cy - 1) ? 1 : 0) +
+          (this.boardCellBlocked(board, cx - 1, cy + 1) ? 1 : 0) +
+          (this.boardCellBlocked(board, cx + 1, cy + 1) ? 1 : 0);
+
+        if (corners < 3) continue;
+
+        for (let rot = 0; rot < 4; rot++) {
+          if (!this.tFootprintEmpty(board, cx, cy, rot)) continue;
+
+          const floorSupport =
+            (this.boardCellBlocked(board, cx - 1, cy + 2) ? 1 : 0) +
+            (this.boardCellBlocked(board, cx, cy + 2) ? 1 : 0) +
+            (this.boardCellBlocked(board, cx + 1, cy + 2) ? 1 : 0);
+
+          const depthBonus = cy > 8 ? 1.1 : 0.6;
+          const supportBonus = Math.min(1.5, floorSupport * 0.5);
+          const bonus = 3.2 + corners * 1.05 + depthBonus + supportBonus;
+
+          if (bonus > best.bonus) {
+            best = { bonus, kind: rot === 0 ? "t-slot-up" : rot === 1 ? "t-slot-right" : rot === 2 ? "t-slot-down" : "t-slot-left", x: cx, y: cy };
+          }
+        }
+      }
+    }
+
+    // Very small generic all-spin cavity hint. It is intentionally weak and only
+    // active in All-Spin mode, because exact non-T spin detection is shape-specific.
+    if (currentQuickPlayMod.allSpin) {
+      for (let y = 1; y < board.length - 1; y++) {
+        for (let x = 1; x < 9; x++) {
+          if (!this.boardCellEmpty(board, x, y)) continue;
+          const walls =
+            (this.boardCellBlocked(board, x - 1, y) ? 1 : 0) +
+            (this.boardCellBlocked(board, x + 1, y) ? 1 : 0) +
+            (this.boardCellBlocked(board, x, y + 1) ? 1 : 0) +
+            (this.boardCellBlocked(board, x, y - 1) ? 1 : 0);
+          if (walls >= 3 && best.bonus < 3.0) {
+            best = { bonus: 3.0, kind: "all-spin-cavity", x, y };
+          }
+        }
       }
     }
 
@@ -1812,7 +1851,6 @@ class Ft5Trainer {
     engine: TetrisEngine,
     action: PlacementAction,
     baseScore: number,
-    scoreAfter: ((e: TetrisEngine, a: PlacementAction) => { score: number; info: Record<string, unknown> }) | null,
     danger: boolean,
   ): { score: number; info: Record<string, unknown> } {
     const execution = this.executeAiPlacementByMoves(engine, action);
@@ -1837,18 +1875,17 @@ class Ft5Trainer {
       info.spinAttack = result.attackSent;
     }
 
-    // If the current move creates a next-piece spin, reward the setup.
-    // Disable setup greed when the board is dangerous.
+    // Cheap static setup bonus: no second-ply legalPlacements(), no nested BFS.
+    // This avoids UI freezes while still encouraging T-slot creation.
     if (!danger && execution.reachedTarget && !execution.engineAfter.dead) {
-      const nextSpin = this.estimateNextSpinOpportunity(execution.engineAfter, scoreAfter);
-      if (nextSpin.bonus > 0) {
-        score -= nextSpin.bonus;
-        info.nextSpinSetup = true;
-        info.nextSpinBonus = nextSpin.bonus;
-        info.nextSpinAction = nextSpin.actionKey;
-        info.nextSpinType = nextSpin.spinType;
-        info.nextSpinAttack = nextSpin.attack;
-        info.nextSpinLines = nextSpin.lines;
+      const setup = this.estimateStaticSpinSetup(execution.engineAfter);
+      if (setup.bonus > 0) {
+        score -= setup.bonus;
+        info.staticSpinSetup = true;
+        info.staticSpinBonus = setup.bonus;
+        info.staticSpinKind = setup.kind;
+        info.staticSpinX = setup.x;
+        info.staticSpinY = setup.y;
       }
     }
 
@@ -1880,9 +1917,9 @@ class Ft5Trainer {
 
     if (baseRanked.length === 0) return normal;
 
-    const candidates = baseRanked.slice(0, Math.min(32, baseRanked.length))
+    const candidates = baseRanked.slice(0, Math.min(48, baseRanked.length))
       .map((candidate) => {
-        const adjusted = this.adjustedAiCandidateScore(engine, candidate.action, candidate.score, scoreAfter, danger);
+        const adjusted = this.adjustedAiCandidateScore(engine, candidate.action, candidate.score, danger);
         return {
           ...candidate,
           score: adjusted.score,
