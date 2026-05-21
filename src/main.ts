@@ -1191,12 +1191,6 @@ class Ft5Trainer {
           if (this.mode === "ai_vs_ai") this.resetMatch();
         }, 850);
       }
-      if (this.mode === "ai_vs_ai" && label === "selfplay") {
-        this.selfTrainingMatches++;
-        window.setTimeout(() => {
-          if (this.mode === "ai_vs_ai") this.resetMatch();
-        }, 850);
-      }
     } catch (err) {
       this.autoUploadInFlight = false;
       this.autoUploadStatus = "failed";
@@ -1458,7 +1452,7 @@ class Ft5Trainer {
   }
 
   private finishAiBattleByLimit(): void {
-    if ((this.mode !== "ai_vs_ai" && this.mode !== "ai_vs_ai") || this.roundOver || this.matchOver) return;
+    if (this.mode !== "ai_vs_ai" || this.roundOver || this.matchOver) return;
     if (this.stepIndex < AI_BATTLE_MAX_TURNS_PER_ROUND) return;
 
     const leftSent = this.battleAttack.left;
@@ -1494,7 +1488,7 @@ class Ft5Trainer {
   }
 
   battleTurn(side: "left" | "right"): void {
-    if ((this.mode !== "ai_vs_ai" && this.mode !== "ai_vs_ai") || this.roundOver || this.matchOver) return;
+    if (this.mode !== "ai_vs_ai" || this.roundOver || this.matchOver) return;
     if (side === "left") {
       const alive = this.aiAction(this.human, this.aiEngine, this.battleLeftAi, "left");
       if (!alive) { this.finishRound("ai"); return; }
@@ -1661,7 +1655,7 @@ let lastFullRenderAt = 0;
 let lastFullRenderStep = -1;
 
 function shouldSkipFullRender(now: number): boolean {
-  if ((trainer.mode !== "ai_vs_ai" && trainer.mode !== "ai_vs_ai") || settings.aiPps <= 15 || trainer.roundOver || trainer.matchOver) {
+  if (trainer.mode !== "ai_vs_ai" || settings.aiPps <= 15 || trainer.roundOver || trainer.matchOver) {
     lastFullRenderAt = now;
     lastFullRenderStep = trainer.stepIndex;
     return false;
