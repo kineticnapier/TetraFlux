@@ -34,8 +34,11 @@ interface PendingAiAction {
 
 interface LabIncomingGarbage {
   amount: number;
+  receivedAtMs: number;
   readyAtMs: number;
 }
+
+type TouchAction = "left" | "right" | "down" | "cw" | "ccw" | "180" | "hold" | "drop" | "start" | "next";
 
 type BattleOpponentKind =
   | "heuristic"
@@ -359,6 +362,11 @@ function usesQuickPlayMod(mode: GameMode): boolean {
   return mode === "ai_vs_ai" || mode === "lab";
 }
 
+function canvasLayoutScale(): number {
+  const rect = canvas.getBoundingClientRect();
+  return rect.width < 1100 ? Math.max(0.42, rect.width / 1280) : 1;
+}
+
 function updateQuickPlayModSelectUi(mode: GameMode): void {
   const active = usesQuickPlayMod(mode);
   quickPlayModSelect.hidden = !active;
@@ -369,9 +377,10 @@ function updateQuickPlayModSelectUi(mode: GameMode): void {
   quickPlayModSelect.style.color = "#e5e7eb";
   if (!active) return;
   const rect = canvas.getBoundingClientRect();
+  const scale = canvasLayoutScale();
   const selectW = Math.max(178, quickPlayModSelect.offsetWidth || 178);
-  quickPlayModSelect.style.left = `${Math.round(rect.left + 482 - selectW / 2)}px`;
-  quickPlayModSelect.style.top = `${Math.round(rect.top + 132)}px`;
+  quickPlayModSelect.style.left = `${Math.round(rect.left + 482 * scale - selectW / 2)}px`;
+  quickPlayModSelect.style.top = `${Math.round(rect.top + 132 * scale)}px`;
 }
 
 const settingsModal = document.querySelector<HTMLDivElement>("#settingsModal")!;
@@ -1874,7 +1883,7 @@ class Ft5Trainer {
       const base = Math.max(0, Math.floor(settings.labGarbagePerBag));
       const amount = Math.max(0, Math.floor(base * (currentQuickPlayMod.incomingMultiplier ?? 1)));
       if (amount > 0) {
-        this.labIncomingGarbage.push({ amount, readyAtMs: now + LAB_GARBAGE_DELAY_MS });
+        this.labIncomingGarbage.push({ amount, receivedAtMs: now, readyAtMs: now + LAB_GARBAGE_DELAY_MS });
         this.labGarbageInjected += amount;
       }
       this.labBagsInjected++;
@@ -1883,6 +1892,12 @@ class Ft5Trainer {
 
   labQueuedGarbage(): number {
     return this.labIncomingGarbage.reduce((sum, item) => sum + item.amount, 0);
+  }
+
+  labGrayGarbage(now: number): number {
+    return this.labIncomingGarbage
+      .filter((item) => item.readyAtMs > now)
+      .reduce((sum, item) => sum + item.amount, 0);
   }
 
   labReadyGarbage(now: number): number {
@@ -1906,8 +1921,8 @@ class Ft5Trainer {
 
     if (amount <= 0) return;
 
-    // The garbage only enters the board after it has become ready and the AI
-    // places a mino. At this point it is no longer just a warning queue.
+    // Flow: received garbage is gray until readyAtMs, then it becomes red.
+    // Red garbage enters the board only when the AI locks the next mino.
     this.human.queueGarbage(amount);
     this.human.applyPendingGarbage();
     this.labGarbageMaterialized += amount;
@@ -2052,9 +2067,98 @@ class Ft5Trainer {
     else if (isBound(e, settings.keys.softDrop)) logical = "down";
     if (logical) this.input.keyUp(logical, performance.now());
   }
+
+  handleTouchAction(action: TouchAction, down: boolean): void {
+    const now = performance.now();
+
+    if (action === "start") {
+      if (down) this.startPlayableMatch();
+      return;
+    }
+
+    if (action === "next") {
+      if (down) this.nextRound();
+      return;
+    }
+
+    if (this.mode !== "human_vs_ai" && this.mode !== "zenith") return;
+    if (!this.matchStarted || this.matchOver) return;
+
+    if (action === "left" || action === "right" || action === "down") {
+      if (down) {
+        this.input.keyDown(action, now);
+        this.resetHumanGroundTimer();
+      } else this.input.keyUp(action, now);
+      return;
+    }
+
+    if (!down) return;
+
+    if (action === "cw") {
+      if (this.human.rotateCw()) { this.input.notifyTransform(now); this.resetHumanGroundTimer(); }
+    } else if (action === "ccw") {
+      if (this.human.rotateCcw()) { this.input.notifyTransform(now); this.resetHumanGroundTimer(); }
+    } else if (action === "180") {
+      if (this.human.rotate180()) { this.input.notifyTransform(now); this.resetHumanGroundTimer(); }
+    } else if (action === "hold") {
+      const beforeKind = this.human.active.kind;
+      const beforeHold = this.human.hold;
+      const ok = this.human.holdPiece();
+      if (ok && (this.human.active.kind !== beforeKind || this.human.hold !== beforeHold)) {
+        this.input.resetRepeatAfterPieceChange(now);
+        this.resetHumanGroundTimer();
+      }
+    } else if (action === "drop") this.humanHardDrop();
+  }
 }
 
 const trainer = new Ft5Trainer();
+
+function setupTouchControls(): void {
+  const app = document.querySelector<HTMLDivElement>("#app");
+  if (!app) return;
+
+  const controls = document.createElement("div");
+  controls.id = "touchControls";
+  const buttons: Array<[string, TouchAction, string]> = [
+    ["START", "start", "wide"],
+    ["NEXT", "next", "wide"],
+    ["◀", "left", ""],
+    ["▼", "down", ""],
+    ["▶", "right", ""],
+    ["DROP", "drop", ""],
+    ["CCW", "ccw", ""],
+    ["CW", "cw", ""],
+    ["180", "180", ""],
+    ["HOLD", "hold", ""],
+  ];
+
+  for (const [label, action, cls] of buttons) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `touchButton ${cls}`.trim();
+    btn.textContent = label;
+
+    const press = (ev: Event) => {
+      ev.preventDefault();
+      trainer.handleTouchAction(action, true);
+    };
+    const release = (ev: Event) => {
+      ev.preventDefault();
+      trainer.handleTouchAction(action, false);
+    };
+
+    btn.addEventListener("pointerdown", press);
+    btn.addEventListener("pointerup", release);
+    btn.addEventListener("pointercancel", release);
+    btn.addEventListener("pointerleave", release);
+    controls.appendChild(btn);
+  }
+
+  app.appendChild(controls);
+}
+
+setupTouchControls();
 
 async function loadAiModel(): Promise<void> {
   const modelUrl = `${import.meta.env.BASE_URL}models/web_policy.json`;
@@ -2190,9 +2294,14 @@ function render(): void {
   trainer.updateModeButton();
   resizeCanvasForDisplay();
   const rect = canvas.getBoundingClientRect();
-  const w = rect.width;
-  const h = rect.height;
-  ctx.clearRect(0, 0, w, h);
+  const cssW = rect.width;
+  const cssH = rect.height;
+  ctx.clearRect(0, 0, cssW, cssH);
+  const layoutScale = canvasLayoutScale();
+  const w = cssW / layoutScale;
+  const h = cssH / layoutScale;
+  ctx.save();
+  if (layoutScale !== 1) ctx.scale(layoutScale, layoutScale);
   ctx.fillStyle = "#070b14";
   ctx.fillRect(0, 0, w, h);
   ctx.fillStyle = "#e5e7eb";
@@ -2218,7 +2327,7 @@ function render(): void {
     trainer.mode === "zenith"
       ? `${trainer.zenith.playerHeightM.toFixed(1)}m  rank #${trainer.zenith.playerRank}/${trainer.zenith.activeCount()}`
       : trainer.mode === "lab"
-        ? `bags ${trainer.labBagsInjected}  queued ${trainer.labQueuedGarbage()}  ready ${trainer.labReadyGarbage(now)}  entered ${trainer.labGarbageMaterialized}`
+        ? `bags ${trainer.labBagsInjected}  gray ${trainer.labGrayGarbage(now)}  red ${trainer.labReadyGarbage(now)}  entered ${trainer.labGarbageMaterialized}`
         : `${leftName} ${trainer.score.human} - ${trainer.score.ai} ${rightName}`;
   ctx.fillText(`${trainer.mode === "zenith" ? "Zenith" : `FT${trainer.firstTo}`}   ${scoreText}   |   ${startState}   |   ${playingText}`, 26, 70);
   ctx.fillStyle = trainer.roundOver ? "#fbbf24" : "#94a3b8";
@@ -2249,8 +2358,9 @@ function render(): void {
       [`delay: ${(LAB_GARBAGE_DELAY_MS / 1000).toFixed(1)}s`, "#94a3b8"],
       [`bags survived: ${trainer.labBagsInjected}`, "#34d399"],
       [`scheduled: ${trainer.labGarbageInjected}`, "#94a3b8"],
-      [`queued warning: ${trainer.labQueuedGarbage()}`, "#fbbf24"],
-      [`ready: ${trainer.labReadyGarbage(now)}`, "#fb7185"],
+      [`gray incoming: ${trainer.labGrayGarbage(now)}`, "#9ca3af"],
+      [`red ready: ${trainer.labReadyGarbage(now)}`, "#fb7185"],
+      [`total warning: ${trainer.labQueuedGarbage()}`, "#fbbf24"],
       [`next ready: ${trainer.nextLabGarbageSeconds(now)}s`, "#94a3b8"],
       [`entered board: ${trainer.labGarbageMaterialized}`, "#94a3b8"],
       [`pieces: ${trainer.human.piecesLocked}`, "#94a3b8"],
@@ -2330,6 +2440,7 @@ function render(): void {
     26,
     h - 18
   );
+  ctx.restore();
   requestAnimationFrame(render);
 }
 
