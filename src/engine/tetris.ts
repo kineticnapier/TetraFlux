@@ -276,10 +276,10 @@ function calcAttack(lines: number, spin: SpinType, combo: number, b2bBeforeClear
   let total = base + b2bBonus + comboBonus;
   let capped = false;
 
-  // Ordinary single/double/triple should never become stronger than the
-  // cleared line count. This prevents cases like normal Triple -> 5 attack.
+  // Ordinary single/double/triple base attack is small, but combo pressure
+  // should still matter. Singles can send attack once combo stacks high enough.
   if (spin === "none" && lines < 4) {
-    const cap = Math.max(0, lines - 1);
+    const cap = lines + Math.max(0, Math.floor(combo / 2));
     if (total > cap) {
       total = cap;
       comboBonus = Math.max(0, total - base - b2bBonus);

@@ -114,6 +114,7 @@ export interface DrawBoardOptions {
   active?: boolean;
   invisibleLocked?: boolean;
   revealInvisible?: boolean;
+  holdDisabled?: boolean;
 }
 
 /**
@@ -143,6 +144,13 @@ export function drawBoard(ctx: CanvasRenderingContext2D, engine: TetrisEngine, o
 
   // HOLD: left side of this player's board.
   drawMiniPiece(ctx, engine.hold, x, y, 15, "HOLD");
+  if (opts.holdDisabled) {
+    ctx.strokeStyle = "#f87171";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(x + 1.5, y + 1.5, 85, 55);
+    ctx.lineWidth = 1;
+    drawText(ctx, "NO HOLD", x + 11, y + 51, "#fecaca", "bold 12px Consolas");
+  }
 
   // Visible garbage queue: between HOLD and board.
   drawGarbageMeter(ctx, engine.pendingGarbage, x + sideW + gap, y, boardH);
