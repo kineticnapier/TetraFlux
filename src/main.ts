@@ -32,11 +32,13 @@ interface PendingAiAction {
   side?: BattleSide;
 }
 
-interface LabIncomingGarbage {
+interface TimedIncomingGarbage {
   amount: number;
   receivedAtMs: number;
   readyAtMs: number;
 }
+
+type EngineSlot = "human" | "ai";
 
 type TouchAction = "left" | "right" | "down" | "cw" | "ccw" | "180" | "hold" | "drop" | "start" | "next";
 
@@ -579,14 +581,18 @@ function applyAttack(sender: TetrisEngine, receiver: TetrisEngine, amount: numbe
   atk -= canceled;
 
   const sent = atk;
-  if (sent > 0) receiver.queueGarbage(sent);
 
   return { rawAttack, canceled, sent };
 }
 
 
-function applyRemainingGarbageAfterCounter(engine: TetrisEngine, result: { rawAttack: number; linesCleared: number }): void {
-  if (result.rawAttack <= 0 && result.linesCleared <= 0) engine.applyPendingGarbage();
+function applyRemainingGarbageAfterCounter(engine: TetrisEngine, result: { rawAttack: number; linesCleared: number }): number {
+  if (result.rawAttack <= 0 && result.linesCleared <= 0) {
+    const amount = engine.pendingGarbage;
+    engine.applyPendingGarbage();
+    return amount;
+  }
+  return 0;
 }
 
 type ZenithFeedKind = "join" | "out" | "ko" | "danger" | "floor";
@@ -1138,7 +1144,7 @@ class Ft5Trainer {
   labBagsInjected = 0;
   labGarbageInjected = 0;
   labGarbageMaterialized = 0;
-  labIncomingGarbage: LabIncomingGarbage[] = [];
+  delayedIncomingGarbage: Record<EngineSlot, TimedIncomingGarbage[]> = { human: [], ai: [] };
   labDeaths = 0;
 
   autoUploadStatus: AutoUploadStatus = "idle";
@@ -1187,7 +1193,6 @@ class Ft5Trainer {
     const next: GameMode =
       this.mode === "human_vs_ai" ? "ai_vs_ai" :
       this.mode === "ai_vs_ai" ? "lab" :
-      this.mode === "lab" ? "zenith" :
       "human_vs_ai";
     this.setMode(next);
   }
@@ -1196,7 +1201,7 @@ class Ft5Trainer {
     if (this.mode === "human_vs_ai") return "Human vs AI";
     if (this.mode === "ai_vs_ai") return "AI Battle";
     if (this.mode === "lab") return "Garbage Lab";
-    return "Zenith Tower";
+    return "Human vs AI";
   }
   updateModeButton(): void { toggleModeBtn.textContent = `Mode: ${this.modeLabel()}`; }
 
@@ -1256,12 +1261,12 @@ class Ft5Trainer {
       this.mode === "human_vs_ai" ? "Press R to start Human vs AI FT15." :
       this.mode === "ai_vs_ai" ? "Press R to start AI Battle." :
       this.mode === "lab" ? "Press R to start Garbage Lab." :
-      "Press R to start Zenith Tower."
+      "Press R to start Human vs AI FT15."
     );
   }
 
   startPlayableMatch(): void {
-    if (this.mode !== "human_vs_ai" && this.mode !== "ai_vs_ai" && this.mode !== "lab" && this.mode !== "zenith") {
+    if (this.mode !== "human_vs_ai" && this.mode !== "ai_vs_ai" && this.mode !== "lab") {
       this.resetMatch();
       return;
     }
@@ -1271,7 +1276,6 @@ class Ft5Trainer {
     this.resetRound();
 
     setStatus(
-      this.mode === "zenith" ? "Zenith Tower started." :
       this.mode === "lab" ? `Garbage Lab started: ${this.aiName} / ${settings.labGarbagePerBag} garbage per bag.` :
       this.mode === "ai_vs_ai" ? `AI Battle started: ${this.battleLeftName} vs ${this.battleRightName}.` :
       "Human vs AI FT15 started."
@@ -1319,7 +1323,7 @@ class Ft5Trainer {
     this.labBagsInjected = 0;
     this.labGarbageInjected = 0;
     this.labGarbageMaterialized = 0;
-    this.labIncomingGarbage = [];
+    this.delayedIncomingGarbage = { human: [], ai: [] };
     this.applyCurrentModToEngines();
     this.message =
       this.mode === "human_vs_ai"
@@ -1332,7 +1336,7 @@ class Ft5Trainer {
             ? (this.matchStarted
               ? `Garbage Lab: ${this.aiName} clears garbage forever. +${settings.labGarbagePerBag} garbage/bag.`
               : "Press R to start Garbage Lab.")
-            : (this.matchStarted ? "Climb Zenith Tower. New climbers always start at 0.0m." : "Press R to start Zenith Tower.");
+            : (this.matchStarted ? "Climb Zenith Tower. New climbers always start at 0.0m." : "Press R to start Human vs AI FT15.");
   }
 
   finishRound(winner: Winner): void {
@@ -1439,10 +1443,10 @@ class Ft5Trainer {
   private isHumanGrounded(): boolean { return this.human.hardDropDistance(this.human.active) <= 0; }
 
   private updateHumanGravity(dtMs: number, now: number): void {
-    if ((this.mode !== "human_vs_ai" && this.mode !== "zenith") || this.roundOver || this.matchOver || this.human.dead || !this.matchStarted) return;
+    if ((this.mode !== "human_vs_ai") || this.roundOver || this.matchOver || this.human.dead || !this.matchStarted) return;
     const gravity =
       Math.max(0, settings.gravityCellsPerSecond) *
-      (this.mode === "zenith" ? (currentQuickPlayMod.gravityMultiplier ?? 1) : 1);
+      1;
     if (gravity > 0) {
       this.humanGravityCarry += (dtMs / 1000) * gravity;
       const steps = Math.min(20, Math.floor(this.humanGravityCarry));
@@ -1508,7 +1512,8 @@ class Ft5Trainer {
         return;
       }
     } else {
-      applyAttack(this.human, this.aiEngine, effectiveResult.attackSent);
+      const attackApplied = applyAttack(this.human, this.aiEngine, effectiveResult.attackSent);
+      if (attackApplied.sent > 0) this.scheduleIncomingGarbage("ai", attackApplied.sent, now);
       applyRemainingGarbageAfterCounter(this.human, effectiveResult);
       if (this.human.dead || effectiveResult.topout) { this.finishRound("ai"); return; }
     }
@@ -1516,7 +1521,7 @@ class Ft5Trainer {
   }
 
   private humanLockCurrent(now: number): void {
-    if (this.roundOver || this.matchOver || this.human.dead || (this.mode !== "human_vs_ai" && this.mode !== "zenith")) return;
+    if (this.roundOver || this.matchOver || this.human.dead || (this.mode !== "human_vs_ai")) return;
     const stateBefore = this.human.stateDict();
     const aiStateBefore = this.aiEngine.stateDict();
     const activeBefore: PieceState = { ...this.human.active };
@@ -1529,7 +1534,7 @@ class Ft5Trainer {
   }
 
   humanHardDrop(): void {
-    if (this.roundOver || this.matchOver || this.human.dead || (this.mode !== "human_vs_ai" && this.mode !== "zenith")) return;
+    if (this.roundOver || this.matchOver || this.human.dead || (this.mode !== "human_vs_ai")) return;
     const now = performance.now();
     const stateBefore = this.human.stateDict();
     const aiStateBefore = this.aiEngine.stateDict();
@@ -1713,6 +1718,43 @@ class Ft5Trainer {
     this[this.pendingActionRef(side)] = value;
   }
 
+  private chooseAiAction(engine: TetrisEngine, ai: AiLike): AiChoice | null {
+    const normal = ai.choose(engine);
+    if (!normal) return null;
+
+    const metrics = boardMetrics(engine.stateDict().board);
+    const danger = metrics.maxHeight >= 14 || engine.pendingGarbage >= 6;
+    if (danger || Math.random() >= 0.10) return normal;
+
+    const scorer = (ai as unknown as { scoreAfter?: (e: TetrisEngine, a: PlacementAction) => { score: number; info: Record<string, unknown> } }).scoreAfter;
+    const fallback = (ai as unknown as { fallback?: { scoreAfter?: (e: TetrisEngine, a: PlacementAction) => { score: number; info: Record<string, unknown> } } }).fallback;
+    const scoreAfter = typeof scorer === "function" ? scorer.bind(ai) :
+      typeof fallback?.scoreAfter === "function" ? fallback.scoreAfter.bind(fallback) :
+      null;
+
+    if (!scoreAfter) return normal;
+
+    const legal = engine.legalPlacements(true);
+    if (legal.length < 2) return normal;
+
+    const ranked = legal
+      .map((action) => ({ action, ...scoreAfter(engine, action) }))
+      .filter((x) => Number.isFinite(x.score))
+      .sort((a, b) => a.score - b.score);
+
+    if (ranked.length < 2) return normal;
+
+    const maxAltIndex = Math.min(2, ranked.length - 1);
+    const altIndex = maxAltIndex >= 2 && Math.random() < 0.20 ? 2 : 1;
+    const alt = ranked[altIndex];
+
+    return {
+      ...alt.action,
+      aiScore: alt.score,
+      aiInfo: { ...alt.info, randomVariant: true, randomVariantRank: altIndex + 1, normalScore: normal.aiScore },
+    };
+  }
+
   private startAiAction(engine: TetrisEngine, opponent: TetrisEngine, ai: AiLike, side?: BattleSide): boolean {
     if (this.roundOver || this.matchOver || engine.dead) return false;
     if (this.getPendingAction(side)) return true;
@@ -1720,7 +1762,7 @@ class Ft5Trainer {
     const stateBefore = engine.stateDict();
     const opponentBefore = opponent.stateDict();
 
-    const chosenAction = ai.choose(engine);
+    const chosenAction = this.chooseAiAction(engine, ai);
     if (!chosenAction) return false;
 
     const plannedAction = this.applyQuickPlayModToAction(chosenAction);
@@ -1748,7 +1790,9 @@ class Ft5Trainer {
     const result = this.applyQuickPlayModToResult(rawResult, action);
     this.applyAllSpinBreakGarbage(engine, slot, result);
     const attackApplied = applyAttack(engine, opponent, result.attackSent);
-    applyRemainingGarbageAfterCounter(engine, result);
+    if (attackApplied.sent > 0) this.scheduleIncomingGarbage(this.slotForEngine(opponent), attackApplied.sent);
+    const appliedGarbage = applyRemainingGarbageAfterCounter(engine, result);
+    if (this.mode === "lab" && engine === this.human) this.labGarbageMaterialized += appliedGarbage;
 
     if ((this.mode === "ai_vs_ai") && side) {
       this.battleAttack[side] += attackApplied.sent;
@@ -1877,60 +1921,94 @@ class Ft5Trainer {
     }
   }
 
+  private engineForSlot(slot: EngineSlot): TetrisEngine {
+    return slot === "human" ? this.human : this.aiEngine;
+  }
+
+  private slotForEngine(engine: TetrisEngine): EngineSlot {
+    return engine === this.aiEngine ? "ai" : "human";
+  }
+
+  private incomingMultiplierForCurrentMode(): number {
+    return usesQuickPlayMod(this.mode) ? (currentQuickPlayMod.incomingMultiplier ?? 1) : 1;
+  }
+
+  private scheduleIncomingGarbage(slot: EngineSlot, amount: number, now = performance.now()): void {
+    const scaled = Math.max(0, Math.floor(amount * this.incomingMultiplierForCurrentMode()));
+    if (scaled <= 0) return;
+    this.delayedIncomingGarbage[slot].push({
+      amount: scaled,
+      receivedAtMs: now,
+      readyAtMs: now + LAB_GARBAGE_DELAY_MS,
+    });
+  }
+
+  private scheduledIncomingGarbage(slot: EngineSlot, now: number): number {
+    return this.delayedIncomingGarbage[slot]
+      .filter((item) => item.readyAtMs > now)
+      .reduce((sum, item) => sum + item.amount, 0);
+  }
+
+  readyIncomingGarbage(slot: EngineSlot): number {
+    return this.engineForSlot(slot).pendingGarbage;
+  }
+
+  private materializeReadyIncomingGarbage(slot: EngineSlot, now: number): void {
+    const ready = this.delayedIncomingGarbage[slot].filter((item) => item.readyAtMs <= now);
+    if (ready.length === 0) return;
+    const amount = ready.reduce((sum, item) => sum + item.amount, 0);
+    this.delayedIncomingGarbage[slot] = this.delayedIncomingGarbage[slot].filter((item) => item.readyAtMs > now);
+    if (amount > 0) this.engineForSlot(slot).queueGarbage(amount);
+  }
+
+  private updateIncomingGarbage(now: number): void {
+    this.materializeReadyIncomingGarbage("human", now);
+    this.materializeReadyIncomingGarbage("ai", now);
+  }
+
+  garbageSegmentsFor(slot: EngineSlot, now: number): Array<{ label: string; amount: number; color: string }> {
+    const ready = this.readyIncomingGarbage(slot);
+    const scheduled = this.scheduledIncomingGarbage(slot, now);
+
+    // drawGarbageMeter draws bottom-up. Ready/red comes first, so it appears from the bottom.
+    return [
+      { label: "ready", amount: ready, color: "#ef4444" },
+      { label: "scheduled", amount: scheduled, color: "#9ca3af" },
+    ].filter((segment) => segment.amount > 0);
+  }
+
   private scheduleLabGarbageAfterLock(now: number): void {
     const completedBags = Math.floor(this.human.piecesLocked / 7);
     while (this.labBagsInjected < completedBags) {
       const base = Math.max(0, Math.floor(settings.labGarbagePerBag));
-      const amount = Math.max(0, Math.floor(base * (currentQuickPlayMod.incomingMultiplier ?? 1)));
-      if (amount > 0) {
-        this.labIncomingGarbage.push({ amount, receivedAtMs: now, readyAtMs: now + LAB_GARBAGE_DELAY_MS });
-        this.labGarbageInjected += amount;
+      if (base > 0) {
+        this.scheduleIncomingGarbage("human", base, now);
+        this.labGarbageInjected += Math.max(0, Math.floor(base * this.incomingMultiplierForCurrentMode()));
       }
       this.labBagsInjected++;
     }
   }
 
   labQueuedGarbage(): number {
-    return this.labIncomingGarbage.reduce((sum, item) => sum + item.amount, 0);
+    return this.delayedIncomingGarbage.human.reduce((sum, item) => sum + item.amount, 0) + this.human.pendingGarbage;
   }
 
   labGrayGarbage(now: number): number {
-    return this.labIncomingGarbage
-      .filter((item) => item.readyAtMs > now)
-      .reduce((sum, item) => sum + item.amount, 0);
+    return this.scheduledIncomingGarbage("human", now);
   }
 
-  labReadyGarbage(now: number): number {
-    return this.labIncomingGarbage
-      .filter((item) => item.readyAtMs <= now)
-      .reduce((sum, item) => sum + item.amount, 0);
+  labReadyGarbage(_now: number): number {
+    return this.human.pendingGarbage;
   }
 
   nextLabGarbageSeconds(now: number): string {
-    if (this.labIncomingGarbage.length === 0) return "-";
-    const nextReady = Math.min(...this.labIncomingGarbage.map((item) => item.readyAtMs));
+    if (this.delayedIncomingGarbage.human.length === 0) return "-";
+    const nextReady = Math.min(...this.delayedIncomingGarbage.human.map((item) => item.readyAtMs));
     return (Math.max(0, nextReady - now) / 1000).toFixed(1);
-  }
-
-  private materializeReadyLabGarbageAfterLock(now: number): void {
-    const ready = this.labIncomingGarbage.filter((item) => item.readyAtMs <= now);
-    if (ready.length === 0) return;
-
-    const amount = ready.reduce((sum, item) => sum + item.amount, 0);
-    this.labIncomingGarbage = this.labIncomingGarbage.filter((item) => item.readyAtMs > now);
-
-    if (amount <= 0) return;
-
-    // Flow: received garbage is gray until readyAtMs, then it becomes red.
-    // Red garbage enters the board only when the AI locks the next mino.
-    this.human.queueGarbage(amount);
-    this.human.applyPendingGarbage();
-    this.labGarbageMaterialized += amount;
   }
 
   private updateLabAfterLock(now: number): void {
     this.scheduleLabGarbageAfterLock(now);
-    this.materializeReadyLabGarbageAfterLock(now);
   }
 
   private updateLab(dtMs: number): void {
@@ -1977,6 +2055,7 @@ class Ft5Trainer {
   }
 
   update(dtMs: number, now: number): void {
+    this.updateIncomingGarbage(now);
     if (isAiBattleScreen(this.mode) && this.roundOver && !this.matchOver && this.aiBattleAutoNextAt !== null && now >= this.aiBattleAutoNextAt) {
       this.nextRound();
     }
@@ -2031,12 +2110,12 @@ class Ft5Trainer {
     if (!settingsModal.classList.contains("hidden")) return;
     if (gameKeys().has(e.key)) e.preventDefault();
     if (isBound(e, settings.keys.reset)) {
-      if (this.mode === "human_vs_ai" || this.mode === "ai_vs_ai" || this.mode === "lab" || this.mode === "zenith") this.startPlayableMatch();
+      if (this.mode === "human_vs_ai" || this.mode === "ai_vs_ai" || this.mode === "lab") this.startPlayableMatch();
       else this.resetMatch();
       return;
     }
     if (this.roundOver) { if (isBound(e, settings.keys.nextRound)) this.nextRound(); return; }
-    if (this.matchOver || (this.mode !== "human_vs_ai" && this.mode !== "zenith") || !this.matchStarted) return;
+    if (this.matchOver || (this.mode !== "human_vs_ai") || !this.matchStarted) return;
     const now = performance.now();
     let logical: LogicalMoveKey | null = null;
     if (isBound(e, settings.keys.left)) logical = "left";
@@ -2060,7 +2139,7 @@ class Ft5Trainer {
   }
 
   handleKeyUp(e: KeyboardEvent): void {
-    if (this.mode !== "human_vs_ai" && this.mode !== "zenith") return;
+    if (this.mode !== "human_vs_ai") return;
     let logical: LogicalMoveKey | null = null;
     if (isBound(e, settings.keys.left)) logical = "left";
     else if (isBound(e, settings.keys.right)) logical = "right";
@@ -2081,7 +2160,7 @@ class Ft5Trainer {
       return;
     }
 
-    if (this.mode !== "human_vs_ai" && this.mode !== "zenith") return;
+    if (this.mode !== "human_vs_ai") return;
     if (!this.matchStarted || this.matchOver) return;
 
     if (action === "left" || action === "right" || action === "down") {
@@ -2320,7 +2399,7 @@ function render(): void {
     trainer.mode === "zenith" ? "Tower" :
     "AI";
   const startState =
-    (trainer.mode === "human_vs_ai" || trainer.mode === "ai_vs_ai" || trainer.mode === "lab" || trainer.mode === "zenith") && !trainer.matchStarted
+    (trainer.mode === "human_vs_ai" || trainer.mode === "ai_vs_ai" || trainer.mode === "lab") && !trainer.matchStarted
       ? "WAITING: press R"
       : trainer.modeLabel();
   const scoreText =
@@ -2348,10 +2427,7 @@ function render(): void {
     invisibleLocked: invisibleActive,
     revealInvisible: invisibleReveal,
     holdDisabled: usesQuickPlayMod(trainer.mode) && currentQuickPlayMod.disableHold,
-    garbageSegments: trainer.mode === "lab" ? [
-      { label: "scheduled", amount: trainer.labGrayGarbage(now), color: "#9ca3af" },
-      { label: "ready", amount: trainer.labReadyGarbage(now), color: "#ef4444" },
-    ] : undefined,
+    garbageSegments: trainer.garbageSegmentsFor("human", now),
   });
   if (trainer.mode === "zenith") {
     drawZenithTower(ctx, trainer, 540, boardY, 500, Math.max(520, h - boardY - 18));
@@ -2378,6 +2454,7 @@ function render(): void {
       invisibleLocked: invisibleActive,
       revealInvisible: invisibleReveal,
       holdDisabled: usesQuickPlayMod(trainer.mode) && currentQuickPlayMod.disableHold,
+      garbageSegments: trainer.garbageSegmentsFor("ai", now),
     });
   }
   const panelX = 1068;

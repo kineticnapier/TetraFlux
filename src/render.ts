@@ -103,6 +103,7 @@ export function drawGarbageMeter(ctx: CanvasRenderingContext2D, amount: number, 
   let drawn = 0;
 
   if (cleanSegments.length > 0) {
+    // Draw bottom-up in the order supplied. Ready/red is passed first so it grows from the bottom.
     for (const segment of cleanSegments) {
       const rows = Math.min(20 - drawn, segment.amount);
       for (let i = 0; i < rows; i++) {
