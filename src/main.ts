@@ -314,6 +314,7 @@ const AI_BATTLE_MAX_TURNS_PER_ROUND = 1200;
 // movement paths consume more operations and therefore take longer.
 const MAX_AI_OPS_PER_SECOND = 3000;
 const LAB_GARBAGE_DELAY_MS = 2500;
+const MAX_RED_GARBAGE_ENTRY_PER_LOCK = 8;
 
 const canvas = document.querySelector<HTMLCanvasElement>("#game")!;
 const ctx = canvas.getContext("2d")!;
@@ -588,9 +589,19 @@ function applyAttack(sender: TetrisEngine, receiver: TetrisEngine, amount: numbe
 
 function applyRemainingGarbageAfterCounter(engine: TetrisEngine, result: { rawAttack: number; linesCleared: number }): number {
   if (result.rawAttack <= 0 && result.linesCleared <= 0) {
-    const amount = engine.pendingGarbage;
+    const amount = Math.max(0, Math.floor(engine.pendingGarbage));
+    if (amount <= 0) return 0;
+
+    const enterNow = Math.min(MAX_RED_GARBAGE_ENTRY_PER_LOCK, amount);
+    const carry = amount - enterNow;
+
+    // Only up to 8 red garbage lines may enter on one lock.
+    // Remaining red garbage stays red and waits for the next lock.
+    engine.pendingGarbage = enterNow;
     engine.applyPendingGarbage();
-    return amount;
+    engine.pendingGarbage += carry;
+
+    return enterNow;
   }
   return 0;
 }
@@ -1512,8 +1523,7 @@ class Ft5Trainer {
         return;
       }
     } else {
-      const attackApplied = applyAttack(this.human, this.aiEngine, effectiveResult.attackSent);
-      if (attackApplied.sent > 0) this.scheduleIncomingGarbage("ai", attackApplied.sent, now);
+      this.applyAttackWithCancelableIncoming(this.human, this.aiEngine, effectiveResult.attackSent, now);
       applyRemainingGarbageAfterCounter(this.human, effectiveResult);
       if (this.human.dead || effectiveResult.topout) { this.finishRound("ai"); return; }
     }
@@ -1789,8 +1799,7 @@ class Ft5Trainer {
     const rawResult = engine.hardDrop();
     const result = this.applyQuickPlayModToResult(rawResult, action);
     this.applyAllSpinBreakGarbage(engine, slot, result);
-    const attackApplied = applyAttack(engine, opponent, result.attackSent);
-    if (attackApplied.sent > 0) this.scheduleIncomingGarbage(this.slotForEngine(opponent), attackApplied.sent);
+    const attackApplied = this.applyAttackWithCancelableIncoming(engine, opponent, result.attackSent);
     const appliedGarbage = applyRemainingGarbageAfterCounter(engine, result);
     if (this.mode === "lab" && engine === this.human) this.labGarbageMaterialized += appliedGarbage;
 
@@ -1941,6 +1950,56 @@ class Ft5Trainer {
       receivedAtMs: now,
       readyAtMs: now + LAB_GARBAGE_DELAY_MS,
     });
+  }
+
+  private cancelDelayedIncomingGarbage(slot: EngineSlot, amount: number): number {
+    let remaining = Math.max(0, Math.floor(amount));
+    if (remaining <= 0) return 0;
+
+    const items = [...this.delayedIncomingGarbage[slot]]
+      .sort((a, b) => a.readyAtMs - b.readyAtMs || a.receivedAtMs - b.receivedAtMs);
+    const next: TimedIncomingGarbage[] = [];
+
+    for (const item of items) {
+      if (remaining <= 0) {
+        next.push(item);
+        continue;
+      }
+
+      const cancel = Math.min(item.amount, remaining);
+      remaining -= cancel;
+      const left = item.amount - cancel;
+      if (left > 0) next.push({ ...item, amount: left });
+    }
+
+    this.delayedIncomingGarbage[slot] = next;
+    return amount - remaining;
+  }
+
+  private applyAttackWithCancelableIncoming(sender: TetrisEngine, receiver: TetrisEngine, amount: number, now = performance.now()): AttackApplyResult {
+    const rawAttack = Math.max(0, Math.floor(amount));
+    let outgoing = rawAttack;
+    let canceled = 0;
+
+    // Red ready garbage is canceled first because it is the immediate threat.
+    const redCancel = Math.min(sender.pendingGarbage, outgoing);
+    if (redCancel > 0) {
+      sender.pendingGarbage -= redCancel;
+      outgoing -= redCancel;
+      canceled += redCancel;
+    }
+
+    // Gray scheduled garbage is also always cancelable.
+    if (outgoing > 0) {
+      const grayCancel = this.cancelDelayedIncomingGarbage(this.slotForEngine(sender), outgoing);
+      outgoing -= grayCancel;
+      canceled += grayCancel;
+    }
+
+    const sent = Math.max(0, outgoing);
+    if (sent > 0) this.scheduleIncomingGarbage(this.slotForEngine(receiver), sent, now);
+
+    return { rawAttack, canceled, sent };
   }
 
   private scheduledIncomingGarbage(slot: EngineSlot, now: number): number {
@@ -2435,7 +2494,7 @@ function render(): void {
     drawPanel(ctx, 540, boardY, 500, 300, "Garbage Lab", [
       [`AI: ${trainer.aiName}`, "#e5e7eb"],
       [`garbage/bag: ${settings.labGarbagePerBag}`, "#94a3b8"],
-      [`delay: ${(LAB_GARBAGE_DELAY_MS / 1000).toFixed(1)}s`, "#94a3b8"],
+      [`delay: ${(LAB_GARBAGE_DELAY_MS / 1000).toFixed(1)}s / cap ${MAX_RED_GARBAGE_ENTRY_PER_LOCK}`, "#94a3b8"],
       [`bags survived: ${trainer.labBagsInjected}`, "#34d399"],
       [`incoming shown on left G meter`, "#fbbf24"],
       [`next ready: ${trainer.nextLabGarbageSeconds(now)}s`, "#94a3b8"],
