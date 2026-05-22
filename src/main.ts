@@ -46,6 +46,12 @@ interface GridCell {
   y: number;
 }
 
+interface LastStandIndicator {
+  current: GridCell;
+  next: GridCell;
+  receivedSinceMove: number;
+}
+
 interface SpinPlanTarget {
   kind: "TSD" | "TST" | "STSD" | "TSlot";
   cx: number;
@@ -254,7 +260,6 @@ interface SpecialMod {
   startBoard?: "loaded_dice" | "damnation";
   startGarbageRows?: number;
   lineClearStunMs?: number;
-  blighted?: boolean;
   warlock?: boolean;
   allSpin?: boolean;
   disableAllSpin?: boolean;
@@ -291,9 +296,8 @@ const SPECIAL_MODS: SpecialMod[] = [
   {
     id: "damnation",
     name: "Damnation",
-    description: "BLIGHTED clears are required to attack/cancel. Garbage has 6-7 holes. All-Spins disabled.",
+    description: "Starts from a checkerboard, garbage has 6-7 holes, and All-Spins are disabled.",
     startBoard: "damnation",
-    blighted: true,
     disableAllSpin: true,
     largeHoleCount: 6,
     largeHoleExtraChance: 0.5,
@@ -329,6 +333,7 @@ function specialModApplies(mode?: GameMode): boolean {
 }
 
 function currentEffectiveSpecialMod(mode?: GameMode): SpecialMod {
+  if (currentQuickPlayMod.id !== "none") return SPECIAL_MODS[0];
   return specialModApplies(mode) ? currentSpecialMod : SPECIAL_MODS[0];
 }
 
@@ -527,6 +532,11 @@ quickPlayModSelect.style.color = "#e5e7eb";
 quickPlayModSelect.style.font = "13px Consolas";
 quickPlayModSelect.addEventListener("change", () => {
   currentQuickPlayMod = quickPlayModById(quickPlayModSelect.value);
+  if (currentQuickPlayMod.id !== "none" && currentSpecialMod.id !== "none") {
+    currentSpecialMod = SPECIAL_MODS[0];
+    specialModSelect.value = "none";
+    trainer?.resetMatch?.();
+  }
   trainer?.applyCurrentModToEngines?.();
   setStatus(`Mod selected: ${currentQuickPlayMod.name} - ${currentQuickPlayMod.description}`);
 });
@@ -553,6 +563,10 @@ specialModSelect.style.color = "#fed7aa";
 specialModSelect.style.font = "13px Consolas";
 specialModSelect.addEventListener("change", () => {
   currentSpecialMod = specialModById(specialModSelect.value);
+  if (currentSpecialMod.id !== "none" && currentQuickPlayMod.id !== "none") {
+    currentQuickPlayMod = QUICK_PLAY_MODS[0];
+    quickPlayModSelect.value = "none";
+  }
   trainer?.resetMatch?.();
   trainer?.applyCurrentModToEngines?.();
   setStatus(`Special selected: ${currentSpecialMod.name} - ${currentSpecialMod.description}`);
@@ -1364,6 +1378,10 @@ class Ft5Trainer {
   labGarbageInjected = 0;
   labGarbageMaterialized = 0;
   delayedIncomingGarbage: Record<EngineSlot, TimedIncomingGarbage[]> = { human: [], ai: [] };
+  lastStandIndicators: Record<EngineSlot, LastStandIndicator> = {
+    human: { current: { x: 4, y: 12 }, next: { x: 7, y: 6 }, receivedSinceMove: 0 },
+    ai: { current: { x: 5, y: 12 }, next: { x: 2, y: 6 }, receivedSinceMove: 0 },
+  };
   labDeaths = 0;
   specialStunUntil: Record<"player" | "left" | "right", number> = { player: 0, left: 0, right: 0 };
   damnationBlighted: Record<"player" | "left" | "right", boolean> = { player: false, left: false, right: false };
@@ -1439,6 +1457,43 @@ class Ft5Trainer {
     t = Math.imul(t ^ (t >>> 15), t | 1);
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+
+  private randomLastStandIndicatorCell(): GridCell {
+    const visibleRows = Math.max(1, 20 - (this.specialMod().topCutRows ?? 0));
+    return {
+      x: Math.floor(this.random01() * 10),
+      y: Math.floor(this.random01() * visibleRows),
+    };
+  }
+
+  private resetLastStandIndicators(): void {
+    this.lastStandIndicators = {
+      human: { current: this.randomLastStandIndicatorCell(), next: this.randomLastStandIndicatorCell(), receivedSinceMove: 0 },
+      ai: { current: this.randomLastStandIndicatorCell(), next: this.randomLastStandIndicatorCell(), receivedSinceMove: 0 },
+    };
+  }
+
+  private advanceLastStandIndicator(slot: EngineSlot, receivedLines: number): void {
+    if (this.specialMod().id !== "last_stand" || receivedLines <= 0) return;
+
+    const indicator = this.lastStandIndicators[slot];
+    indicator.receivedSinceMove += receivedLines;
+
+    while (indicator.receivedSinceMove >= 80) {
+      indicator.receivedSinceMove -= 80;
+      indicator.current = indicator.next;
+      indicator.next = this.randomLastStandIndicatorCell();
+    }
+  }
+
+  lastStandIndicatorsFor(slot: EngineSlot): Array<{ x: number; y: number; color: string; label: string }> | undefined {
+    if (this.specialMod().id !== "last_stand") return undefined;
+    const indicator = this.lastStandIndicators[slot];
+    return [
+      { ...indicator.current, color: "#22d3ee", label: "now" },
+      { ...indicator.next, color: "#fbbf24", label: "next" },
+    ];
   }
 
   private randomPiece(): PieceKind {
@@ -1646,6 +1701,7 @@ class Ft5Trainer {
     this.labGarbageInjected = 0;
     this.labGarbageMaterialized = 0;
     this.delayedIncomingGarbage = { human: [], ai: [] };
+    this.resetLastStandIndicators();
     this.specialStunUntil = { player: 0, left: 0, right: 0 };
     this.damnationBlighted = { player: false, left: false, right: false };
     this.warlockLastAction = { player: "", left: "", right: "" };
@@ -1922,19 +1978,6 @@ class Ft5Trainer {
     if (attackMultiplier !== 1) {
       attackSent = Math.max(0, Math.floor(attackSent * attackMultiplier));
       rawAttack = Math.max(0, Math.floor(rawAttack * attackMultiplier));
-    }
-
-    if (special.blighted && result.linesCleared > 0) {
-      const garbageClear = this.resultClearedGarbage(result);
-      const blightedNow = this.damnationBlighted[slot];
-      if (garbageClear || blightedNow) {
-        attackSent = Math.max(0, Math.floor(attackSent * 1.75 + 1));
-        rawAttack = Math.max(0, Math.floor(rawAttack * 1.75 + 1));
-      } else {
-        attackSent = 0;
-        rawAttack = 0;
-      }
-      this.damnationBlighted[slot] = garbageClear;
     }
 
     return { ...result, attackSent, rawAttack, spin };
@@ -2835,6 +2878,7 @@ class Ft5Trainer {
     const multiplier = applyIncomingMultiplier ? this.incomingMultiplierForCurrentMode() : 1;
     const scaled = Math.max(0, Math.floor(amount * multiplier));
     if (scaled <= 0) return;
+    this.advanceLastStandIndicator(slot, scaled);
     this.delayedIncomingGarbage[slot].push({
       amount: scaled,
       receivedAtMs: now,
@@ -3384,6 +3428,7 @@ function render(): void {
     nextVisibleCount: nextVisibleCountForMode(trainer.mode),
     topCutRows: currentEffectiveSpecialMod(trainer.mode).topCutRows,
     visibleGarbageRows: currentEffectiveSpecialMod(trainer.mode).visibleGarbageRows,
+    lastStandIndicators: trainer.lastStandIndicatorsFor("human"),
   });
   if (trainer.mode === "zenith") {
     drawZenithTower(ctx, trainer, 540, boardY, 500, Math.max(520, h - boardY - 18));
@@ -3414,6 +3459,7 @@ function render(): void {
       nextVisibleCount: nextVisibleCountForMode(trainer.mode),
       topCutRows: currentEffectiveSpecialMod(trainer.mode).topCutRows,
       visibleGarbageRows: currentEffectiveSpecialMod(trainer.mode).visibleGarbageRows,
+      lastStandIndicators: trainer.lastStandIndicatorsFor("ai"),
     });
   }
   const panelX = 1068;

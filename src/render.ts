@@ -161,6 +161,7 @@ export interface DrawBoardOptions {
   nextVisibleCount?: number;
   topCutRows?: number;
   visibleGarbageRows?: number;
+  lastStandIndicators?: Array<{ x: number; y: number; color: string; label?: string }>;
 }
 
 /**
@@ -222,6 +223,30 @@ export function drawBoard(ctx: CanvasRenderingContext2D, engine: TetrisEngine, o
       ctx.fillRect(px, py, cell, cell);
       ctx.strokeStyle = "#2b2f3a";
       ctx.strokeRect(px + 0.5, py + 0.5, cell - 1, cell - 1);
+    }
+  }
+
+  if (opts.lastStandIndicators?.length) {
+    for (const marker of opts.lastStandIndicators) {
+      if (marker.x < 0 || marker.x >= 10 || marker.y < 0 || marker.y >= visibleRows) continue;
+      const cx = boardX + marker.x * cell + cell / 2;
+      const cy = boardY + marker.y * cell + cell / 2;
+      const isNext = marker.label === "next";
+
+      ctx.save();
+      ctx.strokeStyle = marker.color;
+      ctx.fillStyle = marker.color;
+      ctx.lineWidth = isNext ? 2 : 3;
+      ctx.setLineDash(isNext ? [4, 3] : []);
+      ctx.beginPath();
+      ctx.arc(cx, cy, isNext ? cell * 0.22 : cell * 0.32, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = isNext ? 0.16 : 0.24;
+      ctx.fillRect(boardX + marker.x * cell + 2, boardY + marker.y * cell + 2, cell - 4, cell - 4);
+      ctx.globalAlpha = 1;
+      drawText(ctx, isNext ? "N" : "H", cx - 4, cy + 4, marker.color, "bold 11px Consolas");
+      ctx.restore();
     }
   }
 
