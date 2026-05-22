@@ -30,10 +30,11 @@ function cellColor(c: Cell): string {
   return COLORS[c ?? "."] ?? "#aaa";
 }
 
-function drawPieceCells(ctx: CanvasRenderingContext2D, piece: PieceState, ox: number, oy: number, cell: number, fill: string, stroke = "#ffffff"): void {
+function drawPieceCells(ctx: CanvasRenderingContext2D, piece: PieceState, ox: number, oy: number, cell: number, fill: string, stroke = "#ffffff", topCutRows = 0): void {
+  const visibleRows = Math.max(1, 20 - topCutRows);
   for (const [x, y] of shapeCells(piece)) {
-    const vy = y - HIDDEN_ROWS;
-    if (x < 0 || x >= 10 || vy < 0 || vy >= 20) continue;
+    const vy = y - HIDDEN_ROWS - topCutRows;
+    if (x < 0 || x >= 10 || vy < 0 || vy >= visibleRows) continue;
     const px = ox + x * cell;
     const py = oy + vy * cell;
     ctx.fillStyle = fill;
@@ -176,16 +177,19 @@ export function drawBoard(ctx: CanvasRenderingContext2D, engine: TetrisEngine, o
   const gap = 12;
   const garbageW = 20;
   const boardX = x + sideW + gap + garbageW + gap;
-  const boardY = y;
+  const topCutRows = Math.max(0, Math.min(19, opts.topCutRows ?? 0));
+  const visibleRows = Math.max(1, 20 - topCutRows);
+  const boardY = y + topCutRows * cell;
   const boardW = 10 * cell;
-  const boardH = 20 * cell;
+  const boardH = visibleRows * cell;
   const nextX = boardX + boardW + gap;
 
   const panelW = sideW + gap + garbageW + gap + boardW + gap + sideW + 24;
-  const panelH = boardH + 130;
+  const panelH = 20 * cell + 130;
 
   drawRoundRect(ctx, x - 12, y - 50, panelW, panelH, 14, "#0d1423");
   drawText(ctx, title, x, y - 22, "#38bdf8", "bold 22px Consolas");
+  if (topCutRows > 0) drawText(ctx, `safe height ${visibleRows}`, boardX, boardY - 8, "#fb7185", "12px Consolas");
 
   // HOLD: left side of this player's board.
   drawMiniPiece(ctx, engine.hold, x, y, 15, "HOLD");
@@ -198,16 +202,17 @@ export function drawBoard(ctx: CanvasRenderingContext2D, engine: TetrisEngine, o
   }
 
   // Visible garbage queue: between HOLD and board.
-  drawGarbageMeter(ctx, engine.pendingGarbage, x + sideW + gap, y, boardH, opts.garbageSegments);
+  drawGarbageMeter(ctx, engine.pendingGarbage, x + sideW + gap, boardY, boardH, opts.garbageSegments);
 
-  // Board: center.
-  const visible = engine.board.slice(HIDDEN_ROWS);
+  // Board: center. Last Stand cuts rows from the top, so only the lower
+  // visibleRows are drawn and used for the visible playfield.
+  const visible = engine.board.slice(HIDDEN_ROWS + topCutRows);
   const garbageRows = visible
     .map((r, idx) => r.some((c) => c === "G" || c === "B") ? idx : -1)
     .filter((idx) => idx >= 0);
   const visibleGarbageRows = opts.visibleGarbageRows ?? Number.POSITIVE_INFINITY;
   const visibleGarbageSet = new Set(garbageRows.slice(0, Math.max(0, visibleGarbageRows)));
-  for (let row = 0; row < 20; row++) {
+  for (let row = 0; row < visibleRows; row++) {
     for (let col = 0; col < 10; col++) {
       const px = boardX + col * cell;
       const py = boardY + row * cell;
@@ -228,8 +233,8 @@ export function drawBoard(ctx: CanvasRenderingContext2D, engine: TetrisEngine, o
   if (!engine.dead) {
     const ghost = engine.ghostPiece();
     for (const [gx, gy] of shapeCells(ghost)) {
-      const vy = gy - HIDDEN_ROWS;
-      if (gx < 0 || gx >= 10 || vy < 0 || vy >= 20) continue;
+      const vy = gy - HIDDEN_ROWS - topCutRows;
+      if (gx < 0 || gx >= 10 || vy < 0 || vy >= visibleRows) continue;
       ctx.strokeStyle = "#e5e7eb";
       ctx.lineWidth = 2;
       ctx.strokeRect(boardX + gx * cell + 5, boardY + vy * cell + 5, cell - 10, cell - 10);
@@ -238,11 +243,11 @@ export function drawBoard(ctx: CanvasRenderingContext2D, engine: TetrisEngine, o
   }
 
   if (opts.active && !engine.dead) {
-    drawPieceCells(ctx, engine.active, boardX, boardY, cell, COLORS[engine.active.kind], "#ffffff");
+    drawPieceCells(ctx, engine.active, boardX, boardY, cell, COLORS[engine.active.kind], "#ffffff", topCutRows);
   }
 
   const metrics = boardMetrics(engine.stateDict().board);
-  const infoY = y + boardH + 24;
+  const infoY = boardY + boardH + 24;
   drawText(ctx, `active=${engine.active.kind} canHold=${engine.canHold}`, boardX, infoY, "#e5e7eb", "14px Consolas");
   drawText(ctx, `lines=${engine.lines} pieces=${engine.piecesLocked} garbage=${engine.pendingGarbage}`, boardX, infoY + 20, "#94a3b8", "14px Consolas");
   drawText(ctx, `combo=${engine.combo} b2b=${engine.b2b} holes=${metrics.holes} height=${metrics.maxHeight}`, boardX, infoY + 40, "#94a3b8", "14px Consolas");

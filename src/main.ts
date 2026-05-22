@@ -283,7 +283,7 @@ const SPECIAL_MODS: SpecialMod[] = [
   {
     id: "last_stand",
     name: "Last Stand",
-    description: "Shrinks the safe height by 6, triples incoming, and uses straight garbage.",
+    description: "Board height is reduced by 6, received attacks are tripled, and garbage holes are straight.",
     topCutRows: 6,
     incomingMultiplier: 3,
     garbageScatterChance: 0,
@@ -463,17 +463,17 @@ const DEFAULT_SETTINGS: GameSettings = {
 const PIECE_KINDS: PieceKind[] = ["I", "J", "L", "O", "S", "T", "Z"];
 
 const LOADED_DICE_BOARD: string[] = [
-  "..........", ".GGG..GGG.", ".G.G..G.G.", ".GGG..GGG.", "..........",
-  "..........", ".GGG..GGG.", ".G.G..G.G.", ".GGG..GGG.", "..........",
-  "..........", ".GGG..GGG.", ".G.G..G.G.", ".GGG..GGG.", "..........",
-  "..........", ".GGG..GGG.", ".G.G..G.G.", ".GGG..GGG.", "..........",
+  "..........", "..........", "..........", "..........", "..........",
+  ".GGG..GGG.", ".G.G..G.G.", ".GGG..GGG.", "..........", "..........",
+  ".GGG..GGG.", ".G.G..G.G.", ".GGG..GGG.", "..........", "..........",
+  ".GGG..GGG.", ".G.G..G.G.", ".GGG..GGG.", "..........", "..........",
 ];
 
 const DAMNATION_BOARD: string[] = [
-  "..........", "..........", "..........", "..........", "....Z.....",
-  "..G.Z.G...", ".G.ZTZ.G..", "G.ZTOTT.G.", ".ZTOTOTZ..", "..TOTOT...",
-  ".GTOOOTG..", "GTOTOTZG..".slice(0, 10), ".ZTOOOTZ..".slice(0, 10), "..GTOG....", ".GZZOZG...",
-  "GZZOOZZG..".slice(0, 10), ".GGZOZGG..".slice(0, 10), "..GGOGG...", ".GGOOGG...", "GGG..GGG..".slice(0, 10),
+  "..........", "..........", "..........", "..........", "..........",
+  "..........", "..........", "..........", "..........", "..........",
+  "Z.O.Z.O.Z.", ".O.Z.O.Z.O", "Z.O.Z.O.Z.", ".O.Z.O.Z.O", "Z.O.Z.O.Z.",
+  ".O.Z.O.Z.O", "Z.O.Z.O.Z.", ".O.Z.O.Z.O", "Z.O.Z.O.Z.", ".O.Z.O.Z.O",
 ];
 
 const SETTINGS_KEY = "tetraflux_settings_v2_multikey";
@@ -1512,6 +1512,23 @@ class Ft5Trainer {
     if (special.topCutRows && boardMetrics(engine.stateDict().board).maxHeight > 20 - special.topCutRows) engine.dead = true;
   }
 
+  private attackReceiveMultiplierForSlot(_slot: EngineSlot): number {
+    const special = this.specialMod();
+    return special.id === "last_stand" ? 3 : 1;
+  }
+
+  private applySpecialInstantGround(engine: TetrisEngine): void {
+    if (!specialModApplies(this.mode) || !this.specialMod().instantGround || engine.dead) return;
+    const drop = engine.hardDropDistance(engine.active);
+    if (drop > 0) engine.active.y += drop;
+  }
+
+  private applySpecialInstantGroundToActiveEngines(): void {
+    if (!specialModApplies(this.mode) || !this.specialMod().instantGround) return;
+    this.applySpecialInstantGround(this.human);
+    this.applySpecialInstantGround(this.aiEngine);
+  }
+
   applyCurrentModToEngines(): void {
     const options = usesQuickPlayMod(this.mode) ? currentGarbageOptions() : {};
     this.human?.setGarbageOptions?.(options);
@@ -1753,8 +1770,11 @@ class Ft5Trainer {
 
   private updateHumanGravity(dtMs: number, now: number): void {
     if ((this.mode !== "human_vs_ai") || this.roundOver || this.matchOver || this.human.dead || !this.matchStarted || this.isSpecialStunned("player", now)) return;
+    if (this.specialMod().instantGround) {
+      this.applySpecialInstantGround(this.human);
+    }
     const gravity = this.specialMod().instantGround
-      ? 9999
+      ? 0
       : Math.max(0, settings.gravityCellsPerSecond) *
         1;
     if (gravity > 0) {
@@ -2701,6 +2721,7 @@ class Ft5Trainer {
 
   private aiActionStep(engine: TetrisEngine, opponent: TetrisEngine, ai: AiLike, side?: BattleSide): boolean {
     if (this.roundOver || this.matchOver || engine.dead) return false;
+    this.applySpecialInstantGround(engine);
 
     let pending = this.getPendingAction(side);
     if (!pending) {
@@ -2866,7 +2887,11 @@ class Ft5Trainer {
     }
 
     const sent = Math.max(0, outgoing);
-    if (sent > 0) this.scheduleIncomingGarbage(this.slotForEngine(receiver), sent, now, false);
+    if (sent > 0) {
+      const receiverSlot = this.slotForEngine(receiver);
+      const received = sent * this.attackReceiveMultiplierForSlot(receiverSlot);
+      this.scheduleIncomingGarbage(receiverSlot, received, now, false);
+    }
 
     return { rawAttack, canceled, sent };
   }
@@ -2984,6 +3009,7 @@ class Ft5Trainer {
 
   update(dtMs: number, now: number): void {
     this.updateIncomingGarbage(now);
+    this.applySpecialInstantGroundToActiveEngines();
     if (isAiBattleScreen(this.mode) && this.roundOver && !this.matchOver && this.aiBattleAutoNextAt !== null && now >= this.aiBattleAutoNextAt) {
       this.nextRound();
     }
