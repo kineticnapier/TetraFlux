@@ -1,4 +1,5 @@
 import { boardMetrics, TetrisEngine, type PlacementAction } from "../engine/tetris";
+import { estimateSpinPotential } from "./spinPotential";
 
 export interface AiChoice extends PlacementAction {
   aiScore: number;
@@ -12,13 +13,16 @@ export class HeuristicAI {
   wellWeight = 0.2;
   lineBonus = 4.0;
   attackBonus = 2.0;
+  spinPotentialBonus = 1.1;
   topoutPenalty = 100000.0;
   holdPenalty = 0.05;
 
   scoreAfter(engine: TetrisEngine, action: PlacementAction): { score: number; info: Record<string, unknown> } {
     const e = engine.clone();
     const result = e.applyAction(action);
-    const metrics = boardMetrics(e.stateDict().board);
+    const state = e.stateDict();
+    const metrics = boardMetrics(state.board);
+    const spinPotential = estimateSpinPotential(state);
 
     let score = 0;
     score += this.holeWeight * metrics.holes;
@@ -27,6 +31,7 @@ export class HeuristicAI {
     score += this.wellWeight * metrics.wells;
     score -= this.lineBonus * result.linesCleared;
     score -= this.attackBonus * result.attackSent;
+    score -= this.spinPotentialBonus * spinPotential.bonus;
     if (action.hold) score += this.holdPenalty;
     if (e.dead || result.topout) score += this.topoutPenalty;
 
@@ -37,6 +42,7 @@ export class HeuristicAI {
         lines: result.linesCleared,
         attack: result.attackSent,
         spin: result.spin,
+        spinPotential,
         topout: e.dead || result.topout
       }
     };
