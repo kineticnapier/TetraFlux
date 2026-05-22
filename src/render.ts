@@ -69,9 +69,9 @@ export function drawMiniPiece(ctx: CanvasRenderingContext2D, piece: PieceKind | 
   }
 }
 
-export function drawNextQueue(ctx: CanvasRenderingContext2D, queue: PieceKind[], x: number, y: number): void {
+export function drawNextQueue(ctx: CanvasRenderingContext2D, queue: PieceKind[], x: number, y: number, count = 6): void {
   drawText(ctx, "NEXT", x, y - 10, "#38bdf8", "bold 18px Consolas");
-  for (let i = 0; i < Math.min(6, queue.length); i++) {
+  for (let i = 0; i < Math.min(count, queue.length); i++) {
     drawMiniPiece(ctx, queue[i], x, y + i * 64, i === 0 ? 18 : 15, i === 0 ? "next 1" : `${i + 1}`);
   }
 }
@@ -157,6 +157,9 @@ export interface DrawBoardOptions {
   revealInvisible?: boolean;
   holdDisabled?: boolean;
   garbageSegments?: GarbageMeterSegment[];
+  nextVisibleCount?: number;
+  topCutRows?: number;
+  visibleGarbageRows?: number;
 }
 
 /**
@@ -199,6 +202,11 @@ export function drawBoard(ctx: CanvasRenderingContext2D, engine: TetrisEngine, o
 
   // Board: center.
   const visible = engine.board.slice(HIDDEN_ROWS);
+  const garbageRows = visible
+    .map((r, idx) => r.some((c) => c === "G" || c === "B") ? idx : -1)
+    .filter((idx) => idx >= 0);
+  const visibleGarbageRows = opts.visibleGarbageRows ?? Number.POSITIVE_INFINITY;
+  const visibleGarbageSet = new Set(garbageRows.slice(0, Math.max(0, visibleGarbageRows)));
   for (let row = 0; row < 20; row++) {
     for (let col = 0; col < 10; col++) {
       const px = boardX + col * cell;
@@ -213,7 +221,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, engine: TetrisEngine, o
   }
 
   // NEXT: right side of this player's board.
-  drawNextQueue(ctx, engine.queue, nextX, y);
+  drawNextQueue(ctx, engine.queue, nextX, y, opts.nextVisibleCount ?? 6);
 
   // Ghost is shown for every board, including AI and AI Battle boards.
   // showGhost=false is intentionally ignored so AI placement preview is visible.

@@ -49,6 +49,9 @@ export interface LockResult {
 export interface GarbageOptions {
   scatterChance?: number;
   doubleHoleChance?: number;
+  holeWidth?: number;
+  largeHoleCount?: number;
+  largeHoleExtraChance?: number;
 }
 
 export interface EngineState {
@@ -768,12 +771,30 @@ export class TetrisEngine {
     return this.garbageHole;
   }
 
+  private addContiguousHoles(holes: Set<number>, start: number, width: number): void {
+    const w = Math.max(1, Math.min(WIDTH, Math.floor(width)));
+    const s = Math.max(0, Math.min(WIDTH - w, Math.floor(start)));
+    for (let i = 0; i < w; i++) holes.add(s + i);
+  }
+
   private nextGarbageHoles(): number[] {
-    const holes = new Set<number>([this.nextGarbageHole()]);
+    const largeBase = this.garbageOptions.largeHoleCount ?? 0;
+    if (largeBase > 0) {
+      const extra = this.garbageRng.next() < (this.garbageOptions.largeHoleExtraChance ?? 0) ? 1 : 0;
+      const count = Math.max(1, Math.min(WIDTH - 1, Math.floor(largeBase + extra)));
+      const start = this.garbageRng.int(Math.max(1, WIDTH - count + 1));
+      const holes = new Set<number>();
+      this.addContiguousHoles(holes, start, count);
+      return [...holes];
+    }
+
+    const holes = new Set<number>();
+    const width = this.garbageOptions.holeWidth ?? 1;
+    this.addContiguousHoles(holes, this.nextGarbageHole(), width);
     const doubleHoleChance = this.garbageOptions.doubleHoleChance ?? 0;
 
     if (this.garbageRng.next() < doubleHoleChance) {
-      for (let i = 0; i < 6 && holes.size < 2; i++) {
+      for (let i = 0; i < 6 && holes.size < Math.min(WIDTH, Math.max(2, width + 1)); i++) {
         holes.add(this.garbageRng.int(WIDTH));
       }
     }

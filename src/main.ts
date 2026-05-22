@@ -2,7 +2,7 @@ import "./style.css";
 import { HeuristicAI } from "./ai/heuristic";
 import type { AiChoice } from "./ai/heuristic";
 import { WebPolicyAI } from "./ai/webPolicy";
-import { boardMetrics, TetrisEngine, type LockResult, type PlacementAction, type PieceState } from "./engine/tetris";
+import { boardMetrics, TetrisEngine, type Cell, type LockResult, type PieceKind, type PlacementAction, type PieceState } from "./engine/tetris";
 import { MovementInput, type LogicalMoveKey } from "./input";
 import { MatchLogger, SelfplayLogger, type BattleSide, uploadLogs, uploadSelfplayLogs } from "./logging";
 import { PresenceClient } from "./presence";
@@ -223,6 +223,135 @@ interface QuickPlayMod {
   cancelDoesNotClimb?: boolean;
 }
 
+type SpecialModId =
+  | "none"
+  | "asceticism"
+  | "loaded_dice"
+  | "freefall"
+  | "last_stand"
+  | "damnation"
+  | "the_exile"
+  | "the_warlock";
+
+interface SpecialMod {
+  id: SpecialModId;
+  name: string;
+  description: string;
+  disableHold?: boolean;
+  nextVisibleCount?: number;
+  randomSequence?: boolean;
+  instantGround?: boolean;
+  permanentInvisible?: boolean;
+  visibleGarbageRows?: number;
+  topCutRows?: number;
+  attackMultiplier?: number;
+  incomingMultiplier?: number;
+  garbageScatterChance?: number;
+  doubleHoleChance?: number;
+  garbageHoleWidth?: number;
+  largeHoleCount?: number;
+  largeHoleExtraChance?: number;
+  startBoard?: "loaded_dice" | "damnation";
+  startGarbageRows?: number;
+  lineClearStunMs?: number;
+  blighted?: boolean;
+  warlock?: boolean;
+  allSpin?: boolean;
+  disableAllSpin?: boolean;
+}
+
+const SPECIAL_MODS: SpecialMod[] = [
+  { id: "none", name: "No Special", description: "No special challenge mod." },
+  {
+    id: "asceticism",
+    name: "Asceticism",
+    description: "NEXT is limited to 1, piece sequence is fully random, hold is banned, and garbage holes are width 2.",
+    nextVisibleCount: 1,
+    randomSequence: true,
+    disableHold: true,
+    garbageHoleWidth: 2,
+  },
+  {
+    id: "loaded_dice",
+    name: "Loaded Dice",
+    description: "Starts from a dice-like board, garbage is very scattered, and line clears cause 1.15s stun.",
+    startBoard: "loaded_dice",
+    garbageScatterChance: 0.96,
+    lineClearStunMs: 1150,
+  },
+  { id: "freefall", name: "Freefall", description: "Gravity is effectively instant.", instantGround: true },
+  {
+    id: "last_stand",
+    name: "Last Stand",
+    description: "Shrinks the safe height by 6, triples incoming, and uses straight garbage.",
+    topCutRows: 6,
+    incomingMultiplier: 3,
+    garbageScatterChance: 0,
+  },
+  {
+    id: "damnation",
+    name: "Damnation",
+    description: "BLIGHTED clears are required to attack/cancel. Garbage has 6-7 holes. All-Spins disabled.",
+    startBoard: "damnation",
+    blighted: true,
+    disableAllSpin: true,
+    largeHoleCount: 6,
+    largeHoleExtraChance: 0.5,
+  },
+  {
+    id: "the_exile",
+    name: "The Exile",
+    description: "Placed pieces are permanently invisible, only top 3 garbage rows are visible, and you start with 3 garbage rows.",
+    permanentInvisible: true,
+    visibleGarbageRows: 3,
+    startGarbageRows: 3,
+  },
+  {
+    id: "the_warlock",
+    name: "The Warlock",
+    description: "Strict All-Spin: repeating the same clear action is lethal. Starts with 10 messy garbage rows.",
+    allSpin: true,
+    warlock: true,
+    startGarbageRows: 10,
+    garbageScatterChance: 0.78,
+    doubleHoleChance: 0.25,
+  },
+];
+
+function specialModById(id: string): SpecialMod {
+  return SPECIAL_MODS.find((m) => m.id === id) ?? SPECIAL_MODS[0];
+}
+
+let currentSpecialMod: SpecialMod = SPECIAL_MODS[0];
+
+function specialModApplies(mode?: GameMode): boolean {
+  return currentSpecialMod.id !== "none" && (!mode || usesQuickPlayMod(mode));
+}
+
+function currentEffectiveSpecialMod(mode?: GameMode): SpecialMod {
+  return specialModApplies(mode) ? currentSpecialMod : SPECIAL_MODS[0];
+}
+
+function isHoldDisabledByMods(mode?: GameMode): boolean {
+  const special = currentEffectiveSpecialMod(mode);
+  return Boolean(currentQuickPlayMod.disableHold || special.disableHold);
+}
+
+function isAllSpinEnabled(mode?: GameMode): boolean {
+  const special = currentEffectiveSpecialMod(mode);
+  if (special.disableAllSpin) return false;
+  return Boolean(currentQuickPlayMod.allSpin || special.allSpin);
+}
+
+function isInvisibleModeActive(mode: GameMode): boolean {
+  const special = currentEffectiveSpecialMod(mode);
+  return Boolean((currentQuickPlayMod.invisible && usesQuickPlayMod(mode)) || special.permanentInvisible);
+}
+
+function nextVisibleCountForMode(mode: GameMode): number {
+  return currentEffectiveSpecialMod(mode).nextVisibleCount ?? 6;
+}
+
 // Exact requested mod set from QUICK PLAY / Zenith Tower.
 // Effects are mapped to TetraFlux's simplified Zenith/AI Battle self-training systems.
 const QUICK_PLAY_MODS: QuickPlayMod[] = [
@@ -299,10 +428,20 @@ function quickPlayModById(id: string): QuickPlayMod {
 
 let currentQuickPlayMod: QuickPlayMod = QUICK_PLAY_MODS[0];
 
-function currentGarbageOptions(): { scatterChance?: number; doubleHoleChance?: number } {
+function currentGarbageOptions(): {
+  scatterChance?: number;
+  doubleHoleChance?: number;
+  holeWidth?: number;
+  largeHoleCount?: number;
+  largeHoleExtraChance?: number;
+} {
+  const special = currentEffectiveSpecialMod();
   return {
-    scatterChance: currentQuickPlayMod.garbageScatterChance,
-    doubleHoleChance: currentQuickPlayMod.doubleHoleChance,
+    scatterChance: Math.max(currentQuickPlayMod.garbageScatterChance ?? 0, special.garbageScatterChance ?? 0),
+    doubleHoleChance: Math.max(currentQuickPlayMod.doubleHoleChance ?? 0, special.doubleHoleChance ?? 0),
+    holeWidth: special.garbageHoleWidth,
+    largeHoleCount: special.largeHoleCount,
+    largeHoleExtraChance: special.largeHoleExtraChance,
   };
 }
 
@@ -319,6 +458,23 @@ const DEFAULT_SETTINGS: GameSettings = {
     hold: ["Shift", "c"], nextRound: ["Enter"], reset: ["r"],
   },
 };
+
+
+const PIECE_KINDS: PieceKind[] = ["I", "J", "L", "O", "S", "T", "Z"];
+
+const LOADED_DICE_BOARD: string[] = [
+  "..........", ".GGG..GGG.", ".G.G..G.G.", ".GGG..GGG.", "..........",
+  "..........", ".GGG..GGG.", ".G.G..G.G.", ".GGG..GGG.", "..........",
+  "..........", ".GGG..GGG.", ".G.G..G.G.", ".GGG..GGG.", "..........",
+  "..........", ".GGG..GGG.", ".G.G..G.G.", ".GGG..GGG.", "..........",
+];
+
+const DAMNATION_BOARD: string[] = [
+  "..........", "..........", "..........", "..........", "....Z.....",
+  "..G.Z.G...", ".G.ZTZ.G..", "G.ZTOTT.G.", ".ZTOTOTZ..", "..TOTOT...",
+  ".GTOOOTG..", "GTOTOTZG..".slice(0, 10), ".ZTOOOTZ..".slice(0, 10), "..GTOG....", ".GZZOZG...",
+  "GZZOOZZG..".slice(0, 10), ".GGZOZGG..".slice(0, 10), "..GGOGG...", ".GGOOGG...", "GGG..GGG..".slice(0, 10),
+];
 
 const SETTINGS_KEY = "tetraflux_settings_v2_multikey";
 
@@ -375,6 +531,33 @@ quickPlayModSelect.addEventListener("change", () => {
   setStatus(`Mod selected: ${currentQuickPlayMod.name} - ${currentQuickPlayMod.description}`);
 });
 
+const specialModSelect = document.createElement("select");
+specialModSelect.id = "specialMod";
+specialModSelect.title = "Special challenge mod";
+for (const mod of SPECIAL_MODS) {
+  const option = document.createElement("option");
+  option.value = mod.id;
+  option.textContent = `Special: ${mod.name}`;
+  specialModSelect.appendChild(option);
+}
+document.body.appendChild(specialModSelect);
+specialModSelect.style.position = "fixed";
+specialModSelect.style.zIndex = "20";
+specialModSelect.style.minWidth = "178px";
+specialModSelect.style.maxWidth = "260px";
+specialModSelect.style.padding = "6px 8px";
+specialModSelect.style.borderRadius = "10px";
+specialModSelect.style.border = "1px solid #7c2d12";
+specialModSelect.style.background = "#111827";
+specialModSelect.style.color = "#fed7aa";
+specialModSelect.style.font = "13px Consolas";
+specialModSelect.addEventListener("change", () => {
+  currentSpecialMod = specialModById(specialModSelect.value);
+  trainer?.resetMatch?.();
+  trainer?.applyCurrentModToEngines?.();
+  setStatus(`Special selected: ${currentSpecialMod.name} - ${currentSpecialMod.description}`);
+});
+
 function isAiBattleScreen(mode: GameMode): boolean {
   return mode === "ai_vs_ai";
 }
@@ -393,6 +576,9 @@ function updateQuickPlayModSelectUi(mode: GameMode): void {
   quickPlayModSelect.hidden = !active;
   quickPlayModSelect.disabled = !active;
   quickPlayModSelect.style.display = active ? "" : "none";
+  specialModSelect.hidden = !active;
+  specialModSelect.disabled = !active;
+  specialModSelect.style.display = active ? "" : "none";
   quickPlayModSelect.style.border = "1px solid #334155";
   quickPlayModSelect.style.background = "#0f172a";
   quickPlayModSelect.style.color = "#e5e7eb";
@@ -402,6 +588,10 @@ function updateQuickPlayModSelectUi(mode: GameMode): void {
   const selectW = Math.max(178, quickPlayModSelect.offsetWidth || 178);
   quickPlayModSelect.style.left = `${Math.round(rect.left + 482 * scale - selectW / 2)}px`;
   quickPlayModSelect.style.top = `${Math.round(rect.top + 132 * scale)}px`;
+
+  const specialW = Math.max(178, specialModSelect.offsetWidth || 178);
+  specialModSelect.style.left = `${Math.round(rect.left + 482 * scale - specialW / 2)}px`;
+  specialModSelect.style.top = `${Math.round(rect.top + 166 * scale)}px`;
 }
 
 const settingsModal = document.querySelector<HTMLDivElement>("#settingsModal")!;
@@ -1175,6 +1365,10 @@ class Ft5Trainer {
   labGarbageMaterialized = 0;
   delayedIncomingGarbage: Record<EngineSlot, TimedIncomingGarbage[]> = { human: [], ai: [] };
   labDeaths = 0;
+  specialStunUntil: Record<"player" | "left" | "right", number> = { player: 0, left: 0, right: 0 };
+  damnationBlighted: Record<"player" | "left" | "right", boolean> = { player: false, left: false, right: false };
+  warlockLastAction: Record<"player" | "left" | "right", string> = { player: "", left: "", right: "" };
+  specialRngState = seedNow();
 
   autoUploadStatus: AutoUploadStatus = "idle";
   autoUploadDetail = "match end upload enabled";
@@ -1235,6 +1429,88 @@ class Ft5Trainer {
   updateModeButton(): void { toggleModeBtn.textContent = `Mode: ${this.modeLabel()}`; }
 
   inputSettings() { return { dasMs: settings.dasMs, arrMs: settings.arrMs, sdfCellsPerSecond: settings.sdfCellsPerSecond }; }
+
+  private specialMod(): SpecialMod {
+    return currentEffectiveSpecialMod(this.mode);
+  }
+
+  private random01(): number {
+    let t = (this.specialRngState += 0x6D2B79F5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+
+  private randomPiece(): PieceKind {
+    return PIECE_KINDS[Math.floor(this.random01() * PIECE_KINDS.length)] ?? "T";
+  }
+
+  private randomizeQueue(engine: TetrisEngine, visible = 7): void {
+    engine.queue = Array.from({ length: Math.max(visible, 7) }, () => this.randomPiece());
+  }
+
+  private cellFromChar(ch: string): Cell {
+    if (ch === ".") return null;
+    if (ch === "G" || ch === "B") return ch;
+    if (["I", "J", "L", "O", "S", "T", "Z"].includes(ch)) return ch as PieceKind;
+    return null;
+  }
+
+  private setVisibleBoard(engine: TetrisEngine, rows: string[]): void {
+    const visibleRows = rows.slice(-20).map((row) => row.padEnd(10, ".").slice(0, 10));
+    const hidden = Math.max(0, engine.board.length - visibleRows.length);
+    for (let y = 0; y < hidden; y++) engine.board[y] = Array.from({ length: 10 }, () => null);
+    for (let y = 0; y < visibleRows.length; y++) {
+      engine.board[hidden + y] = Array.from({ length: 10 }, (_, x) => this.cellFromChar(visibleRows[y][x] ?? "."));
+    }
+  }
+
+  private applySpecialStartStateToEngine(engine: TetrisEngine, slot: "player" | "left" | "right"): void {
+    const special = this.specialMod();
+    if (special.startBoard === "loaded_dice") this.setVisibleBoard(engine, LOADED_DICE_BOARD);
+    if (special.startBoard === "damnation") this.setVisibleBoard(engine, DAMNATION_BOARD);
+    if (special.startGarbageRows && special.startGarbageRows > 0) {
+      engine.queueGarbage(special.startGarbageRows);
+      engine.applyPendingGarbage();
+    }
+    if (special.randomSequence) this.randomizeQueue(engine, special.nextVisibleCount ?? 7);
+    if (special.disableHold) engine.canHold = false;
+    if (slot === "player") this.input = new MovementInput(this.human, () => this.inputSettings());
+  }
+
+  private applySpecialStartState(): void {
+    if (!specialModApplies(this.mode)) return;
+    if (this.mode === "ai_vs_ai") {
+      this.applySpecialStartStateToEngine(this.human, "left");
+      this.applySpecialStartStateToEngine(this.aiEngine, "right");
+    } else {
+      this.applySpecialStartStateToEngine(this.human, "player");
+      this.applySpecialStartStateToEngine(this.aiEngine, "right");
+    }
+  }
+
+  private isSpecialStunned(slot: "player" | "left" | "right", now = performance.now()): boolean {
+    return now < (this.specialStunUntil[slot] ?? 0);
+  }
+
+  private resultClearedGarbage(result: LockResult): boolean {
+    const before = result.boardBefore ?? [];
+    return before.some((row) => !row.includes(".") && (row.includes("G") || row.includes("B")));
+  }
+
+  private warlockActionName(result: LockResult): string {
+    if (result.spin !== "none") return `SPIN_${result.linesCleared}`;
+    if (result.linesCleared > 0) return "VOID";
+    return "";
+  }
+
+  private applySpecialAfterLock(engine: TetrisEngine, slot: "player" | "left" | "right", result: LockResult, now = performance.now()): void {
+    const special = this.specialMod();
+    if (special.lineClearStunMs && result.linesCleared > 0) this.specialStunUntil[slot] = now + special.lineClearStunMs;
+    if (special.randomSequence) this.randomizeQueue(engine, special.nextVisibleCount ?? 7);
+    if (special.disableHold) engine.canHold = false;
+    if (special.topCutRows && boardMetrics(engine.stateDict().board).maxHeight > 20 - special.topCutRows) engine.dead = true;
+  }
 
   applyCurrentModToEngines(): void {
     const options = usesQuickPlayMod(this.mode) ? currentGarbageOptions() : {};
@@ -1353,7 +1629,11 @@ class Ft5Trainer {
     this.labGarbageInjected = 0;
     this.labGarbageMaterialized = 0;
     this.delayedIncomingGarbage = { human: [], ai: [] };
+    this.specialStunUntil = { player: 0, left: 0, right: 0 };
+    this.damnationBlighted = { player: false, left: false, right: false };
+    this.warlockLastAction = { player: "", left: "", right: "" };
     this.applyCurrentModToEngines();
+    this.applySpecialStartState();
     this.message =
       this.mode === "human_vs_ai"
         ? (this.matchStarted ? `Round ${this.roundIndex + 1}: play against AI.` : "Press R to start Human vs AI.")
@@ -1472,10 +1752,11 @@ class Ft5Trainer {
   private isHumanGrounded(): boolean { return this.human.hardDropDistance(this.human.active) <= 0; }
 
   private updateHumanGravity(dtMs: number, now: number): void {
-    if ((this.mode !== "human_vs_ai") || this.roundOver || this.matchOver || this.human.dead || !this.matchStarted) return;
-    const gravity =
-      Math.max(0, settings.gravityCellsPerSecond) *
-      1;
+    if ((this.mode !== "human_vs_ai") || this.roundOver || this.matchOver || this.human.dead || !this.matchStarted || this.isSpecialStunned("player", now)) return;
+    const gravity = this.specialMod().instantGround
+      ? 9999
+      : Math.max(0, settings.gravityCellsPerSecond) *
+        1;
     if (gravity > 0) {
       this.humanGravityCarry += (dtMs / 1000) * gravity;
       const steps = Math.min(20, Math.floor(this.humanGravityCarry));
@@ -1527,8 +1808,9 @@ class Ft5Trainer {
   }
 
   private handlePlayerLockResult(result: LockResult, now: number): void {
-    const effectiveResult = this.applyQuickPlayModToResult(result);
+    const effectiveResult = this.applyQuickPlayModToResult(result, undefined, "player");
     this.applyAllSpinBreakGarbage(this.human, "player", effectiveResult);
+    this.applySpecialAfterLock(this.human, "player", effectiveResult, now);
     if (this.mode === "zenith") {
       const cancel = this.resolveZenithAttackCancel(effectiveResult.attackSent);
       this.zenith.onPlayerLock(effectiveResult, now, cancel.sentToBots, cancel.canceled);
@@ -1549,7 +1831,7 @@ class Ft5Trainer {
   }
 
   private humanLockCurrent(now: number): void {
-    if (this.roundOver || this.matchOver || this.human.dead || (this.mode !== "human_vs_ai")) return;
+    if (this.roundOver || this.matchOver || this.human.dead || this.isSpecialStunned("player", now) || (this.mode !== "human_vs_ai")) return;
     const stateBefore = this.human.stateDict();
     const aiStateBefore = this.aiEngine.stateDict();
     const activeBefore: PieceState = { ...this.human.active };
@@ -1564,6 +1846,7 @@ class Ft5Trainer {
   humanHardDrop(): void {
     if (this.roundOver || this.matchOver || this.human.dead || (this.mode !== "human_vs_ai")) return;
     const now = performance.now();
+    if (this.isSpecialStunned("player", now)) return;
     const stateBefore = this.human.stateDict();
     const aiStateBefore = this.aiEngine.stateDict();
     const activeBefore: PieceState = { ...this.human.active };
@@ -1583,14 +1866,16 @@ class Ft5Trainer {
     return 8;
   }
 
-  private applyQuickPlayModToResult(result: LockResult, action?: PlacementAction): LockResult {
+  private applyQuickPlayModToResult(result: LockResult, action?: PlacementAction, slot: "player" | "left" | "right" = "player"): LockResult {
     if (!usesQuickPlayMod(this.mode)) return result;
 
     let attackSent = result.attackSent;
     let rawAttack = result.rawAttack;
     let spin = result.spin;
 
-    if (currentQuickPlayMod.allSpin && result.spin === "spin" && result.piece !== "T") {
+    const special = this.specialMod();
+
+    if (isAllSpinEnabled(this.mode) && result.spin === "spin" && result.piece !== "T") {
       const full = this.allSpinFullAttack(result.linesCleared);
       if (full > rawAttack) {
         rawAttack = full;
@@ -1599,24 +1884,51 @@ class Ft5Trainer {
       spin = "spin";
     }
 
-    const attackMultiplier = currentQuickPlayMod.attackMultiplier ?? 1;
+    if (special.warlock) {
+      if (spin !== "none" && result.linesCleared === 0) {
+        attackSent = Math.max(attackSent, 2);
+        rawAttack = Math.max(rawAttack, 2);
+      }
+      const actionName = this.warlockActionName({ ...result, spin });
+      if (actionName) {
+        if (this.warlockLastAction[slot] === actionName) {
+          return { ...result, attackSent: 0, rawAttack: 0, spin, topout: true, reason: "warlock_repeat_penalty" };
+        }
+        this.warlockLastAction[slot] = actionName;
+      }
+    }
+
+    const attackMultiplier = (currentQuickPlayMod.attackMultiplier ?? 1) * (special.attackMultiplier ?? 1);
     if (attackMultiplier !== 1) {
       attackSent = Math.max(0, Math.floor(attackSent * attackMultiplier));
       rawAttack = Math.max(0, Math.floor(rawAttack * attackMultiplier));
+    }
+
+    if (special.blighted && result.linesCleared > 0) {
+      const garbageClear = this.resultClearedGarbage(result);
+      const blightedNow = this.damnationBlighted[slot];
+      if (garbageClear || blightedNow) {
+        attackSent = Math.max(0, Math.floor(attackSent * 1.75 + 1));
+        rawAttack = Math.max(0, Math.floor(rawAttack * 1.75 + 1));
+      } else {
+        attackSent = 0;
+        rawAttack = 0;
+      }
+      this.damnationBlighted[slot] = garbageClear;
     }
 
     return { ...result, attackSent, rawAttack, spin };
   }
 
   private applyQuickPlayModToAction(action: PlacementAction): PlacementAction {
-    if (usesQuickPlayMod(this.mode) && currentQuickPlayMod.disableHold && action.hold) {
+    if (isHoldDisabledByMods(this.mode) && action.hold) {
       return { ...action, hold: false, key: action.key.replace(/^H:/, "") };
     }
     return action;
   }
 
   private applyAllSpinBreakGarbage(engine: TetrisEngine, slot: "player" | "left" | "right", result: LockResult): void {
-    if (!usesQuickPlayMod(this.mode) || !currentQuickPlayMod.allSpin || result.linesCleared <= 0) return;
+    if (!usesQuickPlayMod(this.mode) || !isAllSpinEnabled(this.mode) || result.linesCleared <= 0) return;
 
     this.allSpinClearStreak[slot] += 1;
 
@@ -1838,7 +2150,7 @@ class Ft5Trainer {
 
     const attackBonus = Math.max(0, result.attackSent) * 2.0;
     const lineBonus = result.linesCleared > 0 ? 4 + result.linesCleared * 2 : 1.5;
-    const tBonus = result.piece === "T" ? 4 : (currentQuickPlayMod.allSpin ? 3 : 1.25);
+    const tBonus = result.piece === "T" ? 4 : (isAllSpinEnabled(this.mode) ? 3 : 1.25);
 
     return 9 + attackBonus + lineBonus + tBonus;
   }
@@ -2098,7 +2410,7 @@ class Ft5Trainer {
 
     // Very small generic all-spin cavity hint. It is intentionally weak and only
     // active in All-Spin mode, because exact non-T spin detection is shape-specific.
-    if (currentQuickPlayMod.allSpin) {
+    if (isAllSpinEnabled(this.mode)) {
       for (let y = 1; y < board.length - 1; y++) {
         for (let x = 1; x < 9; x++) {
           if (!this.boardCellEmpty(board, x, y)) continue;
@@ -2136,7 +2448,7 @@ class Ft5Trainer {
     useRouteSearch: boolean,
   ): { score: number; info: Record<string, unknown> } {
     const execution = useRouteSearch
-      ? this.executeAiPlacementByMoves(engine, action, action.piece === "T" || currentQuickPlayMod.allSpin)
+      ? this.executeAiPlacementByMoves(engine, action, action.piece === "T" || isAllSpinEnabled(this.mode))
       : this.previewActionDirect(engine, action);
     const result = execution.result;
     let score = baseScore;
@@ -2194,7 +2506,7 @@ class Ft5Trainer {
     // search; it is a final verification that the already-built slot can be
     // entered by an SRS-like route ending in rotation.
     const spinCandidates = legal
-      .filter((action) => action.piece === "T" || currentQuickPlayMod.allSpin)
+      .filter((action) => action.piece === "T" || isAllSpinEnabled(this.mode))
       .slice(0, 72);
 
     for (const action of spinCandidates) {
@@ -2351,8 +2663,9 @@ class Ft5Trainer {
       key: `${pending.plannedAction.key}|ops:${pending.ops.length + 1}|moves:${pending.ops.join(",") || "harddrop"}${pending.routeFailed ? "|route_failed" : ""}`,
     };
     const rawResult = engine.hardDrop();
-    const result = this.applyQuickPlayModToResult(rawResult, action);
+    const result = this.applyQuickPlayModToResult(rawResult, action, slot);
     this.applyAllSpinBreakGarbage(engine, slot, result);
+    this.applySpecialAfterLock(engine, slot, result);
     const attackApplied = this.applyAttackWithCancelableIncoming(engine, opponent, result.attackSent);
     const appliedGarbage = applyRemainingGarbageAfterCounter(engine, result);
     if (this.mode === "lab" && engine === this.human) this.labGarbageMaterialized += appliedGarbage;
@@ -2410,7 +2723,7 @@ class Ft5Trainer {
   }
 
   aiTurn(): void {
-    if (this.mode !== "human_vs_ai" || this.roundOver || this.matchOver || this.aiEngine.dead) return;
+    if (this.mode !== "human_vs_ai" || this.roundOver || this.matchOver || this.aiEngine.dead || this.isSpecialStunned("right")) return;
     const alive = this.aiActionStep(this.aiEngine, this.human, this.ai);
     if (!alive) { this.finishRound("human"); return; }
     if (this.human.dead) this.finishRound("ai");
@@ -2471,6 +2784,7 @@ class Ft5Trainer {
 
   battleTurn(side: "left" | "right"): void {
     if (!isAiBattleScreen(this.mode) || this.roundOver || this.matchOver) return;
+    if (this.isSpecialStunned(side)) return;
     if (side === "left") {
       const alive = this.aiActionStep(this.human, this.aiEngine, this.battleLeftAi, "left");
       if (!alive) { this.finishRound("ai"); return; }
@@ -3027,8 +3341,7 @@ function render(): void {
   ctx.fillText(trainer.message, 26, 94);
   const boardY = 180;
   const cell = Math.max(15, Math.min(20, Math.floor((h - boardY - 120) / 20)));
-  const invisibleActive =
-    currentQuickPlayMod.invisible && usesQuickPlayMod(trainer.mode);
+  const invisibleActive = isInvisibleModeActive(trainer.mode);
   const invisibleReveal = !invisibleActive || (Math.floor(now / 5000) % 2 === 0 && now % 5000 < 750);
 
   drawBoard(ctx, trainer.human, {
@@ -3040,8 +3353,11 @@ function render(): void {
     active: true,
     invisibleLocked: invisibleActive,
     revealInvisible: invisibleReveal,
-    holdDisabled: usesQuickPlayMod(trainer.mode) && currentQuickPlayMod.disableHold,
+    holdDisabled: isHoldDisabledByMods(trainer.mode),
     garbageSegments: trainer.garbageSegmentsFor("human", now),
+    nextVisibleCount: nextVisibleCountForMode(trainer.mode),
+    topCutRows: currentEffectiveSpecialMod(trainer.mode).topCutRows,
+    visibleGarbageRows: currentEffectiveSpecialMod(trainer.mode).visibleGarbageRows,
   });
   if (trainer.mode === "zenith") {
     drawZenithTower(ctx, trainer, 540, boardY, 500, Math.max(520, h - boardY - 18));
@@ -3067,8 +3383,11 @@ function render(): void {
       active: true,
       invisibleLocked: invisibleActive,
       revealInvisible: invisibleReveal,
-      holdDisabled: usesQuickPlayMod(trainer.mode) && currentQuickPlayMod.disableHold,
+      holdDisabled: isHoldDisabledByMods(trainer.mode),
       garbageSegments: trainer.garbageSegmentsFor("ai", now),
+      nextVisibleCount: nextVisibleCountForMode(trainer.mode),
+      topCutRows: currentEffectiveSpecialMod(trainer.mode).topCutRows,
+      visibleGarbageRows: currentEffectiveSpecialMod(trainer.mode).visibleGarbageRows,
     });
   }
   const panelX = 1068;
@@ -3096,7 +3415,9 @@ function render(): void {
     usesQuickPlayMod(trainer.mode) ? ["Mod", "#38bdf8"] : ["", "#38bdf8"],
     usesQuickPlayMod(trainer.mode) ? [`${currentQuickPlayMod.name}`, "#94a3b8"] : ["", "#94a3b8"],
     usesQuickPlayMod(trainer.mode) ? [short(currentQuickPlayMod.description, 48), "#64748b"] : ["", "#64748b"],
-    usesQuickPlayMod(trainer.mode) && currentQuickPlayMod.allSpin ? [`breaks: L${trainer.allSpinBreakRows.left} R${trainer.allSpinBreakRows.right}  streak ${trainer.allSpinClearStreak.left}/${trainer.allSpinClearStreak.right}`, "#fb7185"] : ["", "#64748b"],
+    specialModApplies(trainer.mode) ? ["Special", "#fb923c"] : ["", "#fb923c"],
+    specialModApplies(trainer.mode) ? [`${currentSpecialMod.name}`, "#fed7aa"] : ["", "#fed7aa"],
+    usesQuickPlayMod(trainer.mode) && isAllSpinEnabled(trainer.mode) ? [`breaks: L${trainer.allSpinBreakRows.left} R${trainer.allSpinBreakRows.right}  streak ${trainer.allSpinClearStreak.left}/${trainer.allSpinClearStreak.right}`, "#fb7185"] : ["", "#64748b"],
     [""],
     ["AI", "#38bdf8"],
     ...trainer.aiDetails.slice(0, 5).map((line) => [line, "#94a3b8"] as [string, string]),
