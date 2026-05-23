@@ -23,6 +23,22 @@ on:
         description: "Only list logs from the last N UTC days. 0 = all"
         type: number
         default: 14
+      skip_audit:
+        description: "Skip audit_web_logs.py"
+        type: boolean
+        default: false
+      skip_artifact_upload:
+        description: "Skip uploading training artifacts"
+        type: boolean
+        default: false
+      num_workers:
+        description: "PyTorch DataLoader workers"
+        type: number
+        default: 2
+      quick_test:
+        description: "Use tiny safe values: epochs=3, max_objects=30, max_total_mb=16, recent_days=3"
+        type: boolean
+        default: false
       max_holes:
         description: "Filter: max holes"
         type: number
@@ -73,6 +89,10 @@ jobs:
       DATA_DIR: data
       MODEL_DIR: models/web_human_policy_r2
       PUBLIC_MODEL_JSON: public/models/web_policy.json
+      EFFECTIVE_EPOCHS: ${{ inputs.quick_test && 3 || inputs.epochs }}
+      EFFECTIVE_MAX_OBJECTS: ${{ inputs.quick_test && 30 || inputs.max_objects }}
+      EFFECTIVE_MAX_TOTAL_MB: ${{ inputs.quick_test && 16 || inputs.max_total_mb }}
+      EFFECTIVE_RECENT_DAYS: ${{ inputs.quick_test && 3 || inputs.recent_days }}
 
     steps:
       - name: Checkout
@@ -80,6 +100,9 @@ jobs:
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: requirements-training.txt
 
       - name: Create Python venv with uv
         shell: bash
@@ -87,11 +110,6 @@ jobs:
           uv python install 3.11
           uv venv --python 3.11 .venv
           .venv/bin/python --version
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
 
       - name: Validate settings
         shell: bash
@@ -101,13 +119,7 @@ jobs:
           echo "R2_LOG_BUCKET=$R2_LOG_BUCKET"
           echo "R2_LOG_PREFIX=$R2_LOG_PREFIX"
           echo "R2_MODEL_KEY=$R2_MODEL_KEY"
-
-      - name: Install frontend dependencies
-        shell: bash
-        run: |
-          rm -rf node_modules package-lock.json
-          npm install --include=optional --no-audit --no-fund
-          node -e "require('@rollup/rollup-linux-x64-gnu'); console.log('rollup native optional package OK')"
+          echo "epochs=$EFFECTIVE_EPOCHS max_objects=$EFFECTIVE_MAX_OBJECTS max_total_mb=$EFFECTIVE_MAX_TOTAL_MB recent_days=$EFFECTIVE_RECENT_DAYS"
 
       - name: Install training dependencies with uv
         shell: bash
@@ -119,9 +131,9 @@ jobs:
             --bucket "$R2_LOG_BUCKET" \
             --prefix "$R2_LOG_PREFIX" \
             --out-dir "$COLLECTED_DIR" \
-            --max-objects "${{ inputs.max_objects }}" \
-            --max-total-mb "${{ inputs.max_total_mb }}" \
-            --recent-days "${{ inputs.recent_days }}"
+            --max-objects "$EFFECTIVE_MAX_OBJECTS" \
+            --max-total-mb "$EFFECTIVE_MAX_TOTAL_MB" \
+            --recent-days "$EFFECTIVE_RECENT_DAYS"
 
       - name: Merge JSONL logs
         run: |
@@ -131,6 +143,7 @@ jobs:
             --out "$DATA_DIR/merged_r2_logs.jsonl"
 
       - name: Audit merged logs
+        if: ${{ !inputs.skip_audit }}
         run: |
           "$PY" tools/audit_web_logs.py \
             --input "$DATA_DIR/merged_r2_logs.jsonl" \
@@ -159,8 +172,9 @@ jobs:
           "$PY" tools/train_web_policy.py \
             --data "$DATA_DIR/web_human_dataset_r2.jsonl" \
             --out-dir "$MODEL_DIR" \
-            --epochs "${{ inputs.epochs }}" \
+            --epochs "$EFFECTIVE_EPOCHS" \
             --batch-size "${{ inputs.batch_size }}" \
+            --num-workers "${{ inputs.num_workers }}" \
             --device cpu
 
       - name: Export web policy JSON
@@ -197,6 +211,7 @@ jobs:
             -f deploy_worker=false
 
       - name: Upload training artifacts
+        if: ${{ !inputs.skip_artifact_upload }}
         uses: actions/upload-artifact@v4
         with:
           name: tetraflux-trained-policy-r2-run-${{ github.run_number }}-${{ github.run_attempt }}
