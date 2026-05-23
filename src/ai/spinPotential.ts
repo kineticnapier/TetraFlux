@@ -1,6 +1,6 @@
 import { boardMetrics, type EngineState } from "../engine/tetris";
 
-export type SpinPotentialKind = "TSD" | "TST" | "TSlot";
+export type SpinPotentialKind = "TSD_LEFT" | "TSD_RIGHT" | "TST" | "STSD" | "TSlot";
 
 export interface SpinPotentialTarget {
   kind: SpinPotentialKind;
@@ -14,6 +14,14 @@ export interface SpinPotentialTarget {
   completeRows: number;
   nearRows: number;
   lineDeficit: number;
+  requiredFilledMatched: number;
+  requiredFilledTotal: number;
+  requiredEmptyOpen: number;
+  requiredEmptyTotal: number;
+  forbiddenBlocked: number;
+  terrainCleanliness: number;
+  tReady: number;
+  expectedClear: "single" | "double" | "triple";
   score: number;
 }
 
@@ -40,6 +48,26 @@ const T_SHAPES: Array<Array<[number, number]>> = [
 
 const BOARD_W = 10;
 const BOARD_H = 20;
+type CellRule = [number, number];
+type ExpectedClear = SpinPotentialTarget["expectedClear"];
+
+interface SpinPattern {
+  kind: SpinPotentialKind;
+  requiredFilled: CellRule[];
+  requiredEmpty: CellRule[];
+  forbidden: CellRule[];
+  tPlacement: { x: number; y: number; rot: number };
+  expectedClear: ExpectedClear;
+  baseScore: number;
+}
+
+const SPIN_PATTERNS: SpinPattern[] = [
+  { kind: "TSD_LEFT", requiredFilled: [[-1, 2], [0, 2], [1, 2], [2, 2], [-1, 1]], requiredEmpty: [[1, 1], [1, 0], [0, 0]], forbidden: [[2, 1], [2, 0]], tPlacement: { x: 0, y: 0, rot: 1 }, expectedClear: "double", baseScore: 4.4 },
+  { kind: "TSD_RIGHT", requiredFilled: [[-1, 2], [0, 2], [1, 2], [2, 2], [2, 1]], requiredEmpty: [[0, 1], [1, 0], [2, 0]], forbidden: [[-1, 1], [-1, 0]], tPlacement: { x: 0, y: 0, rot: 3 }, expectedClear: "double", baseScore: 4.4 },
+  { kind: "TST", requiredFilled: [[-1, 3], [0, 3], [1, 3], [2, 3], [-1, 2], [2, 2]], requiredEmpty: [[0, 1], [1, 1], [1, 0]], forbidden: [[0, 2]], tPlacement: { x: 0, y: 0, rot: 1 }, expectedClear: "triple", baseScore: 5.3 },
+  { kind: "STSD", requiredFilled: [[-1, 2], [0, 2], [1, 2], [2, 2], [0, 3], [1, 3]], requiredEmpty: [[0, 1], [1, 1], [2, 1], [1, 0]], forbidden: [[-1, 1], [2, 0]], tPlacement: { x: 0, y: 0, rot: 0 }, expectedClear: "double", baseScore: 4.9 },
+  { kind: "TSlot", requiredFilled: [[-1, 2], [0, 2], [1, 2], [2, 2]], requiredEmpty: [[0, 1], [1, 1], [1, 0]], forbidden: [], tPlacement: { x: 0, y: 0, rot: 0 }, expectedClear: "single", baseScore: 3.0 },
+];
 
 function normalizeBoard(board: unknown): string[] {
   const rows = Array.isArray(board) ? board.map((row) => String(row)) : [];
@@ -84,7 +112,7 @@ function tAvailability(state: EngineState): number {
   return Math.max(0.65, 1.08 - idx * 0.08);
 }
 
-function scoreCandidate(board: string[], x: number, y: number, rot: number): SpinPotentialTarget | null {
+function scoreCandidate(board: string[], x: number, y: number, rot: number, tReady: number, terrainCleanliness: number): SpinPotentialTarget | null {
   if (!canPlaceT(board, x, y, rot)) return null;
 
   const centerX = x + 1;
@@ -115,22 +143,48 @@ function scoreCandidate(board: string[], x: number, y: number, rot: number): Spi
   const nearRows = rowDeficits.filter((deficit) => deficit <= 2).length;
   const lineDeficit = rowDeficits.slice(0, 2).reduce((sum, deficit) => sum + deficit, 0);
 
-  let kind: SpinPotentialKind = "TSlot";
-  if (completeRows >= 3) kind = "TST";
-  else if (completeRows >= 2 || (nearRows >= 2 && lineDeficit <= 2)) kind = "TSD";
+  let matchedPattern: SpinPattern | null = null;
+  let bestPatternScore = Number.NEGATIVE_INFINITY;
+  let requiredFilledMatched = 0;
+  let requiredFilledTotal = 0;
+  let requiredEmptyOpen = 0;
+  let requiredEmptyTotal = 0;
+  let forbiddenBlocked = 0;
 
-  let score = 1.6;
-  score += (corners - 2) * 1.15;
-  score += blockedMoves * 0.55;
-  score += completeRows * 2.25;
-  score += nearRows * 0.65;
-  score += Math.max(0, 4 - lineDeficit) * 0.45;
-  if (blockedMoves >= 3) score += 1.2;
-  if (kind === "TSD") score += 2.2;
-  if (kind === "TST") score += 3.0;
+  for (const pattern of SPIN_PATTERNS) {
+    if (pattern.tPlacement.rot !== rot) continue;
+    const fillHits = pattern.requiredFilled.filter(([dx, dy]) => occupied(board, x + dx, y + dy)).length;
+    const emptyOpen = pattern.requiredEmpty.filter(([dx, dy]) => !occupied(board, x + dx, y + dy)).length;
+    const forbids = pattern.forbidden.filter(([dx, dy]) => occupied(board, x + dx, y + dy)).length;
+    const fillRatio = pattern.requiredFilled.length > 0 ? fillHits / pattern.requiredFilled.length : 1;
+    const emptyRatio = pattern.requiredEmpty.length > 0 ? emptyOpen / pattern.requiredEmpty.length : 1;
+    const forbidPenalty = forbids * 1.4;
+    const patternScore = pattern.baseScore + fillRatio * 3.2 + emptyRatio * 2.1 - forbidPenalty;
+    if (patternScore > bestPatternScore) {
+      bestPatternScore = patternScore;
+      matchedPattern = pattern;
+      requiredFilledMatched = fillHits;
+      requiredFilledTotal = pattern.requiredFilled.length;
+      requiredEmptyOpen = emptyOpen;
+      requiredEmptyTotal = pattern.requiredEmpty.length;
+      forbiddenBlocked = forbids;
+    }
+  }
+
+  if (!matchedPattern) return null;
+
+  let score = bestPatternScore;
+  score += (corners - 2) * 1.05;
+  score += blockedMoves * 0.5;
+  score += completeRows * 1.4;
+  score += nearRows * 0.45;
+  score += Math.max(0, 4 - lineDeficit) * 0.3;
+  score -= forbiddenBlocked * 2.4;
+  score += terrainCleanliness * 2.6;
+  score += tReady * 1.8;
 
   return {
-    kind,
+    kind: matchedPattern.kind,
     x,
     y,
     rot,
@@ -141,6 +195,14 @@ function scoreCandidate(board: string[], x: number, y: number, rot: number): Spi
     completeRows,
     nearRows,
     lineDeficit,
+    requiredFilledMatched,
+    requiredFilledTotal,
+    requiredEmptyOpen,
+    requiredEmptyTotal,
+    forbiddenBlocked,
+    terrainCleanliness: Number(terrainCleanliness.toFixed(4)),
+    tReady: Number(tReady.toFixed(4)),
+    expectedClear: matchedPattern.expectedClear,
     score,
   };
 }
@@ -183,7 +245,7 @@ export function estimateSpinPotential(state: EngineState): SpinPotentialInfo {
   for (let rot = 0; rot < 4; rot++) {
     for (let y = 0; y < BOARD_H; y++) {
       for (let x = -1; x <= BOARD_W - 1; x++) {
-        const target = scoreCandidate(board, x, y, rot);
+        const target = scoreCandidate(board, x, y, rot, availability, terrain.factor);
         if (!target) continue;
         targetCount++;
         if (!bestTarget || target.score > bestTarget.score) bestTarget = target;
