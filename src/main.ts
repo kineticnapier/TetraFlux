@@ -333,7 +333,6 @@ function specialModApplies(mode?: GameMode): boolean {
 }
 
 function currentEffectiveSpecialMod(mode?: GameMode): SpecialMod {
-  if (currentQuickPlayMod.id !== "none") return SPECIAL_MODS[0];
   return specialModApplies(mode) ? currentSpecialMod : SPECIAL_MODS[0];
 }
 
@@ -363,18 +362,18 @@ const QUICK_PLAY_MODS: QuickPlayMod[] = [
   {
     id: "none",
     name: "No Mod",
-    description: "Normal Zenith/AI Battle self-training rules.",
+    description: "Normal rules.",
   },
   {
     id: "no_hold",
     name: "No Hold",
-    description: "ホールド禁止。",
+    description: "Hold is disabled.",
     disableHold: true,
   },
   {
     id: "messier_garbage",
     name: "Messier Garbage",
-    description: "ゴミがバラバラになりやすくなる。",
+    description: "Incoming garbage is more likely to scatter.",
     garbageScatterChance: 0.42,
     incomingMultiplier: 1.08,
     garbageBurstMax: 7,
@@ -382,13 +381,13 @@ const QUICK_PLAY_MODS: QuickPlayMod[] = [
   {
     id: "gravity",
     name: "Gravity",
-    description: "重力が強くなる。",
+    description: "Player gravity is stronger.",
     gravityMultiplier: 2.15,
   },
   {
     id: "volatile_garbage",
     name: "Volatile Garbage",
-    description: "ゴミの量2倍、攻撃力2倍。",
+    description: "Attack and incoming garbage are doubled.",
     attackMultiplier: 2.0,
     incomingMultiplier: 2.0,
     garbageBurstMax: 12,
@@ -396,14 +395,14 @@ const QUICK_PLAY_MODS: QuickPlayMod[] = [
   {
     id: "double_hole_garbage",
     name: "Double Hole Garbage",
-    description: "ゴミの穴が2つになることがある。",
+    description: "Garbage rows can contain a second hole.",
     doubleHoleChance: 0.38,
     incomingMultiplier: 1.05,
   },
   {
     id: "invisible",
     name: "Invisible",
-    description: "5秒ごとに置いたミノが点滅し、それ以外のときは不可視。ゴミと穴は常に見える。",
+    description: "Locked pieces briefly blink every 5 seconds; garbage stays visible.",
     invisible: true,
   },
   {
@@ -431,7 +430,60 @@ function quickPlayModById(id: string): QuickPlayMod {
   return QUICK_PLAY_MODS.find((m) => m.id === id) ?? QUICK_PLAY_MODS[0];
 }
 
-let currentQuickPlayMod: QuickPlayMod = QUICK_PLAY_MODS[0];
+function clampChance(n: number): number {
+  return Math.max(0, Math.min(1, n));
+}
+
+function combineChance(existing: number | undefined, next: number | undefined): number | undefined {
+  if (existing === undefined) return next === undefined ? undefined : clampChance(next);
+  if (next === undefined) return clampChance(existing);
+  return clampChance(1 - (1 - clampChance(existing)) * (1 - clampChance(next)));
+}
+
+function multiplyDefined(existing: number | undefined, next: number | undefined): number | undefined {
+  if (next === undefined) return existing;
+  return (existing ?? 1) * next;
+}
+
+function combineQuickPlayMods(mods: QuickPlayMod[]): QuickPlayMod {
+  if (mods.length === 0) return QUICK_PLAY_MODS[0];
+
+  const combined: QuickPlayMod = {
+    id: "none",
+    name: mods.map((m) => m.name).join(" + "),
+    description: mods.map((m) => m.description).join(" / "),
+  };
+
+  for (const mod of mods) {
+    combined.attackMultiplier = multiplyDefined(combined.attackMultiplier, mod.attackMultiplier);
+    combined.incomingMultiplier = multiplyDefined(combined.incomingMultiplier, mod.incomingMultiplier);
+    combined.gravityMultiplier = multiplyDefined(combined.gravityMultiplier, mod.gravityMultiplier);
+    combined.climbMultiplier = multiplyDefined(combined.climbMultiplier, mod.climbMultiplier);
+    combined.climbLossMultiplier = multiplyDefined(combined.climbLossMultiplier, mod.climbLossMultiplier);
+    combined.comboMultiplier = multiplyDefined(combined.comboMultiplier, mod.comboMultiplier);
+    combined.koMultiplier = multiplyDefined(combined.koMultiplier, mod.koMultiplier);
+    combined.targetedMultiplier = multiplyDefined(combined.targetedMultiplier, mod.targetedMultiplier);
+    combined.garbageScatterChance = combineChance(combined.garbageScatterChance, mod.garbageScatterChance);
+    combined.doubleHoleChance = combineChance(combined.doubleHoleChance, mod.doubleHoleChance);
+    combined.garbageBurstMax = Math.max(combined.garbageBurstMax ?? 0, mod.garbageBurstMax ?? 0) || undefined;
+    combined.botSkillBias = Math.max(-1, Math.min(1, (combined.botSkillBias ?? 0) + (mod.botSkillBias ?? 0))) || undefined;
+    combined.instantEntry ||= mod.instantEntry;
+    combined.disableHold ||= mod.disableHold;
+    combined.invisible ||= mod.invisible;
+    combined.allSpin ||= mod.allSpin;
+    combined.cancelDoesNotClimb ||= mod.cancelDoesNotClimb;
+  }
+
+  return combined;
+}
+
+let currentQuickPlayMods: QuickPlayMod[] = [];
+let currentQuickPlayMod: QuickPlayMod = combineQuickPlayMods(currentQuickPlayMods);
+
+function setCurrentQuickPlayMods(mods: QuickPlayMod[]): void {
+  currentQuickPlayMods = mods.filter((mod) => mod.id !== "none");
+  currentQuickPlayMod = combineQuickPlayMods(currentQuickPlayMods);
+}
 
 function currentGarbageOptions(): {
   scatterChance?: number;
@@ -441,8 +493,10 @@ function currentGarbageOptions(): {
   largeHoleExtraChance?: number;
 } {
   const special = currentEffectiveSpecialMod();
+  const normalScatter = currentQuickPlayMod.garbageScatterChance ?? 0;
+  const specialScatter = special.garbageScatterChance;
   return {
-    scatterChance: Math.max(currentQuickPlayMod.garbageScatterChance ?? 0, special.garbageScatterChance ?? 0),
+    scatterChance: specialScatter === 0 ? 0 : Math.max(normalScatter, specialScatter ?? 0),
     doubleHoleChance: Math.max(currentQuickPlayMod.doubleHoleChance ?? 0, special.doubleHoleChance ?? 0),
     holeWidth: special.garbageHoleWidth,
     largeHoleCount: special.largeHoleCount,
@@ -451,7 +505,7 @@ function currentGarbageOptions(): {
 }
 
 function isQuickPlayModActive(): boolean {
-  return currentQuickPlayMod.id !== "none";
+  return currentQuickPlayMods.length > 0;
 }
 
 const DEFAULT_SETTINGS: GameSettings = {
@@ -510,36 +564,58 @@ const settingsBtn = document.querySelector<HTMLButtonElement>("#settingsBtn")!;
 const presenceBadge = document.querySelector<HTMLSpanElement>("#presenceBadge")!;
 const toolbar = document.querySelector<HTMLDivElement>("#toolbar")!;
 
-const quickPlayModSelect = document.createElement("select");
-quickPlayModSelect.id = "quickPlayMod";
-quickPlayModSelect.title = "Quick Play / Zenith mod";
-for (const mod of QUICK_PLAY_MODS) {
-  const option = document.createElement("option");
-  option.value = mod.id;
-  option.textContent = `Mod: ${mod.name}`;
-  quickPlayModSelect.appendChild(option);
+const quickPlayModControl = document.createElement("div");
+quickPlayModControl.id = "quickPlayMod";
+quickPlayModControl.title = "Normal mods";
+document.body.appendChild(quickPlayModControl);
+quickPlayModControl.style.position = "fixed";
+quickPlayModControl.style.zIndex = "20";
+quickPlayModControl.style.display = "flex";
+quickPlayModControl.style.flexWrap = "wrap";
+quickPlayModControl.style.gap = "5px";
+quickPlayModControl.style.alignItems = "center";
+quickPlayModControl.style.justifyContent = "center";
+quickPlayModControl.style.width = "520px";
+quickPlayModControl.style.maxWidth = "calc(100vw - 24px)";
+quickPlayModControl.style.padding = "6px 8px";
+quickPlayModControl.style.borderRadius = "10px";
+quickPlayModControl.style.border = "1px solid #334155";
+quickPlayModControl.style.background = "rgba(15, 23, 42, 0.94)";
+quickPlayModControl.style.color = "#e5e7eb";
+quickPlayModControl.style.font = "12px Consolas";
+
+const quickPlayModCheckboxes = new Map<QuickPlayModId, HTMLInputElement>();
+for (const mod of QUICK_PLAY_MODS.filter((m) => m.id !== "none")) {
+  const label = document.createElement("label");
+  label.title = mod.description;
+  label.style.gap = "4px";
+  label.style.font = "12px Consolas";
+  label.style.color = "#cbd5e1";
+  label.style.whiteSpace = "nowrap";
+
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.value = mod.id;
+  input.style.width = "14px";
+  input.style.height = "14px";
+  input.style.margin = "0";
+  input.addEventListener("change", () => {
+    const selected = [...quickPlayModCheckboxes.entries()]
+      .filter(([, checkbox]) => checkbox.checked)
+      .map(([id]) => quickPlayModById(id));
+    setCurrentQuickPlayMods(selected);
+    trainer?.applyCurrentModToEngines?.();
+    setStatus(
+      isQuickPlayModActive()
+        ? `Mods selected: ${currentQuickPlayMod.name} - ${currentQuickPlayMod.description}`
+        : "Mods cleared: normal rules."
+    );
+  });
+
+  label.append(input, mod.name);
+  quickPlayModCheckboxes.set(mod.id, input);
+  quickPlayModControl.appendChild(label);
 }
-document.body.appendChild(quickPlayModSelect);
-quickPlayModSelect.style.position = "fixed";
-quickPlayModSelect.style.zIndex = "20";
-quickPlayModSelect.style.minWidth = "178px";
-quickPlayModSelect.style.maxWidth = "230px";
-quickPlayModSelect.style.padding = "6px 8px";
-quickPlayModSelect.style.borderRadius = "10px";
-quickPlayModSelect.style.border = "1px solid #334155";
-quickPlayModSelect.style.background = "#0f172a";
-quickPlayModSelect.style.color = "#e5e7eb";
-quickPlayModSelect.style.font = "13px Consolas";
-quickPlayModSelect.addEventListener("change", () => {
-  currentQuickPlayMod = quickPlayModById(quickPlayModSelect.value);
-  if (currentQuickPlayMod.id !== "none" && currentSpecialMod.id !== "none") {
-    currentSpecialMod = SPECIAL_MODS[0];
-    specialModSelect.value = "none";
-    trainer?.resetMatch?.();
-  }
-  trainer?.applyCurrentModToEngines?.();
-  setStatus(`Mod selected: ${currentQuickPlayMod.name} - ${currentQuickPlayMod.description}`);
-});
 
 const specialModSelect = document.createElement("select");
 specialModSelect.id = "specialMod";
@@ -563,10 +639,6 @@ specialModSelect.style.color = "#fed7aa";
 specialModSelect.style.font = "13px Consolas";
 specialModSelect.addEventListener("change", () => {
   currentSpecialMod = specialModById(specialModSelect.value);
-  if (currentSpecialMod.id !== "none" && currentQuickPlayMod.id !== "none") {
-    currentQuickPlayMod = QUICK_PLAY_MODS[0];
-    quickPlayModSelect.value = "none";
-  }
   trainer?.resetMatch?.();
   trainer?.applyCurrentModToEngines?.();
   setStatus(`Special selected: ${currentSpecialMod.name} - ${currentSpecialMod.description}`);
@@ -577,7 +649,7 @@ function isAiBattleScreen(mode: GameMode): boolean {
 }
 
 function usesQuickPlayMod(mode: GameMode): boolean {
-  return mode === "ai_vs_ai" || mode === "lab";
+  return mode === "human_vs_ai" || mode === "ai_vs_ai" || mode === "lab" || mode === "zenith";
 }
 
 function canvasLayoutScale(): number {
@@ -587,25 +659,24 @@ function canvasLayoutScale(): number {
 
 function updateQuickPlayModSelectUi(mode: GameMode): void {
   const active = usesQuickPlayMod(mode);
-  quickPlayModSelect.hidden = !active;
-  quickPlayModSelect.disabled = !active;
-  quickPlayModSelect.style.display = active ? "" : "none";
+  quickPlayModControl.hidden = !active;
+  quickPlayModControl.style.display = active ? "flex" : "none";
   specialModSelect.hidden = !active;
   specialModSelect.disabled = !active;
   specialModSelect.style.display = active ? "" : "none";
-  quickPlayModSelect.style.border = "1px solid #334155";
-  quickPlayModSelect.style.background = "#0f172a";
-  quickPlayModSelect.style.color = "#e5e7eb";
+  quickPlayModControl.style.border = "1px solid #334155";
+  quickPlayModControl.style.background = "rgba(15, 23, 42, 0.94)";
+  quickPlayModControl.style.color = "#e5e7eb";
   if (!active) return;
   const rect = canvas.getBoundingClientRect();
   const scale = canvasLayoutScale();
-  const selectW = Math.max(178, quickPlayModSelect.offsetWidth || 178);
-  quickPlayModSelect.style.left = `${Math.round(rect.left + 482 * scale - selectW / 2)}px`;
-  quickPlayModSelect.style.top = `${Math.round(rect.top + 132 * scale)}px`;
+  const controlW = Math.max(260, quickPlayModControl.offsetWidth || 260);
+  quickPlayModControl.style.left = `${Math.round(rect.left + 482 * scale - controlW / 2)}px`;
+  quickPlayModControl.style.top = `${Math.round(rect.top + 116 * scale)}px`;
 
   const specialW = Math.max(178, specialModSelect.offsetWidth || 178);
   specialModSelect.style.left = `${Math.round(rect.left + 482 * scale - specialW / 2)}px`;
-  specialModSelect.style.top = `${Math.round(rect.top + 166 * scale)}px`;
+  specialModSelect.style.top = `${Math.round(rect.top + 168 * scale)}px`;
 }
 
 const settingsModal = document.querySelector<HTMLDivElement>("#settingsModal")!;
@@ -1326,7 +1397,7 @@ class ZenithTowerSim {
 }
 
 class Ft5Trainer {
-  firstTo = 15;
+  firstTo = 7;
   mode: GameMode = "human_vs_ai";
   baseSeed = seedNow();
   roundIndex = 0;
@@ -1530,7 +1601,7 @@ class Ft5Trainer {
       engine.applyPendingGarbage();
     }
     if (special.randomSequence) this.randomizeQueue(engine, special.nextVisibleCount ?? 7);
-    if (special.disableHold) engine.canHold = false;
+    if (isHoldDisabledByMods(this.mode)) engine.canHold = false;
     if (slot === "player") this.input = new MovementInput(this.human, () => this.inputSettings());
   }
 
@@ -1564,13 +1635,13 @@ class Ft5Trainer {
     const special = this.specialMod();
     if (special.lineClearStunMs && result.linesCleared > 0) this.specialStunUntil[slot] = now + special.lineClearStunMs;
     if (special.randomSequence) this.randomizeQueue(engine, special.nextVisibleCount ?? 7);
-    if (special.disableHold) engine.canHold = false;
+    if (isHoldDisabledByMods(this.mode)) engine.canHold = false;
     if (special.topCutRows && boardMetrics(engine.stateDict().board).maxHeight > 20 - special.topCutRows) engine.dead = true;
   }
 
   private attackReceiveMultiplierForSlot(_slot: EngineSlot): number {
     const special = this.specialMod();
-    return special.id === "last_stand" ? 3 : 1;
+    return (currentQuickPlayMod.incomingMultiplier ?? 1) * (special.incomingMultiplier ?? 1);
   }
 
   private applySpecialInstantGround(engine: TetrisEngine): void {
@@ -1589,7 +1660,7 @@ class Ft5Trainer {
     const options = usesQuickPlayMod(this.mode) ? currentGarbageOptions() : {};
     this.human?.setGarbageOptions?.(options);
     this.aiEngine?.setGarbageOptions?.(options);
-    this.zenith?.setMod?.(QUICK_PLAY_MODS[0]);
+    this.zenith?.setMod?.(currentQuickPlayMod);
   }
 
   private clearAiBattleAutoNext(): void {
@@ -1636,10 +1707,10 @@ class Ft5Trainer {
     this.resetRound();
     this.updateModeButton();
     setStatus(
-      this.mode === "human_vs_ai" ? "Press R to start Human vs AI FT15." :
+      this.mode === "human_vs_ai" ? "Press R to start Human vs AI FT7." :
       this.mode === "ai_vs_ai" ? "Press R to start AI Battle." :
       this.mode === "lab" ? "Press R to start Garbage Lab." :
-      "Press R to start Human vs AI FT15."
+      "Press R to start Human vs AI FT7."
     );
   }
 
@@ -1656,7 +1727,7 @@ class Ft5Trainer {
     setStatus(
       this.mode === "lab" ? `Garbage Lab started: ${this.aiName} / ${settings.labGarbagePerBag} garbage per bag.` :
       this.mode === "ai_vs_ai" ? `AI Battle started: ${this.battleLeftName} vs ${this.battleRightName}.` :
-      "Human vs AI FT15 started."
+      "Human vs AI FT7 started."
     );
   }
 
@@ -1688,7 +1759,7 @@ class Ft5Trainer {
     this.humanGravityCarry = 0;
     this.humanGroundedSince = null;
     this.zenithIncomingCarry = 0;
-    if (this.mode === "zenith") this.zenith.reset(performance.now(), QUICK_PLAY_MODS[0]);
+    if (this.mode === "zenith") this.zenith.reset(performance.now(), currentQuickPlayMod);
     this.roundOver = false;
     this.roundWinner = null;
     this.stepIndex = 0;
@@ -1715,11 +1786,11 @@ class Ft5Trainer {
           ? (this.matchStarted
             ? `Round ${this.roundIndex + 1}: ${this.battleLeftName} vs ${this.battleRightName}. Mod: ${currentQuickPlayMod.name}.`
             : "Press R to start AI Battle.")
-          : this.mode === "lab"
-            ? (this.matchStarted
-              ? `Garbage Lab: ${this.aiName} clears garbage forever. +${settings.labGarbagePerBag} garbage/bag.`
-              : "Press R to start Garbage Lab.")
-            : (this.matchStarted ? "Climb Zenith Tower. New climbers always start at 0.0m." : "Press R to start Human vs AI FT15.");
+            : this.mode === "lab"
+              ? (this.matchStarted
+                ? `Garbage Lab: ${this.aiName} clears garbage forever. +${settings.labGarbagePerBag} garbage/bag.`
+                : "Press R to start Garbage Lab.")
+            : (this.matchStarted ? "Climb Zenith Tower. New climbers always start at 0.0m." : "Press R to start Human vs AI FT7.");
   }
 
   finishRound(winner: Winner): void {
@@ -1833,7 +1904,7 @@ class Ft5Trainer {
     const gravity = this.specialMod().instantGround
       ? 0
       : Math.max(0, settings.gravityCellsPerSecond) *
-        1;
+        (usesQuickPlayMod(this.mode) ? (currentQuickPlayMod.gravityMultiplier ?? 1) : 1);
     if (gravity > 0) {
       this.humanGravityCarry += (dtMs / 1000) * gravity;
       const steps = Math.min(20, Math.floor(this.humanGravityCarry));
@@ -2878,7 +2949,9 @@ class Ft5Trainer {
   }
 
   private incomingMultiplierForCurrentMode(): number {
-    return usesQuickPlayMod(this.mode) ? (currentQuickPlayMod.incomingMultiplier ?? 1) : 1;
+    if (!usesQuickPlayMod(this.mode)) return 1;
+    const special = this.specialMod();
+    return (currentQuickPlayMod.incomingMultiplier ?? 1) * (special.incomingMultiplier ?? 1);
   }
 
   private scheduleIncomingGarbage(slot: EngineSlot, amount: number, now = performance.now(), applyIncomingMultiplier = true): void {
@@ -3134,6 +3207,7 @@ class Ft5Trainer {
     } else if (isBound(e, settings.keys.rotate180)) {
       if (this.human.rotate180()) { this.input.notifyTransform(now); this.resetHumanGroundTimer(); }
     } else if (isBound(e, settings.keys.hold)) {
+      if (isHoldDisabledByMods(this.mode)) return;
       const beforeKind = this.human.active.kind;
       const beforeHold = this.human.hold;
       const ok = this.human.holdPiece();
@@ -3185,6 +3259,7 @@ class Ft5Trainer {
     } else if (action === "180") {
       if (this.human.rotate180()) { this.input.notifyTransform(now); this.resetHumanGroundTimer(); }
     } else if (action === "hold") {
+      if (isHoldDisabledByMods(this.mode)) return;
       const beforeKind = this.human.active.kind;
       const beforeHold = this.human.hold;
       const ok = this.human.holdPiece();
@@ -3390,7 +3465,7 @@ function render(): void {
   ctx.fillRect(0, 0, w, h);
   ctx.fillStyle = "#e5e7eb";
   ctx.font = "bold 30px Consolas";
-  ctx.fillText("TetraFlux Web FT5 Trainer", 26, 42);
+  ctx.fillText("TetraFlux Web FT7 Trainer", 26, 42);
   ctx.font = "16px Consolas";
   ctx.fillStyle = "#34d399";
   const leftName =

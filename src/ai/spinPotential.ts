@@ -1,4 +1,4 @@
-import type { EngineState } from "../engine/tetris";
+import { boardMetrics, type EngineState } from "../engine/tetris";
 
 export type SpinPotentialKind = "TSD" | "TST" | "TSlot";
 
@@ -22,6 +22,13 @@ export interface SpinPotentialInfo {
   targetCount: number;
   tAvailability: number;
   bestTarget: SpinPotentialTarget | null;
+  terrainFactor: number;
+  terrainRisk: {
+    holes: number;
+    maxHeight: number;
+    bumpiness: number;
+    centerTower: number;
+  };
 }
 
 const T_SHAPES: Array<Array<[number, number]>> = [
@@ -138,9 +145,38 @@ function scoreCandidate(board: string[], x: number, y: number, rot: number): Spi
   };
 }
 
+function clamp01(n: number): number {
+  return Math.max(0, Math.min(1, n));
+}
+
+function spinTerrainFactor(board: string[]): SpinPotentialInfo["terrainRisk"] & { factor: number } {
+  const metrics = boardMetrics(board);
+  const centerMax = Math.max(metrics.heights[4] ?? 0, metrics.heights[5] ?? 0);
+  const sideAvg = (
+    (metrics.heights[0] ?? 0) +
+    (metrics.heights[1] ?? 0) +
+    (metrics.heights[8] ?? 0) +
+    (metrics.heights[9] ?? 0)
+  ) / 4;
+  const centerTower = Math.max(0, centerMax - sideAvg);
+
+  if (metrics.holes >= 6 || metrics.maxHeight >= 16 || metrics.bumpiness >= 30 || centerTower >= 6) {
+    return { holes: metrics.holes, maxHeight: metrics.maxHeight, bumpiness: metrics.bumpiness, centerTower, factor: 0 };
+  }
+
+  const holeFactor = metrics.holes <= 1 ? 1 : metrics.holes <= 2 ? 0.62 : metrics.holes <= 4 ? 0.28 : 0.08;
+  const heightFactor = clamp01((15 - metrics.maxHeight) / 6);
+  const bumpFactor = clamp01((28 - metrics.bumpiness) / 18);
+  const centerFactor = clamp01((6 - centerTower) / 4);
+  const factor = clamp01(holeFactor * Math.max(0.15, heightFactor) * Math.max(0.2, bumpFactor) * Math.max(0.15, centerFactor));
+
+  return { holes: metrics.holes, maxHeight: metrics.maxHeight, bumpiness: metrics.bumpiness, centerTower, factor };
+}
+
 export function estimateSpinPotential(state: EngineState): SpinPotentialInfo {
   const board = normalizeBoard(state.board);
   const availability = tAvailability(state);
+  const terrain = spinTerrainFactor(board);
   let bestTarget: SpinPotentialTarget | null = null;
   let targetCount = 0;
 
@@ -155,11 +191,18 @@ export function estimateSpinPotential(state: EngineState): SpinPotentialInfo {
     }
   }
 
-  const raw = bestTarget ? bestTarget.score * availability : 0;
+  const raw = bestTarget ? bestTarget.score * availability * terrain.factor : 0;
   return {
     bonus: Math.min(10, Number(raw.toFixed(4))),
     targetCount,
     tAvailability: availability,
     bestTarget,
+    terrainFactor: Number(terrain.factor.toFixed(4)),
+    terrainRisk: {
+      holes: terrain.holes,
+      maxHeight: terrain.maxHeight,
+      bumpiness: terrain.bumpiness,
+      centerTower: Number(terrain.centerTower.toFixed(2)),
+    },
   };
 }

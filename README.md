@@ -1,13 +1,13 @@
-# TetraFlux Web FT5 Trainer
+# TetraFlux Web FT7 Trainer
 
-TetraFlux Web FT5 Trainer は、Tetris系AIのための **Web Human-in-the-loop 学習環境** です。
+TetraFlux Web FT7 Trainer は、Tetris系AIのための **Web Human-in-the-loop 学習環境** です。
 
-人間がWeb上の自作Tetris環境でAIとFT5形式の対戦を行い、そのときの配置操作ログを収集します。集めたログはCloudflare R2に保存され、GitHub Actionsから学習・Web用モデルexport・Cloudflare Pagesへの再deployまで行えます。
+人間がWeb上の自作Tetris環境でAIとFT7形式の対戦を行い、そのときの配置操作ログを収集します。集めたログはCloudflare R2に保存され、GitHub Actionsから学習・Web用モデルexport・Cloudflare Pagesへの再deployまで行えます。
 
 ## 目的
 
 ```text
-1. Web上で人間 vs AI のFT5対戦を行う
+1. Web上で人間 vs AI のFT7対戦を行う
 2. 人間の配置操作をJSONLとして記録する
 3. match終了時にログを自動アップロードする
 4. R2に溜まったログからpolicyを学習する
@@ -18,9 +18,9 @@ TetraFlux Web FT5 Trainer は、Tetris系AIのための **Web Human-in-the-loop 
 ## 現在の主な機能
 
 ```text
-Web FT5対戦:
+Web FT7対戦:
   Human vs AI
-  FT5(first to 5)形式
+  FT7(first to 7)形式
   AI mino/s指定
   match終了時の自動ログアップロード
 
@@ -198,7 +198,7 @@ Key bindings:
 
 ## 自動アップロード
 
-FT5 matchが終了すると、自動で現在match全体のJSONLがアップロードされます。
+FT7 matchが終了すると、自動で現在match全体のJSONLがアップロードされます。
 
 ```text
 match終了

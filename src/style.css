@@ -20,13 +20,13 @@ body {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto auto;
   min-height: 100vh;
-  gap: 8px;
-  padding: 10px;
+  gap: 6px;
+  padding: 8px;
 }
 
 canvas {
   width: 100%;
-  height: calc(100vh - 104px);
+  height: calc(100vh - 94px);
   max-height: 900px;
   background: #070b14;
   border: 1px solid rgba(148, 163, 184, 0.15);
@@ -70,7 +70,8 @@ input {
   margin: 0;
   color: #94a3b8;
   font-size: 13px;
-  min-height: 18px;
+  line-height: 14px;
+  min-height: 14px;
 }
 
 
