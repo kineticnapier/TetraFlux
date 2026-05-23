@@ -2,6 +2,7 @@ import "./style.css";
 import { HeuristicAI } from "./ai/heuristic";
 import type { AiChoice } from "./ai/heuristic";
 import { WebPolicyAI } from "./ai/webPolicy";
+import { estimateSpinPotential } from "./ai/spinPotential";
 import { boardMetrics, TetrisEngine, type Cell, type LockResult, type PieceKind, type PlacementAction, type PieceState } from "./engine/tetris";
 import { MovementInput, type LogicalMoveKey } from "./input";
 import { MatchLogger, SelfplayLogger, type BattleSide, uploadLogs, uploadSelfplayLogs } from "./logging";
@@ -30,7 +31,20 @@ interface PendingAiAction {
   ops: AiMoveOp[];
   opIndex: number;
   routeFailed: boolean;
+  spinFinisherPlanned?: boolean;
   side?: BattleSide;
+}
+
+interface SpinFinisher {
+  action: PlacementAction;
+  ops: AiMoveOp[];
+  expectedSpinKind: "tspin" | "tspin-mini" | "spin";
+  expectedClearLines: number;
+  targetX: number;
+  targetY: number;
+  targetRot: number;
+  source: "spin_finisher";
+  kindLabel: string;
 }
 
 interface TimedIncomingGarbage {
@@ -2103,6 +2117,74 @@ class Ft5Trainer {
     return last === "cw" || last === "ccw" || last === "180";
   }
 
+  private classifyExpectedSpinKind(kind: string): SpinFinisher["expectedSpinKind"] {
+    if (kind.startsWith("TS")) return "tspin";
+    return "spin";
+  }
+
+  private expectedLinesForSpinKind(kind: string): number {
+    if (kind === "TST") return 3;
+    if (kind === "TSD_LEFT" || kind === "TSD_RIGHT" || kind === "STSD") return 2;
+    return 1;
+  }
+
+  private findReadySpinFinisher(engine: TetrisEngine, legal: PlacementAction[]): SpinFinisher | null {
+    const state = engine.stateDict();
+    const spinPotential = estimateSpinPotential(state);
+    const target = spinPotential.bestTarget;
+    if (!target) return null;
+
+    const kind = target.kind;
+    const spinCapable = kind === "TSD_LEFT" || kind === "TSD_RIGHT" || kind === "TST" || kind === "STSD" || kind === "TSlot";
+    if (!spinCapable) return null;
+
+    const tNow =
+      engine.active.kind === "T" ||
+      (engine.canHold && (engine.hold === "T" || (engine.hold === null && engine.queue[0] === "T")));
+    if (!tNow) return null;
+
+    const expectedLines = this.expectedLinesForSpinKind(kind);
+    if (expectedLines < 1) return null;
+
+    const metrics = boardMetrics(state.board);
+    const nearTopout = metrics.maxHeight >= 15 || engine.pendingGarbage >= 6;
+    if (nearTopout) return null;
+
+    let best: SpinFinisher | null = null;
+    for (const action of legal) {
+      if (action.piece !== "T") continue;
+      const path = this.findAiMovePath(engine, action, true);
+      if (!path || !this.moveOpsEndWithRotation(path)) continue;
+      const preview = engine.clone();
+      let valid = true;
+      for (const op of path) {
+        if (!this.applyAiMoveOp(preview, op)) {
+          valid = false;
+          break;
+        }
+      }
+      if (!valid) continue;
+      const result = preview.hardDrop();
+      if (!result.ok) continue;
+      if (result.spin === "none") continue;
+      if (result.linesCleared < expectedLines) continue;
+      const finisher: SpinFinisher = {
+        action,
+        ops: path,
+        expectedSpinKind: this.classifyExpectedSpinKind(kind),
+        expectedClearLines: expectedLines,
+        targetX: action.x,
+        targetY: preview.active.y,
+        targetRot: this.normalizeRot(action.rot),
+        source: "spin_finisher",
+        kindLabel: kind,
+      };
+      if (!best || finisher.ops.length < best.ops.length) best = finisher;
+    }
+
+    return best;
+  }
+
   private findAiMovePath(engine: TetrisEngine, action: PlacementAction, preferSpinFinish = false): AiMoveOp[] | null {
     const targetX = action.x;
     const targetRot = this.normalizeRot(action.rot);
@@ -2795,7 +2877,26 @@ class Ft5Trainer {
     const stateBefore = engine.stateDict();
     const opponentBefore = opponent.stateDict();
 
-    const chosenAction = this.chooseAiAction(engine, ai);
+    const legal = engine.legalPlacements(true);
+    const spinFinisher = this.findReadySpinFinisher(engine, legal);
+    const chosenAction = spinFinisher
+      ? {
+          ...spinFinisher.action,
+          aiScore: Number.NEGATIVE_INFINITY,
+          aiInfo: {
+            source: spinFinisher.source,
+            spinFinisher: true,
+            spinKind: spinFinisher.kindLabel,
+            expectedSpin: spinFinisher.expectedSpinKind,
+            expectedLines: spinFinisher.expectedClearLines,
+            routeLength: spinFinisher.ops.length,
+            finalOp: spinFinisher.ops[spinFinisher.ops.length - 1] ?? "none",
+            targetX: spinFinisher.targetX,
+            targetY: spinFinisher.targetY,
+            targetRot: spinFinisher.targetRot,
+          },
+        }
+      : this.chooseAiAction(engine, ai);
     if (!chosenAction) return false;
 
     const spinPotential = (chosenAction.aiInfo as { spinPotential?: { bestTarget?: { kind?: string; score?: number; x?: number; y?: number } | null } }).spinPotential;
@@ -2805,7 +2906,13 @@ class Ft5Trainer {
       : "";
 
     const plannedAction = this.applyQuickPlayModToAction(chosenAction);
-    const execution = this.executeAiPlacementByMoves(engine, plannedAction);
+    const execution = spinFinisher
+      ? { ...this.executeAiPlacementByMoves(engine, plannedAction, true), ops: spinFinisher.ops }
+      : this.executeAiPlacementByMoves(engine, plannedAction);
+    if (spinFinisher) {
+      const finalOp = execution.ops[execution.ops.length - 1] ?? "none";
+      this.lastAiSpinLine = `spin finisher: ${spinFinisher.kindLabel} route ${execution.ops.length} final=${finalOp} target=${spinFinisher.targetX},${spinFinisher.targetY},r${spinFinisher.targetRot}`;
+    }
     const pending: PendingAiAction = {
       stateBefore,
       opponentBefore,
@@ -2813,6 +2920,7 @@ class Ft5Trainer {
       ops: execution.ops,
       opIndex: 0,
       routeFailed: !execution.reachedTarget,
+      spinFinisherPlanned: Boolean(spinFinisher),
       side,
     };
     this.setPendingAction(pending, side);
@@ -2827,6 +2935,9 @@ class Ft5Trainer {
     };
     const rawResult = engine.hardDrop();
     const result = this.applyQuickPlayModToResult(rawResult, action, slot);
+    if (pending.spinFinisherPlanned) {
+      this.lastAiSpinLine = `${this.lastAiSpinLine} -> actual ${result.spin}/${result.linesCleared}`;
+    }
     this.applyAllSpinBreakGarbage(engine, slot, result);
     this.applySpecialAfterLock(engine, slot, result);
     const attackApplied = this.applyAttackWithCancelableIncoming(engine, opponent, result.attackSent);
