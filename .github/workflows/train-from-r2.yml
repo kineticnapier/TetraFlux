@@ -51,6 +51,26 @@ on:
         description: "Filter: min round length"
         type: number
         default: 8
+      max_bumpiness:
+        description: "Filter: max bumpiness"
+        type: number
+        default: 52
+      max_total_height:
+        description: "Filter: max total column height"
+        type: number
+        default: 108
+      max_avg_holes:
+        description: "Filter: max average holes per round (-1 disables)"
+        type: number
+        default: 10
+      max_avg_height:
+        description: "Filter: max average max-height per round (-1 disables)"
+        type: number
+        default: 13
+      reject_topout_nearby:
+        description: "Filter: reject near-topout states"
+        type: boolean
+        default: true
       model_name:
         description: "Model name embedded into web_policy.json"
         type: string
@@ -159,7 +179,12 @@ jobs:
             --max-holes "${{ inputs.max_holes }}" \
             --max-height "${{ inputs.max_height }}" \
             --max-pending-garbage 8 \
-            --min-round-length "${{ inputs.min_round_length }}"
+            --max-bumpiness "${{ inputs.max_bumpiness }}" \
+            --max-total-height "${{ inputs.max_total_height }}" \
+            --max-avg-holes "${{ inputs.max_avg_holes }}" \
+            --max-avg-height "${{ inputs.max_avg_height }}" \
+            --min-round-length "${{ inputs.min_round_length }}" \
+            ${{ inputs.reject_topout_nearby && '--reject-topout-nearby' || '' }}
 
       - name: Build dataset
         run: |
