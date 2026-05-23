@@ -71,19 +71,10 @@ on:
         description: "Filter: reject near-topout states"
         type: boolean
         default: true
-<<<<<<< ours
-<<<<<<< ours
-=======
-=======
->>>>>>> theirs
       train_value_model:
         description: "Train and export value model"
         type: boolean
         default: true
-<<<<<<< ours
->>>>>>> theirs
-=======
->>>>>>> theirs
       model_name:
         description: "Model name embedded into web_policy.json"
         type: string
