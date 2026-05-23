@@ -160,15 +160,15 @@ function spinTerrainFactor(board: string[]): SpinPotentialInfo["terrainRisk"] & 
   ) / 4;
   const centerTower = Math.max(0, centerMax - sideAvg);
 
-  if (metrics.holes >= 6 || metrics.maxHeight >= 16 || metrics.bumpiness >= 30 || centerTower >= 6) {
+  if (metrics.holes >= 5 || metrics.maxHeight >= 15 || metrics.bumpiness >= 26 || centerTower >= 5) {
     return { holes: metrics.holes, maxHeight: metrics.maxHeight, bumpiness: metrics.bumpiness, centerTower, factor: 0 };
   }
 
-  const holeFactor = metrics.holes <= 1 ? 1 : metrics.holes <= 2 ? 0.62 : metrics.holes <= 4 ? 0.28 : 0.08;
-  const heightFactor = clamp01((15 - metrics.maxHeight) / 6);
-  const bumpFactor = clamp01((28 - metrics.bumpiness) / 18);
-  const centerFactor = clamp01((6 - centerTower) / 4);
-  const factor = clamp01(holeFactor * Math.max(0.15, heightFactor) * Math.max(0.2, bumpFactor) * Math.max(0.15, centerFactor));
+  const holeFactor = metrics.holes === 0 ? 1 : metrics.holes === 1 ? 0.7 : metrics.holes <= 3 ? 0.35 : 0.12;
+  const heightFactor = clamp01((14 - metrics.maxHeight) / 6);
+  const bumpFactor = clamp01((24 - metrics.bumpiness) / 16);
+  const centerFactor = clamp01((5 - centerTower) / 4);
+  const factor = clamp01(holeFactor * heightFactor * bumpFactor * centerFactor);
 
   return { holes: metrics.holes, maxHeight: metrics.maxHeight, bumpiness: metrics.bumpiness, centerTower, factor };
 }

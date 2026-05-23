@@ -7,12 +7,12 @@ export interface AiChoice extends PlacementAction {
 }
 
 export class HeuristicAI {
-  holeWeight = 10.5;
-  coveredHoleWeight = 0.75;
+  holeWeight = 13.0;
+  coveredHoleWeight = 1.15;
   heightWeight = 0.72;
-  maxHeightWeight = 1.35;
-  centerTowerWeight = 1.15;
-  bumpWeight = 0.65;
+  maxHeightWeight = 1.85;
+  centerTowerWeight = 1.6;
+  bumpWeight = 0.85;
   wellWeight = 0.2;
   lineBonus = 4.0;
   attackBonus = 2.0;
@@ -60,9 +60,10 @@ export class HeuristicAI {
     score += this.coveredHoleWeight * terrain.coveredCells;
     score += this.heightWeight * metrics.totalHeight;
     score += this.maxHeightWeight * Math.max(0, metrics.maxHeight - 9) ** 1.25;
+    score += this.maxHeightWeight * 2.2 * Math.max(0, metrics.maxHeight - 13) ** 1.5;
     score += this.centerTowerWeight * terrain.centerTower ** 1.35;
     score += this.bumpWeight * metrics.bumpiness;
-    score += this.bumpWeight * 1.2 * terrain.roughPenalty;
+    score += this.bumpWeight * 1.55 * terrain.roughPenalty;
     score += this.wellWeight * metrics.wells;
     score -= this.lineBonus * result.linesCleared;
     score -= this.attackBonus * result.attackSent;

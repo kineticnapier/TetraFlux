@@ -95,18 +95,43 @@ function calcImmediateReward(before: EngineState, after: EngineState, opponentBe
   const holesDelta = a.holes - b.holes;
   const heightDelta = a.maxHeight - b.maxHeight;
   const oppHeightDelta = oa.maxHeight - ob.maxHeight;
+  const bumpDelta = a.bumpiness - b.bumpiness;
+  const centerBefore = Math.max(b.heights[4] ?? 0, b.heights[5] ?? 0);
+  const centerAfter = Math.max(a.heights[4] ?? 0, a.heights[5] ?? 0);
+  const sideBefore = ((b.heights[0] ?? 0) + (b.heights[1] ?? 0) + (b.heights[8] ?? 0) + (b.heights[9] ?? 0)) / 4;
+  const sideAfter = ((a.heights[0] ?? 0) + (a.heights[1] ?? 0) + (a.heights[8] ?? 0) + (a.heights[9] ?? 0)) / 4;
+  const centerTowerBefore = Math.max(0, centerBefore - sideBefore);
+  const centerTowerAfter = Math.max(0, centerAfter - sideAfter);
+  const pendingAfter = Math.max(0, after.pendingGarbage ?? 0);
+  const pendingDelta = pendingAfter - Math.max(0, before.pendingGarbage ?? 0);
+  const spinTerrainFactor =
+    a.holes >= 5 || a.maxHeight >= 15 || a.bumpiness >= 28 || centerTowerAfter >= 5
+      ? 0
+      : Math.max(0, Math.min(1, (5 - a.holes) / 5)) *
+        Math.max(0, Math.min(1, (15 - a.maxHeight) / 7)) *
+        Math.max(0, Math.min(1, (28 - a.bumpiness) / 20)) *
+        Math.max(0, Math.min(1, (5 - centerTowerAfter) / 5));
   let reward = 0;
   reward += result.linesCleared * 1.0;
   reward += result.attackSent * 2.0;
   reward += Math.max(0, opponentAfter.pendingGarbage - opponentBefore.pendingGarbage) * 1.0;
-  if (result.spin && result.spin !== "none") reward += 3.0 + result.linesCleared * 2.0;
+  if (result.spin && result.spin !== "none") reward += (3.0 + result.linesCleared * 2.0) * spinTerrainFactor;
   if (result.b2b > 0 && result.linesCleared > 0) reward += 1.0;
   if (result.combo > 0 && result.linesCleared > 0) reward += Math.min(4, result.combo) * 0.5;
-  reward -= Math.max(0, holesDelta) * 3.0;
-  reward -= Math.max(0, heightDelta) * 0.9;
-  reward += Math.max(0, -heightDelta) * 0.3;
+  reward -= Math.max(0, holesDelta) * 6.0;
+  reward -= a.holes * 0.85;
+  reward -= Math.max(0, heightDelta) * 1.8;
+  reward -= Math.max(0, a.maxHeight - 9) * 0.55;
+  reward -= Math.max(0, a.maxHeight - 13) ** 2 * 0.8;
+  reward -= Math.max(0, bumpDelta) * 0.55;
+  reward -= Math.max(0, a.bumpiness - 18) * 0.28;
+  reward -= Math.max(0, centerTowerAfter - centerTowerBefore) * 1.3;
+  reward -= Math.max(0, centerTowerAfter - 3) * 0.9;
+  reward -= pendingAfter * 0.65;
+  reward -= Math.max(0, pendingDelta) * 1.25;
+  reward += Math.max(0, -heightDelta) * 0.2;
   reward += Math.max(0, oppHeightDelta) * 0.4;
-  if (result.topout || after.dead) reward -= 100.0;
+  if (result.topout || after.dead) reward -= 180.0;
   return Number(reward.toFixed(4));
 }
 

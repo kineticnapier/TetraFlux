@@ -2499,16 +2499,38 @@ class Ft5Trainer {
       }
     }
 
-    return bestInfo ? { bonus: bestBonus, info: bestInfo } : { bonus: 0 };
+    if (!bestInfo) return { bonus: 0 };
+
+    const terrainFactor = this.spinSetupTerrainFactor(after);
+    if (terrainFactor <= 0) return { bonus: 0, info: { ...bestInfo, spinPlanTerrainRejected: true } };
+    return {
+      bonus: bestBonus * terrainFactor,
+      info: { ...bestInfo, spinPlanTerrainFactor: Number(terrainFactor.toFixed(3)) },
+    };
+  }
+
+  private spinSetupTerrainFactor(board: string[], pendingGarbage = 0): number {
+    const metrics = boardMetrics(board);
+    const centerMax = Math.max(metrics.heights[4] ?? 0, metrics.heights[5] ?? 0);
+    const sideAvg = ((metrics.heights[0] ?? 0) + (metrics.heights[1] ?? 0) + (metrics.heights[8] ?? 0) + (metrics.heights[9] ?? 0)) / 4;
+    const centerTower = Math.max(0, centerMax - sideAvg);
+
+    if (pendingGarbage >= 6 || metrics.holes >= 5 || metrics.maxHeight >= 15 || metrics.bumpiness >= 28 || centerTower >= 5) return 0;
+
+    const holeFactor = metrics.holes === 0 ? 1 : metrics.holes === 1 ? 0.7 : metrics.holes <= 3 ? 0.35 : 0.12;
+    const heightFactor = Math.max(0, Math.min(1, (14 - metrics.maxHeight) / 6));
+    const bumpFactor = Math.max(0, Math.min(1, (26 - metrics.bumpiness) / 18));
+    const centerFactor = Math.max(0, Math.min(1, (5 - centerTower) / 4));
+    return Math.max(0, Math.min(1, holeFactor * heightFactor * bumpFactor * centerFactor));
   }
 
   private estimateStaticSpinSetup(engineAfter: TetrisEngine): { bonus: number; kind?: string; x?: number; y?: number } {
     const state = engineAfter.stateDict();
     const board = state.board;
-    const metrics = boardMetrics(board);
+    const terrainFactor = this.spinSetupTerrainFactor(board, engineAfter.pendingGarbage);
 
     // Do not sacrifice survival for setup.
-    if (metrics.maxHeight >= 15 || engineAfter.pendingGarbage >= 6) return { bonus: 0 };
+    if (terrainFactor <= 0) return { bonus: 0 };
 
     let best = { bonus: 0, kind: undefined as string | undefined, x: undefined as number | undefined, y: undefined as number | undefined };
 
@@ -2534,7 +2556,7 @@ class Ft5Trainer {
 
           const depthBonus = cy > 8 ? 1.1 : 0.6;
           const supportBonus = Math.min(1.5, floorSupport * 0.5);
-          const bonus = 3.2 + corners * 1.05 + depthBonus + supportBonus;
+          const bonus = (3.2 + corners * 1.05 + depthBonus + supportBonus) * terrainFactor;
 
           if (bonus > best.bonus) {
             best = { bonus, kind: rot === 0 ? "t-slot-up" : rot === 1 ? "t-slot-right" : rot === 2 ? "t-slot-down" : "t-slot-left", x: cx, y: cy };

@@ -26,6 +26,46 @@ import json
 from pathlib import Path
 
 
+def board_rows(state):
+    if not isinstance(state, dict):
+        return ["." * 10 for _ in range(20)]
+    board = state.get("board")
+    if not isinstance(board, list):
+        return ["." * 10 for _ in range(20)]
+    rows = [str(r) for r in board][-20:]
+    while len(rows) < 20:
+        rows.insert(0, "." * 10)
+    return [(r + "." * 10)[:10] for r in rows]
+
+
+def metrics(rows):
+    heights = []
+    holes = 0
+
+    for x in range(10):
+        height = 0
+        seen = False
+        for top_i, row in enumerate(rows):
+            y = 19 - top_i
+            filled = row[x] != "."
+            if filled:
+                seen = True
+                height = max(height, y + 1)
+            elif seen:
+                holes += 1
+        heights.append(height)
+
+    bumpiness = sum(abs(a - b) for a, b in zip(heights, heights[1:]))
+    center_max = max(heights[4], heights[5])
+    side_avg = (heights[0] + heights[1] + heights[8] + heights[9]) / 4
+    return {
+        "holes": holes,
+        "max_height": max(heights),
+        "bumpiness": bumpiness,
+        "center_tower": max(0.0, center_max - side_avg),
+    }
+
+
 def split_for(match_id: str, round_index: int, step_index: int, seed: int) -> str:
     raw = f"{match_id}:{round_index}:{step_index}:{seed}"
     h = hashlib.sha1(raw.encode("utf-8")).digest()
@@ -43,6 +83,12 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--wins-only", action="store_true")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--max-holes", type=int, default=20)
+    ap.add_argument("--max-height", type=int, default=18)
+    ap.add_argument("--max-bumpiness", type=int, default=80)
+    ap.add_argument("--max-center-tower", type=float, default=8.0)
+    ap.add_argument("--max-pending-garbage", type=int, default=8)
+    ap.add_argument("--allow-dirty", action="store_true")
     args = ap.parse_args()
 
     inp = Path(args.input)
@@ -71,6 +117,29 @@ def main() -> int:
             if not isinstance(state, dict) or not isinstance(action, dict):
                 skipped["missing_state_or_action"] = skipped.get("missing_state_or_action", 0) + 1
                 continue
+
+            result = rec.get("result") if isinstance(rec.get("result"), dict) else {}
+            m = metrics(board_rows(state))
+            pending = int(state.get("pendingGarbage", state.get("pending_garbage", 0)) or 0)
+            if not args.allow_dirty:
+                if bool(result.get("topout")):
+                    skipped["topout"] = skipped.get("topout", 0) + 1
+                    continue
+                if m["holes"] > args.max_holes:
+                    skipped["holes"] = skipped.get("holes", 0) + 1
+                    continue
+                if m["max_height"] > args.max_height:
+                    skipped["height"] = skipped.get("height", 0) + 1
+                    continue
+                if m["bumpiness"] > args.max_bumpiness:
+                    skipped["bumpiness"] = skipped.get("bumpiness", 0) + 1
+                    continue
+                if m["center_tower"] > args.max_center_tower:
+                    skipped["center_tower"] = skipped.get("center_tower", 0) + 1
+                    continue
+                if pending > args.max_pending_garbage:
+                    skipped["pending_garbage"] = skipped.get("pending_garbage", 0) + 1
+                    continue
 
             try:
                 key = str(action["key"])
@@ -115,6 +184,14 @@ def main() -> int:
         "kept": kept,
         "skipped": skipped,
         "wins_only": args.wins_only,
+        "dirty_filter": {
+            "enabled": not args.allow_dirty,
+            "max_holes": args.max_holes,
+            "max_height": args.max_height,
+            "max_bumpiness": args.max_bumpiness,
+            "max_center_tower": args.max_center_tower,
+            "max_pending_garbage": args.max_pending_garbage,
+        },
     }
     out.with_suffix(".meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(meta, ensure_ascii=False, indent=2))
