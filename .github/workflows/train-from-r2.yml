@@ -91,10 +91,6 @@ on:
         description: "Max rows for value dataset. 0 = unlimited"
         type: number
         default: 200000
-      value_eval_every:
-        description: "Evaluate value model every N epochs"
-        type: number
-        default: 2
       value_patience:
         description: "Early-stop value model after N non-improving evals. 0 disables"
         type: number
@@ -146,6 +142,7 @@ jobs:
       EFFECTIVE_VALUE_EPOCHS: ${{ inputs.quick_test && 3 || inputs.value_epochs }}
       EFFECTIVE_VALUE_MAX_ROWS: ${{ inputs.quick_test && 30000 || inputs.max_value_rows }}
       VALUE_DATASET_SEED: 42
+      VALUE_EVAL_EVERY: 2
 
     steps:
       - name: Checkout
@@ -173,7 +170,7 @@ jobs:
           echo "R2_LOG_PREFIX=$R2_LOG_PREFIX"
           echo "R2_MODEL_KEY=$R2_MODEL_KEY"
           echo "epochs=$EFFECTIVE_EPOCHS max_objects=$EFFECTIVE_MAX_OBJECTS max_total_mb=$EFFECTIVE_MAX_TOTAL_MB recent_days=$EFFECTIVE_RECENT_DAYS"
-          echo "value_epochs=$EFFECTIVE_VALUE_EPOCHS value_max_rows=$EFFECTIVE_VALUE_MAX_ROWS"
+          echo "value_epochs=$EFFECTIVE_VALUE_EPOCHS value_max_rows=$EFFECTIVE_VALUE_MAX_ROWS value_eval_every=$VALUE_EVAL_EVERY"
 
       - name: Install training dependencies with uv
         shell: bash
@@ -268,7 +265,7 @@ jobs:
             --epochs "$EFFECTIVE_VALUE_EPOCHS" \
             --batch-size "${{ inputs.value_batch_size }}" \
             --hidden "${{ inputs.value_hidden }}" \
-            --eval-every "${{ inputs.value_eval_every }}" \
+            --eval-every "$VALUE_EVAL_EVERY" \
             --patience "${{ inputs.value_patience }}" \
             --device cpu
 
