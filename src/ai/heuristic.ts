@@ -20,6 +20,12 @@ export class HeuristicAI {
   topoutPenalty = 100000.0;
   holdPenalty = 0.05;
 
+  newHolePenaltyWeight = 16.0;
+  maxHeightRisePenaltyWeight = 4.8;
+  bumpRisePenaltyWeight = 1.25;
+  centerTowerRisePenaltyWeight = 2.6;
+  spinTerrainPressureWeight = 1.1;
+
   private terrainDiagnostics(board: string[], heights: number[]): {
     coveredCells: number;
     centerTower: number;
@@ -48,12 +54,45 @@ export class HeuristicAI {
   }
 
   scoreAfter(engine: TetrisEngine, action: PlacementAction): { score: number; info: Record<string, unknown> } {
+    const beforeState = engine.stateDict();
+    const beforeMetrics = boardMetrics(beforeState.board);
+    const beforeTerrain = this.terrainDiagnostics(beforeState.board, beforeMetrics.heights);
+
     const e = engine.clone();
     const result = e.applyAction(action);
     const state = e.stateDict();
     const metrics = boardMetrics(state.board);
     const terrain = this.terrainDiagnostics(state.board, metrics.heights);
     const spinPotential = estimateSpinPotential(state);
+
+    const holeDelta = metrics.holes - beforeMetrics.holes;
+    const maxHeightDelta = metrics.maxHeight - beforeMetrics.maxHeight;
+    const bumpinessDelta = metrics.bumpiness - beforeMetrics.bumpiness;
+    const centerTowerDelta = terrain.centerTower - beforeTerrain.centerTower;
+
+    const newHolePenalty = Math.max(0, holeDelta) * this.newHolePenaltyWeight;
+    const maxHeightRisePenalty = Math.max(0, maxHeightDelta - 1) * this.maxHeightRisePenaltyWeight;
+    const bumpRisePenalty = Math.max(0, bumpinessDelta - 2) * this.bumpRisePenaltyWeight;
+    const centerTowerRisePenalty = Math.max(0, centerTowerDelta - 0.75) * this.centerTowerRisePenaltyWeight;
+    const terrainPenalty = newHolePenalty + maxHeightRisePenalty + bumpRisePenalty + centerTowerRisePenalty;
+
+    const noAttackPressure = result.attackSent <= 0 ? Math.max(0, metrics.totalHeight - 72) : 0;
+
+    let spinPotentialScale = 1;
+    if (metrics.holes >= 12 || metrics.maxHeight >= 18) spinPotentialScale = 0;
+    else {
+      if (metrics.holes >= 8) spinPotentialScale *= 0.2;
+      if (metrics.maxHeight >= 16) spinPotentialScale *= 0.35;
+      if (metrics.bumpiness >= 24) spinPotentialScale *= 0.55;
+      if (metrics.bumpiness >= 30) spinPotentialScale *= 0.4;
+      if (noAttackPressure > 0) {
+        const pressureScale = Math.max(0.2, 1 - noAttackPressure / 32);
+        spinPotentialScale *= pressureScale;
+      }
+      if (holeDelta > 0) spinPotentialScale *= Math.max(0.15, 1 - holeDelta * 0.22);
+    }
+    spinPotentialScale = Math.max(0, Math.min(1, spinPotentialScale));
+    const spinPotentialApplied = spinPotential.bonus * spinPotentialScale;
 
     let score = 0;
     score += this.holeWeight * metrics.holes;
@@ -67,7 +106,9 @@ export class HeuristicAI {
     score += this.wellWeight * metrics.wells;
     score -= this.lineBonus * result.linesCleared;
     score -= this.attackBonus * result.attackSent;
-    score -= this.spinPotentialBonus * spinPotential.bonus;
+    score += this.spinTerrainPressureWeight * noAttackPressure;
+    score += terrainPenalty;
+    score -= this.spinPotentialBonus * spinPotentialApplied;
     if (action.hold) score += this.holdPenalty;
     if (e.dead || result.topout) score += this.topoutPenalty;
 
@@ -80,6 +121,28 @@ export class HeuristicAI {
         attack: result.attackSent,
         spin: result.spin,
         spinPotential,
+        spinPotentialRaw: spinPotential.bonus,
+        spinPotentialApplied,
+        spinPotentialScale: Number(spinPotentialScale.toFixed(4)),
+        terrainPenalty: Number(terrainPenalty.toFixed(4)),
+        beforeMetrics: {
+          ...beforeMetrics,
+          centerTower: Number(beforeTerrain.centerTower.toFixed(3)),
+          coveredCells: beforeTerrain.coveredCells,
+          roughPenalty: Number(beforeTerrain.roughPenalty.toFixed(3)),
+        },
+        afterMetrics: {
+          ...metrics,
+          centerTower: Number(terrain.centerTower.toFixed(3)),
+          coveredCells: terrain.coveredCells,
+          roughPenalty: Number(terrain.roughPenalty.toFixed(3)),
+        },
+        deltas: {
+          holes: holeDelta,
+          maxHeight: maxHeightDelta,
+          bumpiness: Number(bumpinessDelta.toFixed(3)),
+          centerTower: Number(centerTowerDelta.toFixed(3)),
+        },
         topout: e.dead || result.topout
       }
     };
