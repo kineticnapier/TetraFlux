@@ -75,6 +75,30 @@ on:
         description: "Train and export value model"
         type: boolean
         default: true
+      value_epochs:
+        description: "Value model epochs"
+        type: number
+        default: 10
+      value_batch_size:
+        description: "Value model batch size"
+        type: number
+        default: 1024
+      value_hidden:
+        description: "Value model hidden layers (comma-separated)"
+        type: string
+        default: "128,64"
+      max_value_rows:
+        description: "Max rows for value dataset. 0 = unlimited"
+        type: number
+        default: 200000
+      value_eval_every:
+        description: "Evaluate value model every N epochs"
+        type: number
+        default: 2
+      value_patience:
+        description: "Early-stop value model after N non-improving evals. 0 disables"
+        type: number
+        default: 4
       model_name:
         description: "Model name embedded into web_policy.json"
         type: string
@@ -119,6 +143,9 @@ jobs:
       EFFECTIVE_MAX_OBJECTS: ${{ inputs.quick_test && 30 || inputs.max_objects }}
       EFFECTIVE_MAX_TOTAL_MB: ${{ inputs.quick_test && 16 || inputs.max_total_mb }}
       EFFECTIVE_RECENT_DAYS: ${{ inputs.quick_test && 3 || inputs.recent_days }}
+      EFFECTIVE_VALUE_EPOCHS: ${{ inputs.quick_test && 3 || inputs.value_epochs }}
+      EFFECTIVE_VALUE_MAX_ROWS: ${{ inputs.quick_test && 30000 || inputs.max_value_rows }}
+      VALUE_DATASET_SEED: 42
 
     steps:
       - name: Checkout
@@ -146,6 +173,7 @@ jobs:
           echo "R2_LOG_PREFIX=$R2_LOG_PREFIX"
           echo "R2_MODEL_KEY=$R2_MODEL_KEY"
           echo "epochs=$EFFECTIVE_EPOCHS max_objects=$EFFECTIVE_MAX_OBJECTS max_total_mb=$EFFECTIVE_MAX_TOTAL_MB recent_days=$EFFECTIVE_RECENT_DAYS"
+          echo "value_epochs=$EFFECTIVE_VALUE_EPOCHS value_max_rows=$EFFECTIVE_VALUE_MAX_ROWS"
 
       - name: Install training dependencies with uv
         shell: bash
@@ -227,7 +255,9 @@ jobs:
         run: |
           "$PY" tools/build_web_value_dataset.py \
             --input "$DATA_DIR/merged_r2_logs.jsonl" \
-            --out "$DATA_DIR/web_value_dataset_r2.jsonl"
+            --out "$DATA_DIR/web_value_dataset_r2.jsonl" \
+            --max-rows "$EFFECTIVE_VALUE_MAX_ROWS" \
+            --seed "$VALUE_DATASET_SEED"
 
       - name: Train value model
         if: ${{ inputs.train_value_model }}
@@ -235,8 +265,11 @@ jobs:
           "$PY" tools/train_web_value.py \
             --data "$DATA_DIR/web_value_dataset_r2.jsonl" \
             --out-dir "$VALUE_MODEL_DIR" \
-            --epochs "$EFFECTIVE_EPOCHS" \
-            --batch-size 512 \
+            --epochs "$EFFECTIVE_VALUE_EPOCHS" \
+            --batch-size "${{ inputs.value_batch_size }}" \
+            --hidden "${{ inputs.value_hidden }}" \
+            --eval-every "${{ inputs.value_eval_every }}" \
+            --patience "${{ inputs.value_patience }}" \
             --device cpu
 
       - name: Export web value JSON

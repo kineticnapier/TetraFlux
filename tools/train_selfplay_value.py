@@ -71,10 +71,15 @@ def main() -> int:
     ap.add_argument("--data", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--epochs", type=int, default=30)
-    ap.add_argument("--batch-size", type=int, default=512)
+    ap.add_argument("--batch-size", type=int, default=1024)
     ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--hidden", default="256,128")
+    ap.add_argument("--hidden", default="128,64")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--eval-every", type=int, default=1)
+    ap.add_argument("--patience", type=int, default=0, help="0 disables early stopping")
+    ap.add_argument("--min-delta", type=float, default=1e-4)
+    ap.add_argument("--num-workers", type=int, default=0)
+    ap.add_argument("--compile", action="store_true", dest="compile_model")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
 
@@ -91,10 +96,12 @@ def main() -> int:
     y = torch.tensor(y_np)
 
     train_ds = TensorDataset(x[train_idx], y[train_idx])
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=max(0, args.num_workers))
 
     device = args.device
-    model = ValueMLP(input_dim, hidden).to(device)
+    model: nn.Module = ValueMLP(input_dim, hidden).to(device)
+    if args.compile_model and hasattr(torch, "compile"):
+        model = torch.compile(model)  # type: ignore[assignment]
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     loss_fn = nn.SmoothL1Loss(beta=10.0)
 
@@ -103,8 +110,13 @@ def main() -> int:
     best_path = out_dir / "best_value.pt"
     best_val = float("inf")
     best_epoch = -1
+    eval_count = 0
+    stale_evals = 0
+    actual_epochs = 0
+    stopped_early = False
 
     for epoch in range(1, args.epochs + 1):
+        actual_epochs = epoch
         model.train()
         total = 0.0
         count = 0
@@ -120,18 +132,42 @@ def main() -> int:
             total += float(loss.item()) * len(xb)
             count += len(xb)
 
-        val = eval_model(model, x[val_idx], y[val_idx], device)
+        should_eval = (epoch % max(1, args.eval_every) == 0) or (epoch == args.epochs)
         train_loss = total / max(1, count)
-        print(json.dumps({"epoch": epoch, "train_loss": train_loss, "val_mae": val["mae"], "val_mse": val["mse"]}))
-        if val["mae"] < best_val:
-            best_val = val["mae"]
-            best_epoch = epoch
-            torch.save({
-                "model_state": model.state_dict(),
-                "input_dim": input_dim,
-                "hidden": hidden,
-                "seed": args.seed,
-            }, best_path)
+        if should_eval:
+            val = eval_model(model, x[val_idx], y[val_idx], device)
+            eval_count += 1
+            print(json.dumps({"epoch": epoch, "train_loss": train_loss, "val_mae": val["mae"], "val_mse": val["mse"]}))
+            improvement = best_val - val["mae"]
+            if improvement > args.min_delta:
+                best_val = val["mae"]
+                best_epoch = epoch
+                stale_evals = 0
+                torch.save({
+                    "model_state": model.state_dict(),
+                    "input_dim": input_dim,
+                    "hidden": hidden,
+                    "seed": args.seed,
+                }, best_path)
+            else:
+                stale_evals += 1
+                if args.patience > 0 and stale_evals >= args.patience:
+                    stopped_early = True
+                    break
+        else:
+            print(json.dumps({"epoch": epoch, "train_loss": train_loss}))
+
+    if eval_count == 0:
+        val = eval_model(model, x[val_idx], y[val_idx], device)
+        eval_count = 1
+        best_val = val["mae"]
+        best_epoch = actual_epochs
+        torch.save({
+            "model_state": model.state_dict(),
+            "input_dim": input_dim,
+            "hidden": hidden,
+            "seed": args.seed,
+        }, best_path)
 
     ckpt = torch.load(best_path, map_location=device)
     model.load_state_dict(ckpt["model_state"])
@@ -152,6 +188,12 @@ def main() -> int:
         "val_mse": val["mse"],
         "test_mae": test["mae"],
         "test_mse": test["mse"],
+        "requested_epochs": int(args.epochs),
+        "actual_epochs": int(actual_epochs),
+        "stopped_early": bool(stopped_early),
+        "eval_every": int(args.eval_every),
+        "patience": int(args.patience),
+        "batch_size": int(args.batch_size),
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))

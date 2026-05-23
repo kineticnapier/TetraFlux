@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -59,45 +60,76 @@ def main() -> int:
     ap.add_argument("--terminal-scale", type=float, default=1.0)
     ap.add_argument("--immediate-scale", type=float, default=1.0)
     ap.add_argument("--max-abs-target", type=float, default=150.0)
+    ap.add_argument("--max-rows", type=int, default=0, help="Max rows to write; 0 means unlimited")
+    ap.add_argument("--seed", type=int, default=42, help="Deterministic seed for row sampling")
     args = ap.parse_args()
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    n = pos = neg = 0
+    seen_rows = rows_written = positive_targets = negative_targets = 0
+    max_rows = int(args.max_rows)
+    rng = random.Random(args.seed)
+    reservoir: list[dict[str, Any]] = []
+
+    for rec in iter_jsonl(Path(args.input)):
+        if rec.get("source") != "web_ft5_ai_battle":
+            continue
+        side = rec.get("side")
+        winner = rec.get("round_winner")
+        terminal = rec.get("terminal_reward")
+        if terminal is None:
+            terminal = 100.0 if winner == side else -100.0 if winner in ("left", "right") else 0.0
+        immediate = float(rec.get("immediate_reward") or 0.0)
+        target = immediate * args.immediate_scale + float(terminal) * args.terminal_scale
+        target = max(-args.max_abs_target, min(args.max_abs_target, target))
+        row = {
+            "features": features(rec["state"], rec["action"]),
+            "target": target,
+            "immediate_reward": immediate,
+            "terminal_reward": terminal,
+            "side": side,
+            "round_winner": winner,
+            "action_key": rec.get("action", {}).get("key"),
+            "left_ai_name": rec.get("left_ai_name"),
+            "right_ai_name": rec.get("right_ai_name"),
+            "match_id": rec.get("match_id"),
+        }
+        seen_rows += 1
+        if max_rows <= 0:
+            reservoir.append(row)
+            continue
+        if len(reservoir) < max_rows:
+            reservoir.append(row)
+            continue
+        j = rng.randrange(seen_rows)
+        if j < max_rows:
+            reservoir[j] = row
+
     with out.open("w", encoding="utf-8") as f:
-        for rec in iter_jsonl(Path(args.input)):
-            if rec.get("source") != "web_ft5_ai_battle":
-                continue
-            side = rec.get("side")
-            winner = rec.get("round_winner")
-            terminal = rec.get("terminal_reward")
-            if terminal is None:
-                terminal = 100.0 if winner == side else -100.0 if winner in ("left", "right") else 0.0
-            immediate = float(rec.get("immediate_reward") or 0.0)
-            target = immediate * args.immediate_scale + float(terminal) * args.terminal_scale
-            target = max(-args.max_abs_target, min(args.max_abs_target, target))
-            if target > 0: pos += 1
-            elif target < 0: neg += 1
-            row = {
-                "features": features(rec["state"], rec["action"]),
-                "target": target,
-                "immediate_reward": immediate,
-                "terminal_reward": terminal,
-                "side": side,
-                "round_winner": winner,
-                "action_key": rec.get("action", {}).get("key"),
-                "left_ai_name": rec.get("left_ai_name"),
-                "right_ai_name": rec.get("right_ai_name"),
-                "match_id": rec.get("match_id"),
-            }
+        for row in reservoir:
+            target = float(row["target"])
+            if target > 0:
+                positive_targets += 1
+            elif target < 0:
+                negative_targets += 1
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
-            n += 1
+            rows_written += 1
     feature_dim = None
     with out.open("r", encoding="utf-8") as f:
         first = f.readline().strip()
         if first:
             feature_dim = len(json.loads(first)["features"])
-    meta = {"input": args.input, "out": str(out), "n": n, "positive_targets": pos, "negative_targets": neg, "feature_dim": feature_dim}
+    meta = {
+        "input": args.input,
+        "out": str(out),
+        "source_rows_seen": seen_rows,
+        "rows_written": rows_written,
+        "max_rows": max_rows,
+        "positive_targets": positive_targets,
+        "negative_targets": negative_targets,
+        "feature_dim": feature_dim,
+        "seed": args.seed,
+    }
     out.with_suffix(out.suffix + ".meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(meta, ensure_ascii=False, indent=2))
     return 0
