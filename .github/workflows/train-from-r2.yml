@@ -71,6 +71,19 @@ on:
         description: "Filter: reject near-topout states"
         type: boolean
         default: true
+<<<<<<< ours
+<<<<<<< ours
+=======
+=======
+>>>>>>> theirs
+      train_value_model:
+        description: "Train and export value model"
+        type: boolean
+        default: true
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
       model_name:
         description: "Model name embedded into web_policy.json"
         type: string
@@ -109,6 +122,8 @@ jobs:
       DATA_DIR: data
       MODEL_DIR: models/web_human_policy_r2
       PUBLIC_MODEL_JSON: public/models/web_policy.json
+      PUBLIC_VALUE_JSON: public/models/web_value.json
+      VALUE_MODEL_DIR: models/web_value_r2
       EFFECTIVE_EPOCHS: ${{ inputs.quick_test && 3 || inputs.epochs }}
       EFFECTIVE_MAX_OBJECTS: ${{ inputs.quick_test && 30 || inputs.max_objects }}
       EFFECTIVE_MAX_TOTAL_MB: ${{ inputs.quick_test && 16 || inputs.max_total_mb }}
@@ -216,12 +231,46 @@ jobs:
             --file "$PUBLIC_MODEL_JSON" \
             --label "EXPORTED MODEL BEFORE R2 UPLOAD"
 
+      - name: Build value dataset
+        if: ${{ inputs.train_value_model }}
+        run: |
+          "$PY" tools/build_web_value_dataset.py \
+            --input "$DATA_DIR/merged_r2_logs.jsonl" \
+            --out "$DATA_DIR/web_value_dataset_r2.jsonl"
+
+      - name: Train value model
+        if: ${{ inputs.train_value_model }}
+        run: |
+          "$PY" tools/train_web_value.py \
+            --data "$DATA_DIR/web_value_dataset_r2.jsonl" \
+            --out-dir "$VALUE_MODEL_DIR" \
+            --epochs "$EFFECTIVE_EPOCHS" \
+            --batch-size 512 \
+            --device cpu
+
+      - name: Export web value JSON
+        if: ${{ inputs.train_value_model }}
+        run: |
+          "$PY" tools/export_web_value_json.py \
+            --checkpoint "$VALUE_MODEL_DIR/best_value.pt" \
+            --summary "$VALUE_MODEL_DIR/summary.json" \
+            --out "$PUBLIC_VALUE_JSON" \
+            --model-name "${{ inputs.model_name }}_value_run${{ github.run_number }}_${{ github.run_attempt }}"
+
       - name: Upload latest model JSON to R2
         run: |
           "$PY" tools/sync_web_policy_r2.py upload \
             --bucket "$R2_LOG_BUCKET" \
             --key "$R2_MODEL_KEY" \
             --file "$PUBLIC_MODEL_JSON"
+
+      - name: Upload value model JSON to R2
+        if: ${{ inputs.train_value_model }}
+        run: |
+          "$PY" tools/sync_web_policy_r2.py upload \
+            --bucket "$R2_LOG_BUCKET" \
+            --key "models/latest/web_value.json" \
+            --file "$PUBLIC_VALUE_JSON"
 
       - name: Trigger normal frontend deploy
         if: ${{ inputs.trigger_pages_deploy }}
@@ -244,6 +293,7 @@ jobs:
           retention-days: 30
           path: |
             public/models/web_policy.json
+            public/models/web_value.json
             models/web_human_policy_r2/best_policy.pt
             models/web_human_policy_r2/summary.json
             models/web_human_policy_r2/history.json
@@ -251,4 +301,6 @@ jobs:
             data/audit_r2_logs.json
             data/merged_r2_logs_clean.meta.json
             data/web_human_dataset_r2.meta.json
+            data/web_value_dataset_r2.jsonl.meta.json
+            models/web_value_r2/summary.json
             collected_logs_r2/_download_summary.json

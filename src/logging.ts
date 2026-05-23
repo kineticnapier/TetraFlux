@@ -87,53 +87,81 @@ export interface SelfplayMoveLog {
   created_at_ms: number;
 }
 
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, n));
+}
+
 function calcImmediateReward(before: EngineState, after: EngineState, opponentBefore: EngineState, opponentAfter: EngineState, result: LockResult): number {
   const b = boardMetrics(before.board);
   const a = boardMetrics(after.board);
   const ob = boardMetrics(opponentBefore.board);
   const oa = boardMetrics(opponentAfter.board);
+
   const holesDelta = a.holes - b.holes;
-  const heightDelta = a.maxHeight - b.maxHeight;
-  const oppHeightDelta = oa.maxHeight - ob.maxHeight;
+  const maxHeightDelta = a.maxHeight - b.maxHeight;
+  const totalHeightDelta = a.totalHeight - b.totalHeight;
   const bumpDelta = a.bumpiness - b.bumpiness;
+
   const centerBefore = Math.max(b.heights[4] ?? 0, b.heights[5] ?? 0);
   const centerAfter = Math.max(a.heights[4] ?? 0, a.heights[5] ?? 0);
   const sideBefore = ((b.heights[0] ?? 0) + (b.heights[1] ?? 0) + (b.heights[8] ?? 0) + (b.heights[9] ?? 0)) / 4;
   const sideAfter = ((a.heights[0] ?? 0) + (a.heights[1] ?? 0) + (a.heights[8] ?? 0) + (a.heights[9] ?? 0)) / 4;
   const centerTowerBefore = Math.max(0, centerBefore - sideBefore);
   const centerTowerAfter = Math.max(0, centerAfter - sideAfter);
+  const centerTowerDelta = centerTowerAfter - centerTowerBefore;
+
+  const pendingBefore = Math.max(0, before.pendingGarbage ?? 0);
   const pendingAfter = Math.max(0, after.pendingGarbage ?? 0);
-  const pendingDelta = pendingAfter - Math.max(0, before.pendingGarbage ?? 0);
-  const spinTerrainFactor =
-    a.holes >= 5 || a.maxHeight >= 15 || a.bumpiness >= 28 || centerTowerAfter >= 5
-      ? 0
-      : Math.max(0, Math.min(1, (5 - a.holes) / 5)) *
-        Math.max(0, Math.min(1, (15 - a.maxHeight) / 7)) *
-        Math.max(0, Math.min(1, (28 - a.bumpiness) / 20)) *
-        Math.max(0, Math.min(1, (5 - centerTowerAfter) / 5));
+  const pendingDelta = pendingAfter - pendingBefore;
+  const pendingRelief = Math.max(0, pendingBefore - pendingAfter);
+
+  const oppPendingBefore = Math.max(0, opponentBefore.pendingGarbage ?? 0);
+  const oppPendingAfter = Math.max(0, opponentAfter.pendingGarbage ?? 0);
+  const oppHeightDelta = oa.maxHeight - ob.maxHeight;
+
+  const badSpinTerrain = a.holes >= 8 || a.maxHeight >= 16 || a.bumpiness >= 26 || centerTowerAfter >= 4.5;
+
   let reward = 0;
-  reward += result.linesCleared * 1.0;
-  reward += result.attackSent * 2.0;
-  reward += Math.max(0, opponentAfter.pendingGarbage - opponentBefore.pendingGarbage) * 1.0;
-  if (result.spin && result.spin !== "none") reward += (3.0 + result.linesCleared * 2.0) * spinTerrainFactor;
-  if (result.b2b > 0 && result.linesCleared > 0) reward += 1.0;
-  if (result.combo > 0 && result.linesCleared > 0) reward += Math.min(4, result.combo) * 0.5;
-  reward -= Math.max(0, holesDelta) * 6.0;
-  reward -= a.holes * 0.85;
-  reward -= Math.max(0, heightDelta) * 1.8;
-  reward -= Math.max(0, a.maxHeight - 9) * 0.55;
-  reward -= Math.max(0, a.maxHeight - 13) ** 2 * 0.8;
-  reward -= Math.max(0, bumpDelta) * 0.55;
-  reward -= Math.max(0, a.bumpiness - 18) * 0.28;
-  reward -= Math.max(0, centerTowerAfter - centerTowerBefore) * 1.3;
-  reward -= Math.max(0, centerTowerAfter - 3) * 0.9;
-  reward -= pendingAfter * 0.65;
-  reward -= Math.max(0, pendingDelta) * 1.25;
-  reward += Math.max(0, -heightDelta) * 0.2;
-  reward += Math.max(0, oppHeightDelta) * 0.4;
-  if (result.topout || after.dead) reward -= 180.0;
+  reward += result.linesCleared * 2.3;
+  reward += result.attackSent * 3.25;
+  reward += Math.max(0, oppPendingAfter - oppPendingBefore) * 1.2;
+  reward += pendingRelief * 1.15;
+  reward += Math.max(0, -holesDelta) * 4.0;
+  reward += Math.max(0, -maxHeightDelta) * 2.0;
+  reward += Math.max(0, -totalHeightDelta) * 0.5;
+
+  if (result.spin && result.spin !== "none") {
+    const cleanSpin = !badSpinTerrain && result.linesCleared > 0;
+    reward += cleanSpin ? 7.0 + result.linesCleared * 3.5 : -6.5;
+  }
+  if (result.b2b > 0 && result.linesCleared > 0) reward += 1.6;
+  if (result.combo > 0 && result.linesCleared > 0) reward += Math.min(5, result.combo) * 0.8;
+
+  reward -= Math.max(0, holesDelta) * 11.0;
+  reward -= a.holes * 1.25;
+  reward -= Math.max(0, maxHeightDelta) * 3.2;
+  reward -= Math.max(0, a.maxHeight - 12) * 0.95;
+  reward -= Math.max(0, a.maxHeight - 15) ** 2 * 1.45;
+  reward -= Math.max(0, bumpDelta) * 0.9;
+  reward -= Math.max(0, a.bumpiness - 18) * 0.4;
+  reward -= Math.max(0, a.totalHeight - 85) * 0.24;
+  reward -= Math.max(0, centerTowerDelta) * 1.8;
+  reward -= Math.max(0, centerTowerAfter - 3.25) * 1.3;
+  reward -= pendingAfter * 0.75;
+  reward -= Math.max(0, pendingDelta) * 1.5;
+
+  if (pendingBefore >= 6 && result.linesCleared === 0 && holesDelta >= 0) reward -= 6.5;
+  if (pendingBefore >= 8 && maxHeightDelta > 0) reward -= 7.0;
+  if (badSpinTerrain && result.spin && result.spin !== "none" && result.linesCleared === 0) reward -= 5.0;
+
+  reward += Math.max(0, oppHeightDelta) * 0.45;
+
+  if (after.dead || result.topout) reward -= 220.0;
+
+  reward = clamp(reward, -100, 100);
   return Number(reward.toFixed(4));
 }
+
 
 export class MatchLogger {
   matchId = uuid();
