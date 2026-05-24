@@ -11,6 +11,7 @@ export interface BenchmarkPlacementMetrics {
   tPreserveAction: boolean;
   wastedTPlacement: boolean;
   slotDestroyed: boolean;
+  routeFailureReason?: string;
 }
 
 export interface BenchmarkPlacementResult {
@@ -39,9 +40,10 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
   const explicitRoute = Array.isArray(info.route) ? (info.route as AiMoveOp[]) : null;
   const route = explicitRoute ?? findMoveRoute(engine, action, true);
   if (!route) {
+    const routeFailureReason = String((info.routeDiagnostics as Record<string, unknown> | undefined)?.failureReason ?? "no_path_to_target");
     return {
       result: engine.applyAction(action),
-      metrics: { routeUsed: false, routeFailed: true, spinFinisherAttempt: true, spinFinisherSuccess: false, usedDirectApply: true, tPreserveAction, wastedTPlacement, slotDestroyed },
+      metrics: { routeUsed: false, routeFailed: true, spinFinisherAttempt: true, spinFinisherSuccess: false, usedDirectApply: true, tPreserveAction, wastedTPlacement, slotDestroyed, routeFailureReason },
     };
   }
 
@@ -49,7 +51,7 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
     if (!applyMove(engine, op)) {
       return {
         result: engine.applyAction(action),
-        metrics: { routeUsed: false, routeFailed: true, spinFinisherAttempt: true, spinFinisherSuccess: false, usedDirectApply: true, tPreserveAction, wastedTPlacement, slotDestroyed },
+        metrics: { routeUsed: false, routeFailed: true, spinFinisherAttempt: true, spinFinisherSuccess: false, usedDirectApply: true, tPreserveAction, wastedTPlacement, slotDestroyed, routeFailureReason: "final_rotation_not_possible" },
       };
     }
   }

@@ -4,6 +4,15 @@ import type { AiChoice } from "./heuristic";
 
 export type AiMoveOp = "hold" | "left" | "right" | "cw" | "ccw" | "180" | "soft";
 export type SpinFinisherRejectReason = "no_ready_slot" | "no_t_available" | "route_not_found" | "terrain_too_bad";
+export type RouteFailureReason = "no_path_to_target" | "final_rotation_not_possible" | "target_not_placeable" | "route_budget_exceeded";
+export type RouteDiagnostics = {
+  searchedNodes: number;
+  rejectedByCollision: number;
+  rejectedByFinalOp: number;
+  targetUnreachable: number;
+  maxDepthHit: number;
+  failureReason?: RouteFailureReason;
+};
 
 function normalizeRot(rot: number): number { return ((rot % 4) + 4) % 4; }
 export function moveOpsEndWithRotation(ops: AiMoveOp[]): boolean {
@@ -21,7 +30,8 @@ export function applyMove(engine: TetrisEngine, op: AiMoveOp): boolean {
   return engine.move(0, 1);
 }
 
-export function findMoveRoute(engine: TetrisEngine, action: PlacementAction, preferSpinFinish = false): AiMoveOp[] | null {
+export function findMoveRoute(engine: TetrisEngine, action: PlacementAction, preferSpinFinish = false, diagnostics?: RouteDiagnostics): AiMoveOp[] | null {
+  const diag: RouteDiagnostics = diagnostics ?? { searchedNodes: 0, rejectedByCollision: 0, rejectedByFinalOp: 0, targetUnreachable: 0, maxDepthHit: 0 };
   const targetX = action.x;
   const targetRot = normalizeRot(action.rot);
   const start = engine.clone();
@@ -31,39 +41,63 @@ export function findMoveRoute(engine: TetrisEngine, action: PlacementAction, pre
 
   const targetProbe = start.clone();
   targetProbe.active = { kind: action.piece, x: targetX, y: 0, rot: targetRot };
-  if (targetProbe.collides(targetProbe.active)) return null;
+  if (targetProbe.collides(targetProbe.active)) {
+    diag.targetUnreachable++;
+    diag.failureReason = "target_not_placeable";
+    return null;
+  }
   const targetY = targetProbe.hardDropDistance(targetProbe.active);
 
-  const isTargetBeforeDrop = (e: TetrisEngine) =>
-    e.active.kind === action.piece &&
+  const isTargetBeforeDrop = (e: TetrisEngine) => {
+    const dropY = e.hardDropDistance(e.active);
+    const dropped = { ...e.active, y: dropY };
+    const droppedY = dropped.y;
+    return e.active.kind === action.piece &&
     e.active.x === targetX &&
     normalizeRot(e.active.rot) === targetRot &&
-    e.hardDropDistance(e.active) === targetY;
+    Math.abs(droppedY - targetY) <= 1;
+  };
 
   if (!preferSpinFinish && isTargetBeforeDrop(start)) return prefix;
 
-  const ops: AiMoveOp[] = ["cw", "ccw", "180", "left", "right", "soft"];
+  const ops: AiMoveOp[] = preferSpinFinish
+    ? ["cw", "ccw", "180", "left", "right", "soft", "soft"]
+    : ["cw", "ccw", "180", "left", "right", "soft"];
   const queue: Array<{ engine: TetrisEngine; path: AiMoveOp[] }> = [{ engine: start, path: [] }];
   const seen = new Set<string>([`${start.active.kind}:${start.active.x}:${start.active.y}:${normalizeRot(start.active.rot)}`]);
-  const maxPath = preferSpinFinish ? 34 : 28;
-  const maxStates = preferSpinFinish ? 190 : 140;
+  const maxPath = preferSpinFinish ? 40 : 28;
+  const maxStates = preferSpinFinish ? 320 : 140;
+  let budgetExceeded = false;
 
   for (let head = 0; head < queue.length && seen.size <= maxStates; head++) {
     const cur = queue[head];
-    if (cur.path.length >= maxPath) continue;
+    if (cur.path.length >= maxPath) {
+      diag.maxDepthHit++;
+      continue;
+    }
     for (const op of ops) {
       const next = cur.engine.clone();
-      if (!applyMove(next, op)) continue;
+      if (!applyMove(next, op)) {
+        diag.rejectedByCollision++;
+        continue;
+      }
       const key = `${next.active.kind}:${next.active.x}:${next.active.y}:${normalizeRot(next.active.rot)}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      diag.searchedNodes++;
       const path = [...cur.path, op];
       const fullPath = [...prefix, ...path];
-      if (isTargetBeforeDrop(next) && (!preferSpinFinish || moveOpsEndWithRotation(fullPath))) return fullPath;
+      if (isTargetBeforeDrop(next)) {
+        if (!preferSpinFinish || moveOpsEndWithRotation(fullPath)) return fullPath;
+        diag.rejectedByFinalOp++;
+      }
       queue.push({ engine: next, path });
-      if (seen.size > maxStates) break;
+      if (seen.size > maxStates) { budgetExceeded = true; break; }
     }
   }
+  if (budgetExceeded) diag.failureReason = "route_budget_exceeded";
+  else if (diag.rejectedByFinalOp > 0) diag.failureReason = "final_rotation_not_possible";
+  else diag.failureReason = "no_path_to_target";
   return null;
 }
 
@@ -91,13 +125,14 @@ export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiC
   if (!tNow) return { choice: null, reason: "no_t_available" };
 
   const metrics = boardMetrics(state.board);
-  if (metrics.maxHeight >= 15 || engine.pendingGarbage >= 6) return { choice: null, reason: "terrain_too_bad" };
+  if (metrics.maxHeight >= 15 || engine.pendingGarbage >= 6 || metrics.holes > 2 || metrics.bumpiness > 12 || metrics.totalHeight > 35) return { choice: null, reason: "terrain_too_bad" };
 
   const expectedLines = expectedLinesForSpinKind(target.kind);
   const legal = engine.legalPlacements(true).filter((a) => a.piece === "T");
   let best: AiChoice | null = null;
   for (const action of legal) {
-    const route = findMoveRoute(engine, action, true);
+    const routeDiag: RouteDiagnostics = { searchedNodes: 0, rejectedByCollision: 0, rejectedByFinalOp: 0, targetUnreachable: 0, maxDepthHit: 0 };
+    const route = findMoveRoute(engine, action, true, routeDiag);
     if (!route || !moveOpsEndWithRotation(route)) continue;
     const preview = engine.clone();
     let okRoute = true;
@@ -114,6 +149,7 @@ export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiC
         route,
         expectedSpin: expectedSpin(target.kind),
         target: { x: action.x, y: preview.active.y, rot: normalizeRot(action.rot) },
+        routeDiagnostics: routeDiag,
       }
     };
     if (!best || route.length < ((best.aiInfo as any).route?.length ?? 999)) best = cand;

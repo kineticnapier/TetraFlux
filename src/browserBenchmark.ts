@@ -33,6 +33,7 @@ type Aggregate = {
   directPlacements: number;
   routedPlacements: number;
   spinFinisherRejectReasons: Record<string, number>;
+  routeFailureReasons: Record<string, number>;
   tPreserveActions: number;
   wastedTPlacements: number;
   slotDestroyedCount: number;
@@ -139,6 +140,7 @@ async function runOneAi(entry: BenchEntry, options: BenchOptions): Promise<Aggre
   let wastedTPlacements = 0;
   let slotDestroyedCount = 0;
   const spinFinisherRejectReasons: Record<string, number> = {};
+  const routeFailureReasons: Record<string, number> = {};
 
   for (let g = 0; g < options.games; g++) {
     if (options.signal?.aborted) throw new DOMException("Benchmark aborted", "AbortError");
@@ -170,6 +172,7 @@ async function runOneAi(entry: BenchEntry, options: BenchOptions): Promise<Aggre
       if (execution.metrics.spinFinisherAttempt) spinFinisherAttempts++;
       if (execution.metrics.spinFinisherSuccess) spinFinisherSuccesses++;
       if (execution.metrics.routeFailed) routeFailures++;
+      if (execution.metrics.routeFailureReason) routeFailureReasons[execution.metrics.routeFailureReason] = (routeFailureReasons[execution.metrics.routeFailureReason] ?? 0) + 1;
       if (execution.metrics.routeUsed) routedPlacements++;
       if (execution.metrics.usedDirectApply) directPlacements++;
       if (execution.metrics.tPreserveAction) tPreserveActions++;
@@ -234,6 +237,7 @@ async function runOneAi(entry: BenchEntry, options: BenchOptions): Promise<Aggre
     directPlacements,
     routedPlacements,
     spinFinisherRejectReasons,
+    routeFailureReasons,
     tPreserveActions,
     wastedTPlacements,
     slotDestroyedCount,

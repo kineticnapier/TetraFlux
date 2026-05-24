@@ -34,6 +34,7 @@ type Aggregate = {
   routeFailures: number;
   directPlacements: number;
   routedPlacements: number;
+  routeFailureReasons: Record<string, number>;
 };
 
 type Entry = { name: string; ai: AiLike };
@@ -94,6 +95,7 @@ function runBenchmark(entry: Entry, games: number, maxPieces: number, seedBase: 
   let holesSum = 0, maxHeightSum = 0, bumpinessSum = 0, totalHeightSum = 0, spinPotentialCreated = 0, garbageHandled = 0;
   let decisionMsTotal = 0, decisionMsMax = 0, decisions = 0;
   let spinFinisherAttempts = 0, spinFinisherSuccesses = 0, routeFailures = 0, directPlacements = 0, routedPlacements = 0;
+  const routeFailureReasons: Record<string, number> = {};
 
   for (let g = 0; g < games; g++) {
     const seed = seedBase + g * 31;
@@ -114,6 +116,7 @@ function runBenchmark(entry: Entry, games: number, maxPieces: number, seedBase: 
       if (execution.metrics.spinFinisherAttempt) spinFinisherAttempts++;
       if (execution.metrics.spinFinisherSuccess) spinFinisherSuccesses++;
       if (execution.metrics.routeFailed) routeFailures++;
+      if (execution.metrics.routeFailureReason) routeFailureReasons[execution.metrics.routeFailureReason] = (routeFailureReasons[execution.metrics.routeFailureReason] ?? 0) + 1;
       if (execution.metrics.routeUsed) routedPlacements++;
       if (execution.metrics.usedDirectApply) directPlacements++;
       if (!result.ok) { topoutCount++; break; }
@@ -156,6 +159,7 @@ function runBenchmark(entry: Entry, games: number, maxPieces: number, seedBase: 
     routeFailures,
     directPlacements,
     routedPlacements,
+    routeFailureReasons,
   };
 }
 
@@ -167,6 +171,7 @@ function printSummary(name: string, a: Aggregate) {
   console.log(`spins: tspin=${a.tspinCount} tsd=${a.tsdCount} tst=${a.tstCount} spinPotential=${a.spinPotentialCreated.toFixed(2)}`);
   console.log(`decision ms: avg=${a.avgDecisionTimeMs.toFixed(3)} max=${a.maxDecisionTimeMs.toFixed(3)}`);
   console.log(`execution: spinFinisher attempts=${a.spinFinisherAttempts} successes=${a.spinFinisherSuccesses} routeFailures=${a.routeFailures} direct=${a.directPlacements} routed=${a.routedPlacements}`);
+  console.log(`route failure reasons: ${JSON.stringify(a.routeFailureReasons)}`);
 }
 
 function main() {

@@ -75,7 +75,7 @@ export class HeuristicAI {
 
     const queue = Array.isArray(beforeState.queue) ? beforeState.queue : [];
     const tQueueIndex = queue.findIndex((p) => p === "T");
-    const hasNearReadySlot = !!beforeSpin.bestTarget && beforeSpin.bestTarget.score >= 7.6 && beforeSpin.bestTarget.lineDeficit <= 3;
+    const hasNearReadySlot = !!beforeSpin.bestTarget && beforeSpin.bestTarget.score >= 6.8 && beforeSpin.bestTarget.lineDeficit <= 4;
     const activeT = beforeState.active?.kind === "T";
     const holdT = beforeState.hold === "T";
     const queueTSoon = tQueueIndex >= 0 && tQueueIndex <= 3;
@@ -155,7 +155,7 @@ export class HeuristicAI {
       if (action.hold && activeT && beforeState.hold !== "T" && hasNearReadySlot) {
         tPreserved = true;
         tPreservationBonusApplied += this.tPreservationBonus * spinStrength * 1.15;
-      } else if (!usedTForOrdinary && (holdT || queueTSoon) && hasNearReadySlot) {
+      } else if (!usedTForOrdinary && (holdT || queueTSoon) && hasNearReadySlot && (action.piece !== "T" || action.hold)) {
         tPreserved = true;
         tPreservationBonusApplied += this.tPreservationBonus * spinStrength * 0.7;
       }
@@ -180,6 +180,9 @@ export class HeuristicAI {
         spinPotentialApplied,
         spinPotentialScale: Number(spinPotentialScale.toFixed(4)),
         tAvailabilityReason,
+        hasNearReadySlot,
+        nearReadySlotScore: Number((beforeSpin.bestTarget?.score ?? 0).toFixed(4)),
+        nearReadySlotLineDeficit: beforeSpin.bestTarget?.lineDeficit ?? null,
         tPreserved,
         tPreservationBonus: Number(tPreservationBonusApplied.toFixed(4)),
         wastedTPenalty: Number(wastedTPenaltyApplied.toFixed(4)),
