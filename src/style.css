@@ -52,6 +52,7 @@ button, input {
 
 button { cursor: pointer; }
 button:hover { background: #1f2937; }
+button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 label {
   display: inline-flex;
@@ -74,6 +75,71 @@ input {
   min-height: 14px;
 }
 
+#benchPanel {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(2, 6, 23, 0.62);
+  backdrop-filter: blur(4px);
+}
+
+#benchPanel[hidden] {
+  display: none;
+}
+
+.bench-card {
+  width: min(980px, 96vw);
+  max-height: min(760px, 92vh);
+  overflow: auto;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 16px;
+  background: #0b1220;
+  box-shadow: 0 22px 90px rgba(0, 0, 0, 0.55);
+  padding: 14px;
+}
+
+.bench-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.bench-header h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.small-button {
+  min-width: 36px;
+  padding: 6px 10px;
+}
+
+.bench-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+#benchOutput {
+  margin: 0;
+  min-height: 280px;
+  max-height: 520px;
+  overflow: auto;
+  white-space: pre;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: #050816;
+  color: #dbeafe;
+  padding: 12px;
+  font: 12px/1.45 Consolas, ui-monospace, monospace;
+}
 
 #touchControls {
   display: none;
