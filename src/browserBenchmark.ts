@@ -34,6 +34,8 @@ type Aggregate = {
   routedPlacements: number;
   spinFinisherRejectReasons: Record<string, number>;
   routeFailureReasons: Record<string, number>;
+  routedNoSpin: number;
+  routedNoClear: number;
   tPreserveActions: number;
   wastedTPlacements: number;
   slotDestroyedCount: number;
@@ -82,7 +84,7 @@ async function buildBrowserAis(onProgress?: (message: string) => void): Promise<
   ais.push({ name: "HeuristicAI", ai: new HeuristicAI() });
   ais.push({ name: "LookaheadAI", ai: new LookaheadAI({ depth: 3, beamWidth: 50, includeHold: true, spinBias: 1, maxCandidatesPerNode: 36, maxNodesPerDepth: 300, timeBudgetMs: 9 }) });
 
-  const spinAi = new LookaheadAI({ depth: 4, beamWidth: 80, includeHold: true, spinBias: 1.75, maxCandidatesPerNode: 34, maxNodesPerDepth: 360, timeBudgetMs: 11.5 });
+  const spinAi = new LookaheadAI({ depth: 1, beamWidth: 24, includeHold: true, spinBias: 1.2, maxCandidatesPerNode: 16, maxNodesPerDepth: 120, timeBudgetMs: 2.8 });
   Object.assign(spinAi, {
     holeWeight: 10.1,
     heightWeight: 0.88,
@@ -134,6 +136,8 @@ async function runOneAi(entry: BenchEntry, options: BenchOptions): Promise<Aggre
   let spinFinisherAttempts = 0;
   let spinFinisherSuccesses = 0;
   let routeFailures = 0;
+  let routedNoSpin = 0;
+  let routedNoClear = 0;
   let directPlacements = 0;
   let routedPlacements = 0;
   let tPreserveActions = 0;
@@ -172,6 +176,8 @@ async function runOneAi(entry: BenchEntry, options: BenchOptions): Promise<Aggre
       if (execution.metrics.spinFinisherAttempt) spinFinisherAttempts++;
       if (execution.metrics.spinFinisherSuccess) spinFinisherSuccesses++;
       if (execution.metrics.routeFailed) routeFailures++;
+      if (execution.metrics.routedNoSpin) routedNoSpin++;
+      if (execution.metrics.routedNoClear) routedNoClear++;
       if (execution.metrics.routeFailureReason) routeFailureReasons[execution.metrics.routeFailureReason] = (routeFailureReasons[execution.metrics.routeFailureReason] ?? 0) + 1;
       if (execution.metrics.routeUsed) routedPlacements++;
       if (execution.metrics.usedDirectApply) directPlacements++;
@@ -238,6 +244,8 @@ async function runOneAi(entry: BenchEntry, options: BenchOptions): Promise<Aggre
     routedPlacements,
     spinFinisherRejectReasons,
     routeFailureReasons,
+    routedNoSpin,
+    routedNoClear,
     tPreserveActions,
     wastedTPlacements,
     slotDestroyedCount,

@@ -3,7 +3,7 @@ import { estimateSpinPotential } from "./spinPotential";
 import type { AiChoice } from "./heuristic";
 
 export type AiMoveOp = "hold" | "left" | "right" | "cw" | "ccw" | "180" | "soft";
-export type SpinFinisherRejectReason = "no_ready_slot" | "no_t_available" | "route_not_found" | "terrain_too_bad";
+export type SpinFinisherRejectReason = "no_ready_slot" | "no_t_available" | "route_not_found" | "route_budget_exceeded" | "terrain_too_bad";
 export type RouteFailureReason = "no_path_to_target" | "final_rotation_not_possible" | "target_not_placeable" | "route_budget_exceeded";
 export type RouteDiagnostics = {
   searchedNodes: number;
@@ -65,8 +65,8 @@ export function findMoveRoute(engine: TetrisEngine, action: PlacementAction, pre
     : ["cw", "ccw", "180", "left", "right", "soft"];
   const queue: Array<{ engine: TetrisEngine; path: AiMoveOp[] }> = [{ engine: start, path: [] }];
   const seen = new Set<string>([`${start.active.kind}:${start.active.x}:${start.active.y}:${normalizeRot(start.active.rot)}`]);
-  const maxPath = preferSpinFinish ? 40 : 28;
-  const maxStates = preferSpinFinish ? 320 : 140;
+  const maxPath = preferSpinFinish ? 30 : 24;
+  const maxStates = preferSpinFinish ? 180 : 110;
   let budgetExceeded = false;
 
   for (let head = 0; head < queue.length && seen.size <= maxStates; head++) {
@@ -125,7 +125,8 @@ export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiC
   if (!tNow) return { choice: null, reason: "no_t_available" };
 
   const metrics = boardMetrics(state.board);
-  if (metrics.maxHeight >= 15 || engine.pendingGarbage >= 6 || metrics.holes > 2 || metrics.bumpiness > 12 || metrics.totalHeight > 35) return { choice: null, reason: "terrain_too_bad" };
+  const topRowsBlocked = state.board.slice(0, 6).some((row) => /[^.]/.test(row));
+  if (metrics.maxHeight > 8 || engine.pendingGarbage >= 4 || metrics.holes > 1 || metrics.bumpiness > 12 || metrics.totalHeight > 35 || topRowsBlocked) return { choice: null, reason: "terrain_too_bad" };
 
   const expectedLines = expectedLinesForSpinKind(target.kind);
   const legal = engine.legalPlacements(true).filter((a) => a.piece === "T");
@@ -154,7 +155,14 @@ export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiC
     };
     if (!best || route.length < ((best.aiInfo as any).route?.length ?? 999)) best = cand;
   }
-  if (!best) return { choice: null, reason: "route_not_found" };
+  if (!best) {
+    const budgetExceeded = legal.some((action) => {
+      const routeDiag: RouteDiagnostics = { searchedNodes: 0, rejectedByCollision: 0, rejectedByFinalOp: 0, targetUnreachable: 0, maxDepthHit: 0 };
+      findMoveRoute(engine, action, true, routeDiag);
+      return routeDiag.failureReason === "route_budget_exceeded";
+    });
+    return { choice: null, reason: budgetExceeded ? "route_budget_exceeded" : "route_not_found" };
+  }
   return { choice: best };
 }
 

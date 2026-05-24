@@ -33,6 +33,14 @@ const DEFAULTS: Required<Omit<LookaheadOptions, "valueModel">> = {
   timeBudgetMs: 9,
 };
 
+
+function isRiskyBoard(engine: TetrisEngine): boolean {
+  const state = engine.stateDict();
+  const m = boardMetrics(state.board);
+  const topRowsBlocked = state.board.slice(0, 6).some((row) => /[^.]/.test(row));
+  return m.maxHeight >= 10 || m.holes >= 2 || topRowsBlocked;
+}
+
 function clampDepth(engine: TetrisEngine, depth: number): number {
   const q = engine.stateDict().queue.length;
   return Math.max(1, Math.min(depth, q + 2));
@@ -137,18 +145,24 @@ export class LookaheadAI extends HeuristicAI {
     const start = performance.now();
     this.lastSpinFinisherReason = null;
     const spinBias = this.lookaheadOptions.spinBias ?? DEFAULTS.spinBias;
-    (engine as unknown as { spinBias?: number }).spinBias = spinBias;
-    if (spinBias > 1) {
-      const finisher = findReadySpinFinisherChoice(engine);
+    const risky = isRiskyBoard(engine);
+    const effectiveSpinBias = risky ? 1 : spinBias;
+    (engine as unknown as { spinBias?: number }).spinBias = effectiveSpinBias;
+    if (effectiveSpinBias > 1) {
+      const state = engine.stateDict();
+      const m = boardMetrics(state.board);
+      const cleanEnoughForForcedSpin = m.holes <= 1 && m.maxHeight <= 6 && m.bumpiness <= 9 && m.totalHeight <= 26 && !state.board.slice(0, 6).some((row) => /[^.]/.test(row));
+      if (!cleanEnoughForForcedSpin) this.lastSpinFinisherReason = "terrain_too_bad";
+      const finisher = cleanEnoughForForcedSpin ? findReadySpinFinisherChoice(engine) : { choice: null, reason: "terrain_too_bad" as const };
       if (finisher.choice) {
         finisher.choice.aiInfo = { ...finisher.choice.aiInfo, chooseMs: Number((performance.now() - start).toFixed(3)) };
         return finisher.choice;
       }
       this.lastSpinFinisherReason = finisher.reason ?? "no_ready_slot";
     }
-    const choice = chooseLookaheadPlacement(engine, this, this.lookaheadOptions);
+    const choice = chooseLookaheadPlacement(engine, this, { ...this.lookaheadOptions, spinBias: effectiveSpinBias });
     if (choice) {
-      if (this.lastSpinFinisherReason) choice.aiInfo = { ...choice.aiInfo, spinFinisherRejected: this.lastSpinFinisherReason };
+      if (this.lastSpinFinisherReason || risky) choice.aiInfo = { ...choice.aiInfo, spinFinisherRejected: this.lastSpinFinisherReason, topoutSafetyOverride: risky || undefined };
       return choice;
     }
     const fallback = super.choose(engine);

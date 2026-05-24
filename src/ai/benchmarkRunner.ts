@@ -12,6 +12,8 @@ export interface BenchmarkPlacementMetrics {
   wastedTPlacement: boolean;
   slotDestroyed: boolean;
   routeFailureReason?: string;
+  routedNoSpin?: boolean;
+  routedNoClear?: boolean;
 }
 
 export interface BenchmarkPlacementResult {
@@ -26,14 +28,17 @@ function isSpinFinisherChoice(choice: AiChoice): boolean {
 
 export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): BenchmarkPlacementResult {
   const info = (action.aiInfo ?? {}) as Record<string, unknown>;
-  const tPreserveAction = info.tPreserved === true;
+  const hadReadySlotBefore = engine.active.kind === "T";
+  const tPreserveAction = info.tPreserved === true || (action.hold === true && hadReadySlotBefore);
   const wastedTPlacement = Number(info.wastedTPenalty ?? 0) > 0;
   const slotDestroyed = Number(info.slotDestroyedPenalty ?? 0) > 0;
   const spinFinisherAttempt = isSpinFinisherChoice(action);
   if (!spinFinisherAttempt) {
+    const result = engine.applyAction(action);
+    const inferredWasted = action.piece === "T" && result.ok && result.spin === "none" && result.linesCleared === 0;
     return {
-      result: engine.applyAction(action),
-      metrics: { routeUsed: false, routeFailed: false, spinFinisherAttempt: false, spinFinisherSuccess: false, usedDirectApply: true, tPreserveAction, wastedTPlacement, slotDestroyed },
+      result,
+      metrics: { routeUsed: false, routeFailed: false, spinFinisherAttempt: false, spinFinisherSuccess: false, usedDirectApply: true, tPreserveAction, wastedTPlacement: wastedTPlacement || inferredWasted, slotDestroyed },
     };
   }
 
@@ -57,9 +62,11 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
   }
 
   const result = engine.hardDrop();
-  const spinFinisherSuccess = result.ok && result.spin !== "none" && result.linesCleared > 0;
+  const routedNoSpin = result.ok && result.spin === "none";
+  const routedNoClear = result.ok && result.linesCleared <= 0;
+  const spinFinisherSuccess = result.ok && result.spin === "tspin" && result.linesCleared > 0;
   return {
     result,
-    metrics: { routeUsed: true, routeFailed: false, spinFinisherAttempt: true, spinFinisherSuccess, usedDirectApply: false, tPreserveAction, wastedTPlacement, slotDestroyed },
+    metrics: { routeUsed: true, routeFailed: false, spinFinisherAttempt: true, spinFinisherSuccess, usedDirectApply: false, tPreserveAction, wastedTPlacement, slotDestroyed: slotDestroyed || routedNoSpin, routedNoSpin, routedNoClear },
   };
 }
