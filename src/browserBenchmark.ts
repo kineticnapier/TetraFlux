@@ -2,6 +2,7 @@ import { HeuristicAI, type AiChoice } from "./ai/heuristic";
 import { LookaheadAI } from "./ai/lookahead";
 import { estimateSpinPotential } from "./ai/spinPotential";
 import { executeBenchmarkAction } from "./ai/benchmarkRunner";
+import { runForcedSpinFinisherProbe } from "./ai/spinFinisher";
 import { WebPolicyAI } from "./ai/webPolicy";
 import { WebValueModel } from "./ai/webValue";
 import { boardMetrics, TetrisEngine } from "./engine/tetris";
@@ -31,6 +32,7 @@ type Aggregate = {
   routeFailures: number;
   directPlacements: number;
   routedPlacements: number;
+  spinFinisherRejectReasons: Record<string, number>;
 };
 
 type BenchEntry = { name: string; ai: AiLike };
@@ -130,6 +132,7 @@ async function runOneAi(entry: BenchEntry, options: BenchOptions): Promise<Aggre
   let routeFailures = 0;
   let directPlacements = 0;
   let routedPlacements = 0;
+  const spinFinisherRejectReasons: Record<string, number> = {};
 
   for (let g = 0; g < options.games; g++) {
     if (options.signal?.aborted) throw new DOMException("Benchmark aborted", "AbortError");
@@ -154,6 +157,8 @@ async function runOneAi(entry: BenchEntry, options: BenchOptions): Promise<Aggre
         break;
       }
 
+      const reason = String(((action.aiInfo ?? {}) as Record<string, unknown>).spinFinisherRejected ?? "");
+      if (reason) spinFinisherRejectReasons[reason] = (spinFinisherRejectReasons[reason] ?? 0) + 1;
       const execution = executeBenchmarkAction(engine, action);
       const result = execution.result;
       if (execution.metrics.spinFinisherAttempt) spinFinisherAttempts++;
@@ -219,6 +224,7 @@ async function runOneAi(entry: BenchEntry, options: BenchOptions): Promise<Aggre
     routeFailures,
     directPlacements,
     routedPlacements,
+    spinFinisherRejectReasons,
   };
 }
 
@@ -257,6 +263,7 @@ function renderSummary(payload: BenchPayload): string {
         `tsd ${String(a.tsdCount).padStart(3)}`,
         `tst ${String(a.tstCount).padStart(3)}`,
         `ms ${fmt(a.avgDecisionTimeMs, 2).padStart(6)}`,
+        `fin ${String(a.spinFinisherAttempts).padStart(3)}/${String(a.routedPlacements).padStart(3)}`,
       ].join(" | ");
     })
     .join("\n");
@@ -295,6 +302,7 @@ function ensureBenchmarkUi(): void {
         <button id="benchRun">Run</button>
         <button id="benchCancel" disabled>Cancel</button>
         <button id="benchDownload" disabled>Download JSON</button>
+        <button id="benchForcedSpin">Forced Spin Probe</button>
       </div>
       <pre id="benchOutput">Ready. Browser benchmark uses the same engine/AI modules as the app. Defaults are intentionally small to avoid freezing.</pre>
     </div>
@@ -306,6 +314,7 @@ function ensureBenchmarkUi(): void {
   const cancelBtn = panel.querySelector<HTMLButtonElement>("#benchCancel")!;
   const downloadBtn = panel.querySelector<HTMLButtonElement>("#benchDownload")!;
   const output = panel.querySelector<HTMLPreElement>("#benchOutput")!;
+  const forcedBtn = panel.querySelector<HTMLButtonElement>("#benchForcedSpin")!;
   const gamesInput = panel.querySelector<HTMLInputElement>("#benchGames")!;
   const maxPiecesInput = panel.querySelector<HTMLInputElement>("#benchMaxPieces")!;
   const seedInput = panel.querySelector<HTMLInputElement>("#benchSeed")!;
@@ -328,6 +337,12 @@ function ensureBenchmarkUi(): void {
 
   downloadBtn.addEventListener("click", () => {
     if (latestPayload) downloadJson("tetraflux_browser_benchmark.json", latestPayload);
+  });
+
+
+  forcedBtn.addEventListener("click", () => {
+    const probe = runForcedSpinFinisherProbe();
+    output.textContent = `Forced spin probe: found=${probe.found} route=${probe.route} spin=${probe.spin} lines=${probe.linesCleared}${probe.reason ? ` reason=${probe.reason}` : ""}`;
   });
 
   runBtn.addEventListener("click", async () => {

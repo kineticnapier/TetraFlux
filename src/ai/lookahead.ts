@@ -1,6 +1,7 @@
 import { boardMetrics, TetrisEngine, type PlacementAction } from "../engine/tetris";
 import { HeuristicAI, type AiChoice } from "./heuristic";
 import { estimateSpinPotential } from "./spinPotential";
+import { findReadySpinFinisherChoice } from "./spinFinisher";
 import type { WebValueModel } from "./webValue";
 
 export interface LookaheadOptions {
@@ -125,15 +126,29 @@ export function chooseLookaheadPlacement(engine: TetrisEngine, heuristic: Heuris
 }
 
 export class LookaheadAI extends HeuristicAI {
+  public lastSpinFinisherReason: string | null = null;
   constructor(public readonly lookaheadOptions: LookaheadOptions = {}) { super(); }
 
   choose(engine: TetrisEngine): AiChoice | null {
     const budgetMs = this.lookaheadOptions.timeBudgetMs ?? DEFAULTS.timeBudgetMs;
     const start = performance.now();
+    this.lastSpinFinisherReason = null;
+    const spinBias = this.lookaheadOptions.spinBias ?? DEFAULTS.spinBias;
+    if (spinBias > 1) {
+      const finisher = findReadySpinFinisherChoice(engine);
+      if (finisher.choice) {
+        finisher.choice.aiInfo = { ...finisher.choice.aiInfo, chooseMs: Number((performance.now() - start).toFixed(3)) };
+        return finisher.choice;
+      }
+      this.lastSpinFinisherReason = finisher.reason ?? "no_ready_slot";
+    }
     const choice = chooseLookaheadPlacement(engine, this, this.lookaheadOptions);
-    if (choice) return choice;
+    if (choice) {
+      if (this.lastSpinFinisherReason) choice.aiInfo = { ...choice.aiInfo, spinFinisherRejected: this.lastSpinFinisherReason };
+      return choice;
+    }
     const fallback = super.choose(engine);
-    if (fallback) fallback.aiInfo = { ...fallback.aiInfo, source: "lookahead_fallback", chooseMs: Number((performance.now() - start).toFixed(3)), budgetMs };
+    if (fallback) fallback.aiInfo = { ...fallback.aiInfo, source: "lookahead_fallback", chooseMs: Number((performance.now() - start).toFixed(3)), budgetMs, spinFinisherRejected: this.lastSpinFinisherReason ?? undefined };
     return fallback;
   }
 }
