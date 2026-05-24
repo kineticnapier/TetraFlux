@@ -153,9 +153,13 @@ export class LookaheadAI extends HeuristicAI {
       const m = boardMetrics(state.board);
       const cleanEnoughForForcedSpin = m.holes <= 1 && m.maxHeight <= 6 && m.bumpiness <= 9 && m.totalHeight <= 26 && !state.board.slice(0, 6).some((row) => /[^.]/.test(row));
       if (!cleanEnoughForForcedSpin) this.lastSpinFinisherReason = "terrain_too_bad";
-      const finisher = cleanEnoughForForcedSpin ? findReadySpinFinisherChoice(engine) : { choice: null, reason: "terrain_too_bad" as const };
+      const finisher = findReadySpinFinisherChoice(engine);
       if (finisher.choice) {
-        finisher.choice.aiInfo = { ...finisher.choice.aiInfo, chooseMs: Number((performance.now() - start).toFixed(3)) };
+        finisher.choice.aiInfo = {
+          ...finisher.choice.aiInfo,
+          chooseMs: Number((performance.now() - start).toFixed(3)),
+          spinDecisionType: cleanEnoughForForcedSpin ? "speculative_setup_and_finisher" : "immediate_finisher_override",
+        };
         return finisher.choice;
       }
       this.lastSpinFinisherReason = finisher.reason ?? "no_ready_slot";

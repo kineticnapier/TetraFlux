@@ -64,7 +64,7 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
   const result = engine.hardDrop();
   const routedNoSpin = result.ok && result.spin === "none";
   const routedNoClear = result.ok && result.linesCleared <= 0;
-  const spinFinisherSuccess = result.ok && result.spin === "tspin" && result.linesCleared > 0;
+  const spinFinisherSuccess = result.ok && result.spin !== "none" && result.linesCleared > 0;
   return {
     result,
     metrics: { routeUsed: true, routeFailed: false, spinFinisherAttempt: true, spinFinisherSuccess, usedDirectApply: false, tPreserveAction, wastedTPlacement, slotDestroyed: slotDestroyed || routedNoSpin, routedNoSpin, routedNoClear },
