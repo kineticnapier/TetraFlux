@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 import { HeuristicAI, type AiChoice } from "../src/ai/heuristic";
 import { LookaheadAI } from "../src/ai/lookahead";
 import { estimateSpinPotential } from "../src/ai/spinPotential";
+import { executeBenchmarkAction } from "../src/ai/benchmarkRunner";
 import { WebPolicyAI, type WebPolicyJson } from "../src/ai/webPolicy";
 import { WebValueModel, type WebValueJson } from "../src/ai/webValue";
 import { boardMetrics, TetrisEngine } from "../src/engine/tetris";
@@ -28,6 +29,11 @@ type Aggregate = {
   garbageHandled: number;
   avgDecisionTimeMs: number;
   maxDecisionTimeMs: number;
+  spinFinisherAttempts: number;
+  spinFinisherSuccesses: number;
+  routeFailures: number;
+  directPlacements: number;
+  routedPlacements: number;
 };
 
 type Entry = { name: string; ai: AiLike };
@@ -87,6 +93,7 @@ function runBenchmark(entry: Entry, games: number, maxPieces: number, seedBase: 
   let piecesSurvived = 0, linesCleared = 0, attackSent = 0, topoutCount = 0, tspinCount = 0, tsdCount = 0, tstCount = 0;
   let holesSum = 0, maxHeightSum = 0, bumpinessSum = 0, totalHeightSum = 0, spinPotentialCreated = 0, garbageHandled = 0;
   let decisionMsTotal = 0, decisionMsMax = 0, decisions = 0;
+  let spinFinisherAttempts = 0, spinFinisherSuccesses = 0, routeFailures = 0, directPlacements = 0, routedPlacements = 0;
 
   for (let g = 0; g < games; g++) {
     const seed = seedBase + g * 31;
@@ -102,7 +109,13 @@ function runBenchmark(entry: Entry, games: number, maxPieces: number, seedBase: 
       decisionMsMax = Math.max(decisionMsMax, dt);
       decisions++;
       if (!action) { topoutCount++; break; }
-      const result = engine.applyAction(action);
+      const execution = executeBenchmarkAction(engine, action);
+      const result = execution.result;
+      if (execution.metrics.spinFinisherAttempt) spinFinisherAttempts++;
+      if (execution.metrics.spinFinisherSuccess) spinFinisherSuccesses++;
+      if (execution.metrics.routeFailed) routeFailures++;
+      if (execution.metrics.routeUsed) routedPlacements++;
+      if (execution.metrics.usedDirectApply) directPlacements++;
       if (!result.ok) { topoutCount++; break; }
 
       piecesSurvived++;
@@ -138,6 +151,11 @@ function runBenchmark(entry: Entry, games: number, maxPieces: number, seedBase: 
     tspinCount, tsdCount, tstCount, spinPotentialCreated, garbageHandled,
     avgDecisionTimeMs: decisions > 0 ? decisionMsTotal / decisions : 0,
     maxDecisionTimeMs: decisionMsMax,
+    spinFinisherAttempts,
+    spinFinisherSuccesses,
+    routeFailures,
+    directPlacements,
+    routedPlacements,
   };
 }
 
@@ -148,6 +166,7 @@ function printSummary(name: string, a: Aggregate) {
   console.log(`avg holes=${a.avgHoles.toFixed(3)} maxHeight=${a.avgMaxHeight.toFixed(3)} bumpiness=${a.avgBumpiness.toFixed(3)} totalHeight=${a.avgTotalHeight.toFixed(3)}`);
   console.log(`spins: tspin=${a.tspinCount} tsd=${a.tsdCount} tst=${a.tstCount} spinPotential=${a.spinPotentialCreated.toFixed(2)}`);
   console.log(`decision ms: avg=${a.avgDecisionTimeMs.toFixed(3)} max=${a.maxDecisionTimeMs.toFixed(3)}`);
+  console.log(`execution: spinFinisher attempts=${a.spinFinisherAttempts} successes=${a.spinFinisherSuccesses} routeFailures=${a.routeFailures} direct=${a.directPlacements} routed=${a.routedPlacements}`);
 }
 
 function main() {

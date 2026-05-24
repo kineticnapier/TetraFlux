@@ -1,6 +1,7 @@
 import { HeuristicAI, type AiChoice } from "./ai/heuristic";
 import { LookaheadAI } from "./ai/lookahead";
 import { estimateSpinPotential } from "./ai/spinPotential";
+import { executeBenchmarkAction } from "./ai/benchmarkRunner";
 import { WebPolicyAI } from "./ai/webPolicy";
 import { WebValueModel } from "./ai/webValue";
 import { boardMetrics, TetrisEngine } from "./engine/tetris";
@@ -25,6 +26,11 @@ type Aggregate = {
   garbageHandled: number;
   avgDecisionTimeMs: number;
   maxDecisionTimeMs: number;
+  spinFinisherAttempts: number;
+  spinFinisherSuccesses: number;
+  routeFailures: number;
+  directPlacements: number;
+  routedPlacements: number;
 };
 
 type BenchEntry = { name: string; ai: AiLike };
@@ -119,6 +125,11 @@ async function runOneAi(entry: BenchEntry, options: BenchOptions): Promise<Aggre
   let decisionMsTotal = 0;
   let decisionMsMax = 0;
   let decisions = 0;
+  let spinFinisherAttempts = 0;
+  let spinFinisherSuccesses = 0;
+  let routeFailures = 0;
+  let directPlacements = 0;
+  let routedPlacements = 0;
 
   for (let g = 0; g < options.games; g++) {
     if (options.signal?.aborted) throw new DOMException("Benchmark aborted", "AbortError");
@@ -143,7 +154,13 @@ async function runOneAi(entry: BenchEntry, options: BenchOptions): Promise<Aggre
         break;
       }
 
-      const result = engine.applyAction(action);
+      const execution = executeBenchmarkAction(engine, action);
+      const result = execution.result;
+      if (execution.metrics.spinFinisherAttempt) spinFinisherAttempts++;
+      if (execution.metrics.spinFinisherSuccess) spinFinisherSuccesses++;
+      if (execution.metrics.routeFailed) routeFailures++;
+      if (execution.metrics.routeUsed) routedPlacements++;
+      if (execution.metrics.usedDirectApply) directPlacements++;
       if (!result.ok) {
         topoutCount++;
         break;
@@ -197,6 +214,11 @@ async function runOneAi(entry: BenchEntry, options: BenchOptions): Promise<Aggre
     garbageHandled,
     avgDecisionTimeMs: decisions > 0 ? decisionMsTotal / decisions : 0,
     maxDecisionTimeMs: decisionMsMax,
+    spinFinisherAttempts,
+    spinFinisherSuccesses,
+    routeFailures,
+    directPlacements,
+    routedPlacements,
   };
 }
 
