@@ -38,7 +38,7 @@ function isRiskyBoard(engine: TetrisEngine): boolean {
   const state = engine.stateDict();
   const m = boardMetrics(state.board);
   const topRowsBlocked = state.board.slice(0, 6).some((row) => /[^.]/.test(row));
-  return m.maxHeight >= 10 || m.holes >= 2 || topRowsBlocked;
+  return m.maxHeight >= 9 || m.holes >= 2 || m.bumpiness >= 13 || m.totalHeight >= 36 || topRowsBlocked;
 }
 
 function clampDepth(engine: TetrisEngine, depth: number): number {
@@ -151,7 +151,7 @@ export class LookaheadAI extends HeuristicAI {
     if (effectiveSpinBias > 1) {
       const state = engine.stateDict();
       const m = boardMetrics(state.board);
-      const cleanEnoughForForcedSpin = m.holes <= 1 && m.maxHeight <= 6 && m.bumpiness <= 9 && m.totalHeight <= 26 && !state.board.slice(0, 6).some((row) => /[^.]/.test(row));
+      const cleanEnoughForForcedSpin = m.holes < 2 && m.maxHeight < 9 && m.bumpiness < 13 && m.totalHeight < 36 && !state.board.slice(0, 6).some((row) => /[^.]/.test(row));
       if (!cleanEnoughForForcedSpin) this.lastSpinFinisherReason = "terrain_too_bad";
       const finisher = findReadySpinFinisherChoice(engine);
       if (finisher.choice) {

@@ -14,6 +14,11 @@ export type RouteDiagnostics = {
   failureReason?: RouteFailureReason;
 };
 
+const ROUTE_BUDGET_NORMAL_MS = 4;
+const ROUTE_BUDGET_STRONG_MS = 8;
+const ROUTE_BUDGET_HARD_CAP_MS = 12;
+const MAX_ROUTE_CANDIDATES_PER_DECISION = 3;
+
 function normalizeRot(rot: number): number { return ((rot % 4) + 4) % 4; }
 export function moveOpsEndWithRotation(ops: AiMoveOp[]): boolean {
   const last = ops[ops.length - 1];
@@ -30,7 +35,7 @@ export function applyMove(engine: TetrisEngine, op: AiMoveOp): boolean {
   return engine.move(0, 1);
 }
 
-export function findMoveRoute(engine: TetrisEngine, action: PlacementAction, preferSpinFinish = false, diagnostics?: RouteDiagnostics): AiMoveOp[] | null {
+export function findMoveRoute(engine: TetrisEngine, action: PlacementAction, preferSpinFinish = false, diagnostics?: RouteDiagnostics, deadlineMs?: number): AiMoveOp[] | null {
   const diag: RouteDiagnostics = diagnostics ?? { searchedNodes: 0, rejectedByCollision: 0, rejectedByFinalOp: 0, targetUnreachable: 0, maxDepthHit: 0 };
   const targetX = action.x;
   const targetRot = normalizeRot(action.rot);
@@ -70,6 +75,10 @@ export function findMoveRoute(engine: TetrisEngine, action: PlacementAction, pre
   let budgetExceeded = false;
 
   for (let head = 0; head < queue.length && seen.size <= maxStates; head++) {
+    if (deadlineMs !== undefined && performance.now() >= deadlineMs) {
+      diag.failureReason = "route_budget_exceeded";
+      return null;
+    }
     const cur = queue[head];
     if (cur.path.length >= maxPath) {
       diag.maxDepthHit++;
@@ -116,6 +125,19 @@ function postFinisherSafe(engine: TetrisEngine): boolean {
   return !engine.dead && m.holes <= 2 && m.maxHeight <= 10;
 }
 
+function candidateScore(target: ReturnType<typeof estimateSpinPotential>["bestTarget"]): number {
+  if (!target) return Number.NEGATIVE_INFINITY;
+  const base = Number(target.score ?? 0);
+  const corners = Number(target.cornerCount ?? 0);
+  const kindBoost = target.kind === "TST" ? 10 : (target.kind === "TSD_LEFT" || target.kind === "TSD_RIGHT" || target.kind === "STSD" ? 7 : 0);
+  return base + corners * 2 + kindBoost;
+}
+
+function isBoardDangerousForSpin(engine: TetrisEngine): boolean {
+  const m = boardMetrics(engine.stateDict().board);
+  return m.holes >= 2 || m.maxHeight >= 9 || m.bumpiness >= 13 || m.totalHeight >= 36;
+}
+
 function expectedSpin(kind: string): "TSD" | "TST" | "SPIN" {
   if (kind === "TST") return "TST";
   if (kind === "TSD_LEFT" || kind === "TSD_RIGHT" || kind === "STSD") return "TSD";
@@ -137,15 +159,37 @@ export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiC
   const expectedSpinType = expectedSpin(target.kind);
   const strongImmediate = isStrongImmediateCandidate(target.kind) && expectedLines >= 2 && (expectedSpinType === "TSD" || expectedSpinType === "TST");
 
-  if (!strongImmediate) return { choice: null, reason: "weak_candidate_skipped" };
+  const boardDangerous = isBoardDangerousForSpin(engine);
+  const cScore = candidateScore(target);
+  const enoughCorners = Number(target.cornerCount ?? 0) >= 3;
+  if (boardDangerous && !strongImmediate) return { choice: null, reason: "terrain_too_bad" };
+  if (!(expectedLines >= 2 && (expectedSpinType === "TSD" || expectedSpinType === "TST") && enoughCorners && cScore >= 8)) {
+    return { choice: null, reason: "weak_candidate_skipped" };
+  }
 
   const legal = engine.legalPlacements(true).filter((a) => a.piece === "T");
+  const ranked = legal.map((action) => {
+    const probe = engine.clone();
+    const lock = probe.applyAction(action);
+    if (!lock.ok) return { action, ev: Number.NEGATIVE_INFINITY };
+    const ev = (lock.spin === "tspin" ? 18 : 0) + lock.linesCleared * 6 + lock.attackSent * 2;
+    return { action, ev };
+  }).sort((a, b) => b.ev - a.ev).slice(0, MAX_ROUTE_CANDIDATES_PER_DECISION);
   let best: AiChoice | null = null;
   let sawBudgetExceeded = false;
   let sawRouteFailure = false;
-  for (const action of legal) {
+  const routeBudgetMs = strongImmediate ? ROUTE_BUDGET_STRONG_MS : ROUTE_BUDGET_NORMAL_MS;
+  const decisionStartMs = performance.now();
+  const softDeadlineMs = decisionStartMs + routeBudgetMs;
+  const hardDeadlineMs = decisionStartMs + ROUTE_BUDGET_HARD_CAP_MS;
+  for (const { action } of ranked) {
+    const now = performance.now();
+    if (now >= softDeadlineMs || now >= hardDeadlineMs) {
+      sawBudgetExceeded = true;
+      break;
+    }
     const routeDiag: RouteDiagnostics = { searchedNodes: 0, rejectedByCollision: 0, rejectedByFinalOp: 0, targetUnreachable: 0, maxDepthHit: 0 };
-    const route = findMoveRoute(engine, action, true, routeDiag);
+    const route = findMoveRoute(engine, action, true, routeDiag, Math.min(softDeadlineMs, hardDeadlineMs));
     if (!route) {
       if (routeDiag.failureReason === "route_budget_exceeded") sawBudgetExceeded = true;
       else sawRouteFailure = true;
@@ -158,7 +202,13 @@ export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiC
     if (!okRoute) continue;
     const result = preview.hardDrop();
     if (!result.ok || result.spin === "none" || result.linesCleared < expectedLines) continue;
-    if (result.topout || preview.dead || !postFinisherSafe(preview)) continue;
+    const before = boardMetrics(engine.stateDict().board);
+    const after = boardMetrics(preview.stateDict().board);
+    if (result.topout || preview.dead) continue;
+    if (result.spin !== "tspin") continue;
+    if (result.linesCleared < 2) continue;
+    if (after.holes > before.holes + 1 || !postFinisherSafe(preview)) continue;
+    if (after.maxHeight > Math.max(10, before.maxHeight + 1)) continue;
     const cand: AiChoice = {
       ...action,
       aiScore: Number.NEGATIVE_INFINITY,
