@@ -1,5 +1,6 @@
 import "./style.css";
 import { HeuristicAI } from "./ai/heuristic";
+import { LookaheadAI } from "./ai/lookahead";
 import type { AiChoice } from "./ai/heuristic";
 import { WebPolicyAI } from "./ai/webPolicy";
 import { estimateSpinPotential } from "./ai/spinPotential";
@@ -147,12 +148,12 @@ class NoisyAi implements AiLike {
 }
 
 const BATTLE_OPPONENTS: BattleOpponentSpec[] = [
-  { kind: "heuristic", name: "Heuristic", make: () => new HeuristicAI() },
+  { kind: "heuristic", name: "Heuristic", make: () => new LookaheadAI({ depth: 2, beamWidth: 50, includeHold: true, spinBias: 0.8, maxCandidatesPerNode: 24, maxNodesPerDepth: 220, timeBudgetMs: 7.5 }) },
   { kind: "aggressive", name: "Aggressive", make: () => new WeightedHeuristicAI("Aggressive", { attackBonus: 5.2, lineBonus: 4.8, holeWeight: 6.4, heightWeight: 0.62, bumpWeight: 0.28, wellWeight: 0.08, holdPenalty: 0.02 }) },
   { kind: "defensive", name: "Defensive", make: () => new WeightedHeuristicAI("Defensive", { holeWeight: 13.0, heightWeight: 1.35, bumpWeight: 0.72, wellWeight: 0.28, lineBonus: 2.8, attackBonus: 0.9, holdPenalty: 0.03 }) },
   { kind: "downstacker", name: "Downstacker", make: () => new WeightedHeuristicAI("Downstacker", { holeWeight: 11.2, heightWeight: 1.05, bumpWeight: 0.45, wellWeight: 0.04, lineBonus: 5.0, attackBonus: 1.15, holdPenalty: 0.01 }) },
   { kind: "combo", name: "Combo", make: () => new WeightedHeuristicAI("Combo", { holeWeight: 7.2, heightWeight: 0.72, bumpWeight: 0.18, wellWeight: -0.12, lineBonus: 5.8, attackBonus: 1.65, holdPenalty: 0.02 }) },
-  { kind: "spin", name: "Spin", make: () => new WeightedHeuristicAI("Spin", { holeWeight: 10.1, heightWeight: 0.88, maxHeightWeight: 2.35, bumpWeight: 0.55, wellWeight: 0.04, lineBonus: 3.7, attackBonus: 4.7, spinPotentialBonus: 2.95, holdPenalty: 0.01 }) },
+  { kind: "spin", name: "Spin", make: () => { const ai = new LookaheadAI({ depth: 5, beamWidth: 100, includeHold: true, spinBias: 1.75, maxCandidatesPerNode: 34, maxNodesPerDepth: 420, timeBudgetMs: 11.5 }); Object.assign(ai, { holeWeight: 10.1, heightWeight: 0.88, maxHeightWeight: 2.35, bumpWeight: 0.55, wellWeight: 0.04, lineBonus: 3.7, attackBonus: 4.7, spinPotentialBonus: 2.95, holdPenalty: 0.01 }); return ai; } },
   { kind: "noisyHybrid", name: "Noisy Hybrid", make: (base) => new NoisyAi(base, 0.55) },
 ];
 
