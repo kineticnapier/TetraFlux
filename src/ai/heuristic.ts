@@ -25,6 +25,10 @@ export class HeuristicAI {
   bumpRisePenaltyWeight = 1.25;
   centerTowerRisePenaltyWeight = 2.6;
   spinTerrainPressureWeight = 1.1;
+  tPreservationBonus = 0.9;
+  wastedTPenalty = 5.2;
+  slotDestroyedPenalty = 4.4;
+  nearReadySpinSlotBonus = 2.2;
 
   private terrainDiagnostics(board: string[], heights: number[]): {
     coveredCells: number;
@@ -64,6 +68,18 @@ export class HeuristicAI {
     const metrics = boardMetrics(state.board);
     const terrain = this.terrainDiagnostics(state.board, metrics.heights);
     const spinPotential = estimateSpinPotential(state);
+    const spinBiasRaw = Number((engine as unknown as { spinBias?: number }).spinBias ?? 1);
+    const spinBias = Number.isFinite(spinBiasRaw) ? Math.max(1, spinBiasRaw) : 1;
+    const spinStrength = spinBias > 1 ? Math.min(2.5, spinBias) : 0;
+    const beforeSpin = estimateSpinPotential(beforeState);
+
+    const queue = Array.isArray(beforeState.queue) ? beforeState.queue : [];
+    const tQueueIndex = queue.findIndex((p) => p === "T");
+    const hasNearReadySlot = !!beforeSpin.bestTarget && beforeSpin.bestTarget.score >= 7.6 && beforeSpin.bestTarget.lineDeficit <= 3;
+    const activeT = beforeState.active?.kind === "T";
+    const holdT = beforeState.hold === "T";
+    const queueTSoon = tQueueIndex >= 0 && tQueueIndex <= 3;
+    const tAvailabilityReason = activeT ? "active" : holdT ? "hold" : queueTSoon ? `queue_${tQueueIndex}` : "unavailable";
 
     const holeDelta = metrics.holes - beforeMetrics.holes;
     const maxHeightDelta = metrics.maxHeight - beforeMetrics.maxHeight;
@@ -109,6 +125,45 @@ export class HeuristicAI {
     score += this.spinTerrainPressureWeight * noAttackPressure;
     score += terrainPenalty;
     score -= this.spinPotentialBonus * spinPotentialApplied;
+
+    let tPreserved = false;
+    let tPreservationBonusApplied = 0;
+    let wastedTPenaltyApplied = 0;
+    let slotDestroyedPenaltyApplied = 0;
+    let nearReadySpinSlotBonusApplied = 0;
+
+    if (spinStrength > 0) {
+      const spinPotentialDrop = Math.max(0, beforeSpin.bonus - spinPotential.bonus);
+      const usedTForOrdinary = action.piece === "T" && (result.spin === "none" || result.linesCleared <= 0);
+      const usedHoldTOrdinary = usedTForOrdinary && action.hold && holdT;
+
+      if (usedTForOrdinary && hasNearReadySlot && (activeT || holdT || queueTSoon)) {
+        wastedTPenaltyApplied += this.wastedTPenalty * spinStrength * (activeT || holdT ? 1.25 : 0.9);
+      }
+      if (usedHoldTOrdinary && metrics.maxHeight < 16) {
+        wastedTPenaltyApplied += this.wastedTPenalty * 0.75 * spinStrength;
+      }
+
+      if (hasNearReadySlot && spinPotentialDrop > 0.45) {
+        slotDestroyedPenaltyApplied += this.slotDestroyedPenalty * spinStrength * Math.min(2.2, spinPotentialDrop / 0.8);
+      }
+
+      if (!usedTForOrdinary && hasNearReadySlot && (queueTSoon || holdT || activeT)) {
+        nearReadySpinSlotBonusApplied += this.nearReadySpinSlotBonus * spinStrength;
+      }
+
+      if (action.hold && activeT && beforeState.hold !== "T" && hasNearReadySlot) {
+        tPreserved = true;
+        tPreservationBonusApplied += this.tPreservationBonus * spinStrength * 1.15;
+      } else if (!usedTForOrdinary && (holdT || queueTSoon) && hasNearReadySlot) {
+        tPreserved = true;
+        tPreservationBonusApplied += this.tPreservationBonus * spinStrength * 0.7;
+      }
+    }
+
+    score += wastedTPenaltyApplied + slotDestroyedPenaltyApplied;
+    score -= tPreservationBonusApplied + nearReadySpinSlotBonusApplied;
+
     if (action.hold) score += this.holdPenalty;
     if (e.dead || result.topout) score += this.topoutPenalty;
 
@@ -124,6 +179,12 @@ export class HeuristicAI {
         spinPotentialRaw: spinPotential.bonus,
         spinPotentialApplied,
         spinPotentialScale: Number(spinPotentialScale.toFixed(4)),
+        tAvailabilityReason,
+        tPreserved,
+        tPreservationBonus: Number(tPreservationBonusApplied.toFixed(4)),
+        wastedTPenalty: Number(wastedTPenaltyApplied.toFixed(4)),
+        slotDestroyedPenalty: Number(slotDestroyedPenaltyApplied.toFixed(4)),
+        nearReadySpinSlotBonus: Number(nearReadySpinSlotBonusApplied.toFixed(4)),
         terrainPenalty: Number(terrainPenalty.toFixed(4)),
         beforeMetrics: {
           ...beforeMetrics,

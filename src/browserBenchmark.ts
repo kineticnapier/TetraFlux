@@ -33,6 +33,9 @@ type Aggregate = {
   directPlacements: number;
   routedPlacements: number;
   spinFinisherRejectReasons: Record<string, number>;
+  tPreserveActions: number;
+  wastedTPlacements: number;
+  slotDestroyedCount: number;
 };
 
 type BenchEntry = { name: string; ai: AiLike };
@@ -132,6 +135,9 @@ async function runOneAi(entry: BenchEntry, options: BenchOptions): Promise<Aggre
   let routeFailures = 0;
   let directPlacements = 0;
   let routedPlacements = 0;
+  let tPreserveActions = 0;
+  let wastedTPlacements = 0;
+  let slotDestroyedCount = 0;
   const spinFinisherRejectReasons: Record<string, number> = {};
 
   for (let g = 0; g < options.games; g++) {
@@ -166,6 +172,9 @@ async function runOneAi(entry: BenchEntry, options: BenchOptions): Promise<Aggre
       if (execution.metrics.routeFailed) routeFailures++;
       if (execution.metrics.routeUsed) routedPlacements++;
       if (execution.metrics.usedDirectApply) directPlacements++;
+      if (execution.metrics.tPreserveAction) tPreserveActions++;
+      if (execution.metrics.wastedTPlacement) wastedTPlacements++;
+      if (execution.metrics.slotDestroyed) slotDestroyedCount++;
       if (!result.ok) {
         topoutCount++;
         break;
@@ -225,6 +234,9 @@ async function runOneAi(entry: BenchEntry, options: BenchOptions): Promise<Aggre
     directPlacements,
     routedPlacements,
     spinFinisherRejectReasons,
+    tPreserveActions,
+    wastedTPlacements,
+    slotDestroyedCount,
   };
 }
 

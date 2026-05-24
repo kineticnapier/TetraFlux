@@ -43,6 +43,7 @@ export function chooseLookaheadPlacement(engine: TetrisEngine, heuristic: Heuris
   const startMs = performance.now();
   const depth = clampDepth(engine, o.depth);
   const rootLegal = engine.legalPlacements(o.includeHold);
+  (engine as unknown as { spinBias?: number }).spinBias = o.spinBias;
   if (!rootLegal.length) return null;
 
   let expandedNodes = 0;
@@ -51,6 +52,7 @@ export function chooseLookaheadPlacement(engine: TetrisEngine, heuristic: Heuris
   for (const action of rootLegal.slice(0, o.maxNodesPerDepth)) {
     const after = heuristic.scoreAfter(engine, action);
     const clone = engine.clone();
+    (clone as unknown as { spinBias?: number }).spinBias = o.spinBias;
     const lock = clone.applyAction(action);
     if (!lock.ok) continue;
     expandedNodes++;
@@ -81,6 +83,7 @@ export function chooseLookaheadPlacement(engine: TetrisEngine, heuristic: Heuris
       for (const cand of ranked) {
         if (next.length >= o.maxNodesPerDepth) break;
         const clone = node.engine.clone();
+        (clone as unknown as { spinBias?: number }).spinBias = o.spinBias;
         const lock = clone.applyAction(cand.action);
         if (!lock.ok) continue;
         expandedNodes++;
@@ -134,6 +137,7 @@ export class LookaheadAI extends HeuristicAI {
     const start = performance.now();
     this.lastSpinFinisherReason = null;
     const spinBias = this.lookaheadOptions.spinBias ?? DEFAULTS.spinBias;
+    (engine as unknown as { spinBias?: number }).spinBias = spinBias;
     if (spinBias > 1) {
       const finisher = findReadySpinFinisherChoice(engine);
       if (finisher.choice) {
