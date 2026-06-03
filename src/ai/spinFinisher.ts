@@ -229,12 +229,16 @@ function findFinalRotationRoute(
   }
 
   let best: AiMoveOp[] | null = null;
+  const landsOnTarget = (e: TetrisEngine): boolean => e.active.kind === action.piece &&
+    e.active.x === targetX &&
+    normalizeRot(e.active.rot) === targetRot &&
+    e.active.y + e.hardDropDistance(e.active) === targetY;
 
   for (const { op, delta } of FINAL_ROTATION_OPS) {
     const predRot = normalizeRot(targetRot - delta);
 
-    for (let py = targetY - 4; py <= targetY + 4; py++) {
-      for (let px = targetX - 4; px <= targetX + 4; px++) {
+    for (let py = targetY - 8; py <= targetY + 4; py++) {
+      for (let px = targetX - 5; px <= targetX + 5; px++) {
         if (routeDeadlineHit(deadlineMs)) {
           diag.failureReason = "route_budget_exceeded";
           return best;
@@ -246,7 +250,7 @@ function findFinalRotationRoute(
 
         const afterRotate = predecessor.clone();
         if (!applyMove(afterRotate, op)) continue;
-        if (!sameActive(afterRotate, action.piece, targetX, targetY, targetRot)) continue;
+        if (!landsOnTarget(afterRotate)) continue;
 
         const predAction: PlacementAction = {
           ...action,
@@ -269,8 +273,7 @@ function findFinalRotationRoute(
           }
         }
         if (!ok) continue;
-        if (!sameActive(verify, action.piece, targetX, targetY, targetRot)) continue;
-        if (verify.hardDropDistance(verify.active) !== 0) continue;
+        if (!landsOnTarget(verify)) continue;
 
         if (!best || fullRoute.length < best.length) best = fullRoute;
       }

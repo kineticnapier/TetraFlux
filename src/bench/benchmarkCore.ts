@@ -31,6 +31,15 @@ export type Aggregate = {
   executionAttempts: number;
   spinFinisherAttempts: number;
   spinFinisherSuccesses: number;
+  physicalRouteAttempts: number;
+  physicalRouteSuccesses: number;
+  syntheticFallbackAttempts: number;
+  syntheticFallbackSuccesses: number;
+  syntheticFinisherAttempts: number;
+  syntheticFinisherSuccesses: number;
+  physicalFinisherAttempts: number;
+  physicalFinisherSuccesses: number;
+  finalRotationFailures: number;
   routeFailures: number;
   directPlacements: number;
   routedPlacements: number;
@@ -79,6 +88,8 @@ export function renderSummary(payload: BenchPayload): string {
       `routeChk ${String(a.candidateRouteChecks ?? a.spinFinisherAttempts ?? 0).padStart(3)}`,
       `exec ${String(a.executionAttempts ?? 0).padStart(3)}`,
       `fin ${String(a.spinFinisherSuccesses).padStart(3)}/${String(a.routedPlacements).padStart(3)}`,
+      `phys ${String(a.physicalFinisherSuccesses ?? 0).padStart(3)}/${String(a.physicalFinisherAttempts ?? 0).padStart(3)}`,
+      `syn ${String(a.syntheticFinisherSuccesses ?? 0).padStart(3)}/${String(a.syntheticFinisherAttempts ?? 0).padStart(3)}`,
       `search ${String(a.spinFinisherSearches ?? 0).padStart(3)}`,
     ].join(" | "))
     .join("\n");
@@ -123,6 +134,15 @@ export async function runOneAi(
   let candidateRouteChecks = 0;
   let executionAttempts = 0;
   let spinFinisherSuccesses = 0;
+  let physicalRouteAttempts = 0;
+  let physicalRouteSuccesses = 0;
+  let syntheticFallbackAttempts = 0;
+  let syntheticFallbackSuccesses = 0;
+  let syntheticFinisherAttempts = 0;
+  let syntheticFinisherSuccesses = 0;
+  let physicalFinisherAttempts = 0;
+  let physicalFinisherSuccesses = 0;
+  let finalRotationFailures = 0;
   let routeFailures = 0;
   let routedNoSpin = 0;
   let routedNoClear = 0;
@@ -165,7 +185,16 @@ export async function runOneAi(
       candidateRouteChecks += plannedRouteAttempts;
       if (execution.metrics.spinFinisherAttempt) executionAttempts++;
       if (execution.metrics.spinFinisherSuccess) spinFinisherSuccesses++;
+      if (execution.metrics.physicalRouteAttempt) physicalRouteAttempts++;
+      if (execution.metrics.physicalRouteSuccess) physicalRouteSuccesses++;
+      if (execution.metrics.syntheticFallbackAttempt) syntheticFallbackAttempts++;
+      if (execution.metrics.syntheticFallbackSuccess) syntheticFallbackSuccesses++;
+      if (execution.metrics.syntheticFallbackAttempt) syntheticFinisherAttempts++;
+      if (execution.metrics.syntheticFallbackSuccess) syntheticFinisherSuccesses++;
+      if (execution.metrics.physicalRouteAttempt) physicalFinisherAttempts++;
+      if (execution.metrics.physicalRouteAttempt && execution.metrics.spinFinisherSuccess && !execution.metrics.syntheticFallbackSuccess) physicalFinisherSuccesses++;
       if (execution.metrics.routeFailed) routeFailures++;
+      if (execution.metrics.routeFailed && execution.metrics.routeFailureReason === "final_rotation_not_possible") finalRotationFailures++;
       if (execution.metrics.routedNoSpin) routedNoSpin++;
       if (execution.metrics.routedNoClear) routedNoClear++;
       if (execution.metrics.routeFailureReason) routeFailureReasons[execution.metrics.routeFailureReason] = (routeFailureReasons[execution.metrics.routeFailureReason] ?? 0) + 1;
@@ -237,6 +266,15 @@ export async function runOneAi(
     executionAttempts,
     spinFinisherAttempts: candidateRouteChecks,
     spinFinisherSuccesses,
+    physicalRouteAttempts,
+    physicalRouteSuccesses,
+    syntheticFallbackAttempts,
+    syntheticFallbackSuccesses,
+    syntheticFinisherAttempts,
+    syntheticFinisherSuccesses,
+    physicalFinisherAttempts,
+    physicalFinisherSuccesses,
+    finalRotationFailures,
     routeFailures,
     directPlacements,
     routedPlacements,

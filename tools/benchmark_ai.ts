@@ -37,6 +37,15 @@ type Aggregate = {
   executionAttempts: number;
   spinFinisherAttempts: number;
   spinFinisherSuccesses: number;
+  physicalRouteAttempts: number;
+  physicalRouteSuccesses: number;
+  syntheticFallbackAttempts: number;
+  syntheticFallbackSuccesses: number;
+  syntheticFinisherAttempts: number;
+  syntheticFinisherSuccesses: number;
+  physicalFinisherAttempts: number;
+  physicalFinisherSuccesses: number;
+  finalRotationFailures: number;
   routeFailures: number;
   directPlacements: number;
   routedPlacements: number;
@@ -115,6 +124,8 @@ function runBenchmark(entry: Entry, games: number, maxPieces: number, seedBase: 
   let holesSum = 0, maxHeightSum = 0, bumpinessSum = 0, totalHeightSum = 0, spinPotentialCreated = 0, garbageHandled = 0;
   let decisionMsTotal = 0, decisionMsMax = 0, decisions = 0;
   let spinFinisherSearches = 0, candidateRouteChecks = 0, executionAttempts = 0, spinFinisherSuccesses = 0, routeFailures = 0, directPlacements = 0, routedPlacements = 0;
+  let physicalRouteAttempts = 0, physicalRouteSuccesses = 0, syntheticFallbackAttempts = 0, syntheticFallbackSuccesses = 0;
+  let syntheticFinisherAttempts = 0, syntheticFinisherSuccesses = 0, physicalFinisherAttempts = 0, physicalFinisherSuccesses = 0, finalRotationFailures = 0;
   let routedNoSpin = 0, routedNoClear = 0;
   const spinFinisherRejectReasons: Record<string, number> = {};
   const routeFailureReasons: Record<string, number> = {};
@@ -143,7 +154,16 @@ function runBenchmark(entry: Entry, games: number, maxPieces: number, seedBase: 
       candidateRouteChecks += plannedRouteAttempts;
       if (execution.metrics.spinFinisherAttempt) executionAttempts++;
       if (execution.metrics.spinFinisherSuccess) spinFinisherSuccesses++;
+      if (execution.metrics.physicalRouteAttempt) physicalRouteAttempts++;
+      if (execution.metrics.physicalRouteSuccess) physicalRouteSuccesses++;
+      if (execution.metrics.syntheticFallbackAttempt) syntheticFallbackAttempts++;
+      if (execution.metrics.syntheticFallbackSuccess) syntheticFallbackSuccesses++;
+      if (execution.metrics.syntheticFallbackAttempt) syntheticFinisherAttempts++;
+      if (execution.metrics.syntheticFallbackSuccess) syntheticFinisherSuccesses++;
+      if (execution.metrics.physicalRouteAttempt) physicalFinisherAttempts++;
+      if (execution.metrics.physicalRouteAttempt && execution.metrics.spinFinisherSuccess && !execution.metrics.syntheticFallbackSuccess) physicalFinisherSuccesses++;
       if (execution.metrics.routeFailed) routeFailures++;
+      if (execution.metrics.routeFailed && execution.metrics.routeFailureReason === "final_rotation_not_possible") finalRotationFailures++;
       if (execution.metrics.routedNoSpin) routedNoSpin++;
       if (execution.metrics.routedNoClear) routedNoClear++;
       if (execution.metrics.routeFailureReason) routeFailureReasons[execution.metrics.routeFailureReason] = (routeFailureReasons[execution.metrics.routeFailureReason] ?? 0) + 1;
@@ -194,6 +214,15 @@ function runBenchmark(entry: Entry, games: number, maxPieces: number, seedBase: 
     executionAttempts,
     spinFinisherAttempts: candidateRouteChecks,
     spinFinisherSuccesses,
+    physicalRouteAttempts,
+    physicalRouteSuccesses,
+    syntheticFallbackAttempts,
+    syntheticFallbackSuccesses,
+    syntheticFinisherAttempts,
+    syntheticFinisherSuccesses,
+    physicalFinisherAttempts,
+    physicalFinisherSuccesses,
+    finalRotationFailures,
     routeFailures,
     directPlacements,
     routedPlacements,
@@ -211,7 +240,8 @@ function printSummary(name: string, a: Aggregate) {
   console.log(`avg holes=${a.avgHoles.toFixed(3)} maxHeight=${a.avgMaxHeight.toFixed(3)} bumpiness=${a.avgBumpiness.toFixed(3)} totalHeight=${a.avgTotalHeight.toFixed(3)}`);
   console.log(`spins: tspin=${a.tspinCount} tsd=${a.tsdCount} tst=${a.tstCount} spinPotential=${a.spinPotentialCreated.toFixed(2)}`);
   console.log(`decision ms: avg=${a.avgDecisionTimeMs.toFixed(3)} max=${a.maxDecisionTimeMs.toFixed(3)}`);
-  console.log(`execution: spinFinisher searches=${a.spinFinisherSearches} candidateRouteChecks=${a.candidateRouteChecks} executionAttempts=${a.executionAttempts} successes=${a.spinFinisherSuccesses} routeFailures=${a.routeFailures} direct=${a.directPlacements} routed=${a.routedPlacements} routedNoSpin=${a.routedNoSpin} routedNoClear=${a.routedNoClear}`);
+  console.log(`execution: spinFinisher searches=${a.spinFinisherSearches} candidateRouteChecks=${a.candidateRouteChecks} executionAttempts=${a.executionAttempts} successes=${a.spinFinisherSuccesses} routeFailures=${a.routeFailures} finalRotationFailures=${a.finalRotationFailures} direct=${a.directPlacements} routed=${a.routedPlacements} routedNoSpin=${a.routedNoSpin} routedNoClear=${a.routedNoClear}`);
+  console.log(`finisher routes: physical=${a.physicalFinisherSuccesses}/${a.physicalFinisherAttempts} routeExec=${a.physicalRouteSuccesses}/${a.physicalRouteAttempts} synthetic=${a.syntheticFinisherSuccesses}/${a.syntheticFinisherAttempts} fallback=${a.syntheticFallbackSuccesses}/${a.syntheticFallbackAttempts}`);
   console.log(`spin finisher reject reasons: ${JSON.stringify(a.spinFinisherRejectReasons)}`);
   console.log(`route failure reasons: ${JSON.stringify(a.routeFailureReasons)}`);
 }
