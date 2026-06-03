@@ -229,16 +229,12 @@ function findFinalRotationRoute(
   }
 
   let best: AiMoveOp[] | null = null;
-  const landsOnTarget = (e: TetrisEngine): boolean => e.active.kind === action.piece &&
-    e.active.x === targetX &&
-    normalizeRot(e.active.rot) === targetRot &&
-    e.active.y + e.hardDropDistance(e.active) === targetY;
 
   for (const { op, delta } of FINAL_ROTATION_OPS) {
     const predRot = normalizeRot(targetRot - delta);
 
-    for (let py = targetY - 8; py <= targetY + 4; py++) {
-      for (let px = targetX - 5; px <= targetX + 5; px++) {
+    for (let py = targetY - 4; py <= targetY + 4; py++) {
+      for (let px = targetX - 4; px <= targetX + 4; px++) {
         if (routeDeadlineHit(deadlineMs)) {
           diag.failureReason = "route_budget_exceeded";
           return best;
@@ -250,7 +246,7 @@ function findFinalRotationRoute(
 
         const afterRotate = predecessor.clone();
         if (!applyMove(afterRotate, op)) continue;
-        if (!landsOnTarget(afterRotate)) continue;
+        if (!sameActive(afterRotate, action.piece, targetX, targetY, targetRot)) continue;
 
         const predAction: PlacementAction = {
           ...action,
@@ -273,7 +269,8 @@ function findFinalRotationRoute(
           }
         }
         if (!ok) continue;
-        if (!landsOnTarget(verify)) continue;
+        if (!sameActive(verify, action.piece, targetX, targetY, targetRot)) continue;
+        if (verify.hardDropDistance(verify.active) !== 0) continue;
 
         if (!best || fullRoute.length < best.length) best = fullRoute;
       }
@@ -374,7 +371,7 @@ function isStrongImmediateCandidate(kind: string): boolean {
 
 function postFinisherSafe(engine: TetrisEngine): boolean {
   const m = boardMetrics(engine.stateDict().board);
-  return !engine.dead && m.holes <= 5 && m.maxHeight <= 14 && m.totalHeight <= 62;
+  return !engine.dead && m.holes <= 3 && m.maxHeight <= 12 && m.totalHeight <= 50;
 }
 
 function candidateScore(target: ReturnType<typeof estimateSpinPotential>["bestTarget"]): number {
@@ -387,7 +384,7 @@ function candidateScore(target: ReturnType<typeof estimateSpinPotential>["bestTa
 
 function isBoardDangerousForSpin(engine: TetrisEngine): boolean {
   const m = boardMetrics(engine.stateDict().board);
-  return m.holes >= 4 || m.maxHeight >= 12 || m.bumpiness >= 18 || m.totalHeight >= 55;
+  return m.holes >= 3 || m.maxHeight >= 11 || m.bumpiness >= 16 || m.totalHeight >= 48;
 }
 
 function expectedSpin(kind: string): "TSD" | "TST" | "SPIN" {
@@ -515,7 +512,7 @@ function findImmediateRoutedTSpinFinisher(engine: TetrisEngine): { choice: AiCho
     for (let y = 0; y < HEIGHT; y++) {
       for (let x = -2; x < WIDTH + 2; x++) {
         const result = simulateTSpinLock(engine, hold, x, y, rot);
-        if (!result?.ok || result.spin !== "tspin" || result.linesCleared <= 0) continue;
+        if (!result?.ok || result.topout || result.spin !== "tspin" || result.linesCleared <= 0) continue;
         candidates.push({
           action: { piece: "T", x, rot: normalizeRot(rot), hold, key: `${hold ? "H:" : ""}T:${x}:${normalizeRot(rot)}:y${y}` },
           y,
@@ -572,8 +569,8 @@ function findImmediateRoutedTSpinFinisher(engine: TetrisEngine): { choice: AiCho
     if (!result.ok || result.spin !== "tspin" || result.linesCleared <= 0 || result.lockEvent?.lastSuccessfulAction !== "rotate") continue;
     const after = boardMetrics(preview.stateDict().board);
     if (result.topout || preview.dead) continue;
-    if (after.holes > before.holes + 3 || !postFinisherSafe(preview)) continue;
-    if (after.maxHeight > Math.max(14, before.maxHeight + 4)) continue;
+    if (after.holes > before.holes + 2 || !postFinisherSafe(preview)) continue;
+    if (after.maxHeight > Math.max(12, before.maxHeight + 3)) continue;
 
     const choice: AiChoice = {
       ...candidate.action,
@@ -677,8 +674,8 @@ export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiC
     if (result.topout || preview.dead) continue;
     if (result.spin !== "tspin") continue;
     if (result.linesCleared <= 0) continue;
-    if (after.holes > before.holes + 3 || !postFinisherSafe(preview)) continue;
-    if (after.maxHeight > Math.max(14, before.maxHeight + 4)) continue;
+    if (after.holes > before.holes + 2 || !postFinisherSafe(preview)) continue;
+    if (after.maxHeight > Math.max(12, before.maxHeight + 3)) continue;
     const cand: AiChoice = {
       ...action,
       aiScore: Number.NEGATIVE_INFINITY,

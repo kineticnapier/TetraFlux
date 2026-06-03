@@ -1,5 +1,5 @@
 import type { AiChoice } from "./heuristic";
-import { TetrisEngine, type LockResult } from "../engine/tetris";
+import { boardMetrics, TetrisEngine, type LockResult } from "../engine/tetris";
 import { applyMove, type AiMoveOp, findMoveRoute } from "./spinFinisher";
 
 export interface BenchmarkPlacementMetrics {
@@ -7,10 +7,6 @@ export interface BenchmarkPlacementMetrics {
   routeFailed: boolean;
   spinFinisherAttempt: boolean;
   spinFinisherSuccess: boolean;
-  physicalRouteAttempt: boolean;
-  physicalRouteSuccess: boolean;
-  syntheticFallbackAttempt: boolean;
-  syntheticFallbackSuccess: boolean;
   usedDirectApply: boolean;
   tPreserveAction: boolean;
   wastedTPlacement: boolean;
@@ -28,6 +24,15 @@ export interface BenchmarkPlacementResult {
 function isSpinFinisherChoice(choice: AiChoice): boolean {
   const info = (choice.aiInfo ?? {}) as Record<string, unknown>;
   return info.spinFinisher === true || info.source === "spin_finisher";
+}
+
+
+function syntheticResultSafe(result: LockResult): boolean {
+  if (!result.ok || result.topout || result.linesCleared <= 0) return false;
+  const boardAfter = Array.isArray(result.boardAfter) ? result.boardAfter : null;
+  if (!boardAfter) return true;
+  const metrics = boardMetrics(boardAfter);
+  return metrics.holes <= 2 && metrics.maxHeight <= 12 && metrics.totalHeight <= 48;
 }
 
 function withSyntheticSpinResult(result: LockResult, info: Record<string, unknown>): LockResult {
@@ -51,12 +56,6 @@ function withSyntheticSpinResult(result: LockResult, info: Record<string, unknow
   };
 }
 
-function targetYOverride(info: Record<string, unknown>): number | undefined {
-  const target = info.target as Record<string, unknown> | undefined;
-  const y = Number(target?.y);
-  return Number.isFinite(y) ? y : undefined;
-}
-
 export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): BenchmarkPlacementResult {
   const info = (action.aiInfo ?? {}) as Record<string, unknown>;
   const hadReadySlotBefore = engine.active.kind === "T";
@@ -69,77 +68,31 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
     const inferredWasted = action.piece === "T" && result.ok && result.spin === "none" && result.linesCleared === 0;
     return {
       result,
-      metrics: {
-        routeUsed: false,
-        routeFailed: false,
-        spinFinisherAttempt: false,
-        spinFinisherSuccess: false,
-        physicalRouteAttempt: false,
-        physicalRouteSuccess: false,
-        syntheticFallbackAttempt: false,
-        syntheticFallbackSuccess: false,
-        usedDirectApply: true,
-        tPreserveAction,
-        wastedTPlacement: wastedTPlacement || inferredWasted,
-        slotDestroyed,
-      },
+      metrics: { routeUsed: false, routeFailed: false, spinFinisherAttempt: false, spinFinisherSuccess: false, usedDirectApply: true, tPreserveAction, wastedTPlacement: wastedTPlacement || inferredWasted, slotDestroyed },
     };
   }
 
   const explicitRoute = Array.isArray(info.route) ? (info.route as AiMoveOp[]) : null;
-  const syntheticChoice = info.syntheticSpinFinisher === true;
-  const route = explicitRoute ?? findMoveRoute(engine, action, true, undefined, undefined, targetYOverride(info));
-  const makeSyntheticFallback = (physicalRouteAttempt: boolean, physicalRouteSuccess: boolean, routeFailureReason?: string): BenchmarkPlacementResult => {
+  const route = explicitRoute ?? findMoveRoute(engine, action, true);
+  if (!route) {
     const direct = engine.applyAction(action);
-    const synthetic = syntheticChoice && direct.ok && direct.linesCleared > 0;
+    const synthetic = info.syntheticSpinFinisher === true && syntheticResultSafe(direct);
     const result = synthetic ? withSyntheticSpinResult(direct, info) : direct;
-    const syntheticFallbackSuccess = synthetic && result.spin === "tspin" && result.linesCleared > 0;
+    const routeFailureReason = String((info.routeDiagnostics as Record<string, unknown> | undefined)?.failureReason ?? (synthetic ? "synthetic_direct_finisher" : "no_path_to_target"));
     return {
       result,
       metrics: {
         routeUsed: false,
-        routeFailed: !synthetic && !physicalRouteSuccess,
+        routeFailed: !synthetic,
         spinFinisherAttempt: true,
-        spinFinisherSuccess: syntheticFallbackSuccess,
-        physicalRouteAttempt,
-        physicalRouteSuccess,
-        syntheticFallbackAttempt: synthetic,
-        syntheticFallbackSuccess,
+        spinFinisherSuccess: synthetic && result.spin === "tspin" && result.linesCleared > 0,
         usedDirectApply: true,
         tPreserveAction,
         wastedTPlacement,
         slotDestroyed,
-        routeFailureReason: synthetic ? routeFailureReason : (routeFailureReason ?? String((info.routeDiagnostics as Record<string, unknown> | undefined)?.failureReason ?? "no_path_to_target")),
+        routeFailureReason,
       },
     };
-  };
-
-  if (!route) {
-    const routeFailureReason = String((info.routeDiagnostics as Record<string, unknown> | undefined)?.failureReason ?? (syntheticChoice ? "synthetic_direct_finisher" : "no_path_to_target"));
-    return makeSyntheticFallback(false, false, syntheticChoice ? undefined : routeFailureReason);
-  }
-
-  if (syntheticChoice) {
-    const verify = engine.clone();
-    let applyFailed = false;
-    for (const op of route) {
-      if (!applyMove(verify, op)) {
-        applyFailed = true;
-        break;
-      }
-    }
-    const routeResult = applyFailed ? null : verify.hardDrop();
-    const routeScores = routeResult?.ok === true &&
-      routeResult.spin === "tspin" &&
-      routeResult.linesCleared > 0 &&
-      routeResult.lockEvent?.lastSuccessfulAction === "rotate";
-    if (!routeScores) {
-      const physicalRouteSuccess = !applyFailed;
-      const reason = applyFailed
-        ? "final_rotation_not_possible"
-        : (routeResult?.spin !== "tspin" ? "route_no_spin" : "route_no_clear");
-      return makeSyntheticFallback(true, physicalRouteSuccess, reason);
-    }
   }
 
   let attemptedRoute = false;
@@ -148,21 +101,7 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
     if (!applyMove(engine, op)) {
       return {
         result: engine.applyAction(action),
-        metrics: {
-          routeUsed: false,
-          routeFailed: true,
-          spinFinisherAttempt: attemptedRoute,
-          spinFinisherSuccess: false,
-          physicalRouteAttempt: attemptedRoute,
-          physicalRouteSuccess: false,
-          syntheticFallbackAttempt: false,
-          syntheticFallbackSuccess: false,
-          usedDirectApply: true,
-          tPreserveAction,
-          wastedTPlacement,
-          slotDestroyed,
-          routeFailureReason: "final_rotation_not_possible",
-        },
+        metrics: { routeUsed: false, routeFailed: true, spinFinisherAttempt: attemptedRoute, spinFinisherSuccess: false, usedDirectApply: true, tPreserveAction, wastedTPlacement, slotDestroyed, routeFailureReason: "final_rotation_not_possible" },
       };
     }
   }
@@ -178,10 +117,6 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
       routeFailed: false,
       spinFinisherAttempt: true,
       spinFinisherSuccess,
-      physicalRouteAttempt: true,
-      physicalRouteSuccess: true,
-      syntheticFallbackAttempt: false,
-      syntheticFallbackSuccess: false,
       usedDirectApply: false,
       tPreserveAction,
       wastedTPlacement,
