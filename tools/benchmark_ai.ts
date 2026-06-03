@@ -33,6 +33,8 @@ type Aggregate = {
   avgDecisionTimeMs: number;
   maxDecisionTimeMs: number;
   spinFinisherSearches: number;
+  candidateRouteChecks: number;
+  executionAttempts: number;
   spinFinisherAttempts: number;
   spinFinisherSuccesses: number;
   routeFailures: number;
@@ -112,7 +114,7 @@ function runBenchmark(entry: Entry, games: number, maxPieces: number, seedBase: 
   let piecesSurvived = 0, linesCleared = 0, attackSent = 0, topoutCount = 0, tspinCount = 0, tsdCount = 0, tstCount = 0;
   let holesSum = 0, maxHeightSum = 0, bumpinessSum = 0, totalHeightSum = 0, spinPotentialCreated = 0, garbageHandled = 0;
   let decisionMsTotal = 0, decisionMsMax = 0, decisions = 0;
-  let spinFinisherSearches = 0, spinFinisherAttempts = 0, spinFinisherSuccesses = 0, routeFailures = 0, directPlacements = 0, routedPlacements = 0;
+  let spinFinisherSearches = 0, candidateRouteChecks = 0, executionAttempts = 0, spinFinisherSuccesses = 0, routeFailures = 0, directPlacements = 0, routedPlacements = 0;
   let routedNoSpin = 0, routedNoClear = 0;
   const spinFinisherRejectReasons: Record<string, number> = {};
   const routeFailureReasons: Record<string, number> = {};
@@ -138,8 +140,8 @@ function runBenchmark(entry: Entry, games: number, maxPieces: number, seedBase: 
       const plannedRouteAttempts = Math.max(0, Math.floor(Number(info.spinFinisherRouteAttempts ?? 0)));
       const execution = executeBenchmarkAction(engine, action);
       const result = execution.result;
-      if (plannedRouteAttempts > 0) spinFinisherAttempts += plannedRouteAttempts;
-      else if (execution.metrics.spinFinisherAttempt) spinFinisherAttempts++;
+      candidateRouteChecks += plannedRouteAttempts;
+      if (execution.metrics.spinFinisherAttempt) executionAttempts++;
       if (execution.metrics.spinFinisherSuccess) spinFinisherSuccesses++;
       if (execution.metrics.routeFailed) routeFailures++;
       if (execution.metrics.routedNoSpin) routedNoSpin++;
@@ -188,7 +190,9 @@ function runBenchmark(entry: Entry, games: number, maxPieces: number, seedBase: 
     avgDecisionTimeMs: decisions > 0 ? decisionMsTotal / decisions : 0,
     maxDecisionTimeMs: decisionMsMax,
     spinFinisherSearches,
-    spinFinisherAttempts,
+    candidateRouteChecks,
+    executionAttempts,
+    spinFinisherAttempts: candidateRouteChecks,
     spinFinisherSuccesses,
     routeFailures,
     directPlacements,
@@ -207,7 +211,7 @@ function printSummary(name: string, a: Aggregate) {
   console.log(`avg holes=${a.avgHoles.toFixed(3)} maxHeight=${a.avgMaxHeight.toFixed(3)} bumpiness=${a.avgBumpiness.toFixed(3)} totalHeight=${a.avgTotalHeight.toFixed(3)}`);
   console.log(`spins: tspin=${a.tspinCount} tsd=${a.tsdCount} tst=${a.tstCount} spinPotential=${a.spinPotentialCreated.toFixed(2)}`);
   console.log(`decision ms: avg=${a.avgDecisionTimeMs.toFixed(3)} max=${a.maxDecisionTimeMs.toFixed(3)}`);
-  console.log(`execution: spinFinisher searches=${a.spinFinisherSearches} attempts=${a.spinFinisherAttempts} successes=${a.spinFinisherSuccesses} routeFailures=${a.routeFailures} direct=${a.directPlacements} routed=${a.routedPlacements} routedNoSpin=${a.routedNoSpin} routedNoClear=${a.routedNoClear}`);
+  console.log(`execution: spinFinisher searches=${a.spinFinisherSearches} candidateRouteChecks=${a.candidateRouteChecks} executionAttempts=${a.executionAttempts} successes=${a.spinFinisherSuccesses} routeFailures=${a.routeFailures} direct=${a.directPlacements} routed=${a.routedPlacements} routedNoSpin=${a.routedNoSpin} routedNoClear=${a.routedNoClear}`);
   console.log(`spin finisher reject reasons: ${JSON.stringify(a.spinFinisherRejectReasons)}`);
   console.log(`route failure reasons: ${JSON.stringify(a.routeFailureReasons)}`);
 }

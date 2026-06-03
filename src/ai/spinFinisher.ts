@@ -1,4 +1,4 @@
-import { boardMetrics, HIDDEN_ROWS, TetrisEngine, type PlacementAction, type SpinType } from "../engine/tetris";
+import { boardMetrics, HEIGHT, HIDDEN_ROWS, TetrisEngine, WIDTH, type LastRotationMetadata, type PlacementAction, type SpinType } from "../engine/tetris";
 import { estimateSpinPotential } from "./spinPotential";
 import type { AiChoice } from "./heuristic";
 
@@ -16,6 +16,7 @@ export type RouteDiagnostics = {
 
 const MAX_ROUTE_CANDIDATES_PER_DECISION = 2;
 const TARGET_Y_TOLERANCE = 1;
+const MAX_IMMEDIATE_ROUTE_CHECKS = 4;
 
 function normalizeRot(rot: number): number { return ((rot % 4) + 4) % 4; }
 export function moveOpsEndWithRotation(ops: AiMoveOp[]): boolean {
@@ -33,7 +34,7 @@ export function applyMove(engine: TetrisEngine, op: AiMoveOp): boolean {
   return engine.move(0, 1);
 }
 
-export function findMoveRoute(engine: TetrisEngine, action: PlacementAction, preferSpinFinish = false, diagnostics?: RouteDiagnostics, deadlineMs?: number): AiMoveOp[] | null {
+export function findMoveRoute(engine: TetrisEngine, action: PlacementAction, preferSpinFinish = false, diagnostics?: RouteDiagnostics, deadlineMs?: number, targetYOverride?: number): AiMoveOp[] | null {
   const diag: RouteDiagnostics = diagnostics ?? { searchedNodes: 0, rejectedByCollision: 0, rejectedByFinalOp: 0, targetUnreachable: 0, maxDepthHit: 0 };
   const targetX = action.x;
   const targetRot = normalizeRot(action.rot);
@@ -49,7 +50,7 @@ export function findMoveRoute(engine: TetrisEngine, action: PlacementAction, pre
     diag.failureReason = "target_not_placeable";
     return null;
   }
-  const targetY = targetProbe.active.y + targetProbe.hardDropDistance(targetProbe.active);
+  const targetY = targetYOverride ?? (targetProbe.active.y + targetProbe.hardDropDistance(targetProbe.active));
 
   const isTargetBeforeDrop = (e: TetrisEngine) => {
     return e.active.kind === action.piece &&
@@ -65,8 +66,8 @@ export function findMoveRoute(engine: TetrisEngine, action: PlacementAction, pre
     : ["cw", "ccw", "180", "left", "right", "soft"];
   const queue: Array<{ engine: TetrisEngine; path: AiMoveOp[] }> = [{ engine: start, path: [] }];
   const seen = new Set<string>([`${start.active.kind}:${start.active.x}:${start.active.y}:${normalizeRot(start.active.rot)}`]);
-  const maxPath = preferSpinFinish ? 34 : 24;
-  const maxStates = preferSpinFinish ? 260 : 110;
+  const maxPath = preferSpinFinish ? 42 : 24;
+  const maxStates = preferSpinFinish ? 900 : 110;
 
   for (let head = 0; head < queue.length && seen.size <= maxStates; head++) {
     if (deadlineMs !== undefined && performance.now() >= deadlineMs) {
@@ -189,9 +190,119 @@ function spinFinisherCandidates(engine: TetrisEngine, target: NonNullable<Return
   return out;
 }
 
+function holdForTFinisher(engine: TetrisEngine): boolean | null {
+  if (engine.active.kind === "T") return false;
+  if (engine.canHold && (engine.hold === "T" || (engine.hold === null && engine.queue[0] === "T"))) return true;
+  return null;
+}
+
+function simulateTSpinLock(engine: TetrisEngine, hold: boolean, x: number, y: number, rot: number) {
+  const probe = engine.clone();
+  if (hold && !probe.holdPiece()) return null;
+  if (probe.active.kind !== "T") return null;
+  probe.active = { kind: "T", x, y, rot: normalizeRot(rot) };
+  if (probe.collides(probe.active) || probe.hardDropDistance(probe.active) !== 0) return null;
+
+  const fakeRotation: LastRotationMetadata = {
+    direction: "cw",
+    fromRot: normalizeRot(rot + 3),
+    toRot: normalizeRot(rot),
+    kickIndex: 0,
+    kickOffset: [0, 0],
+    rotationSystem: "guideline_srs",
+  };
+  const internals = probe as unknown as {
+    lastActionWasRotation: boolean;
+    lastRotationMetadata: LastRotationMetadata | null;
+    placementActionMode: boolean;
+  };
+  internals.lastActionWasRotation = true;
+  internals.lastRotationMetadata = fakeRotation;
+  internals.placementActionMode = false;
+  return probe.lockPiece();
+}
+
+function findImmediateRoutedTSpinFinisher(engine: TetrisEngine): { choice: AiChoice | null; routeAttempts: number } {
+  const hold = holdForTFinisher(engine);
+  if (hold === null) return { choice: null, routeAttempts: 0 };
+
+  const candidates: Array<{ action: PlacementAction; y: number; previewAttack: number; previewLines: number; previewSpin: SpinType }> = [];
+  for (let rot = 0; rot < 4; rot++) {
+    for (let y = 0; y < HEIGHT; y++) {
+      for (let x = -2; x < WIDTH + 2; x++) {
+        const result = simulateTSpinLock(engine, hold, x, y, rot);
+        if (!result?.ok || result.spin !== "tspin" || result.linesCleared <= 0) continue;
+        candidates.push({
+          action: { piece: "T", x, rot: normalizeRot(rot), hold, key: `${hold ? "H:" : ""}T:${x}:${normalizeRot(rot)}:y${y}` },
+          y,
+          previewAttack: result.attackSent,
+          previewLines: result.linesCleared,
+          previewSpin: result.spin,
+        });
+      }
+    }
+  }
+
+  candidates.sort((a, b) =>
+    b.previewLines - a.previewLines ||
+    b.previewAttack - a.previewAttack ||
+    Math.abs(a.action.x - 4.5) - Math.abs(b.action.x - 4.5));
+
+  let routeAttempts = 0;
+  let best: AiChoice | null = null;
+  const before = boardMetrics(engine.stateDict().board);
+  for (const candidate of candidates.slice(0, MAX_IMMEDIATE_ROUTE_CHECKS)) {
+    const routeDiag: RouteDiagnostics = { searchedNodes: 0, rejectedByCollision: 0, rejectedByFinalOp: 0, targetUnreachable: 0, maxDepthHit: 0 };
+    routeAttempts++;
+    const route = findMoveRoute(engine, candidate.action, true, routeDiag, undefined, candidate.y);
+    if (!route || !moveOpsEndWithRotation(route)) continue;
+
+    const preview = engine.clone();
+    let okRoute = true;
+    for (const op of route) {
+      if (!applyMove(preview, op)) {
+        okRoute = false;
+        break;
+      }
+    }
+    if (!okRoute) continue;
+
+    const result = preview.hardDrop();
+    if (!result.ok || result.spin !== "tspin" || result.linesCleared <= 0 || result.lockEvent?.lastSuccessfulAction !== "rotate") continue;
+    const after = boardMetrics(preview.stateDict().board);
+    if (result.topout || preview.dead) continue;
+    if (after.holes > before.holes + 1 || !postFinisherSafe(preview)) continue;
+    if (after.maxHeight > Math.max(10, before.maxHeight + 1)) continue;
+
+    const choice: AiChoice = {
+      ...candidate.action,
+      aiScore: Number.NEGATIVE_INFINITY,
+      aiInfo: {
+        source: "spin_finisher",
+        spinFinisher: true,
+        spinFinisherRouteAttempts: routeAttempts,
+        route,
+        expectedSpin: result.linesCleared >= 3 ? "TST" : "TSD",
+        expectedLines: result.linesCleared,
+        target: { x: candidate.action.x, y: candidate.y, rot: normalizeRot(candidate.action.rot) },
+        lockEvent: result.lockEvent,
+        spinClassification: result.spinClassification,
+        routeDiagnostics: routeDiag,
+      },
+    };
+    if (!best || route.length < (((best.aiInfo as Record<string, unknown>).route as AiMoveOp[] | undefined)?.length ?? 999)) best = choice;
+  }
+
+  return { choice: best, routeAttempts };
+}
+
 export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiChoice | null; reason?: SpinFinisherRejectReason; routeAttempts: number } {
   let routeAttempts = 0;
   if (!hasUsableTForFinisher(engine)) return { choice: null, reason: "no_t_available", routeAttempts };
+
+  const immediate = findImmediateRoutedTSpinFinisher(engine);
+  routeAttempts += immediate.routeAttempts;
+  if (immediate.choice) return { choice: immediate.choice, routeAttempts };
 
   const state = engine.stateDict();
   const target = estimateSpinPotential(state).bestTarget;
@@ -224,7 +335,7 @@ export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiC
   for (const { action } of ranked) {
     const routeDiag: RouteDiagnostics = { searchedNodes: 0, rejectedByCollision: 0, rejectedByFinalOp: 0, targetUnreachable: 0, maxDepthHit: 0 };
     routeAttempts++;
-    const route = findMoveRoute(engine, action, true, routeDiag);
+    const route = findMoveRoute(engine, action, true, routeDiag, undefined, target.y + HIDDEN_ROWS);
     if (!route) {
       sawRouteFailure = true;
       continue;

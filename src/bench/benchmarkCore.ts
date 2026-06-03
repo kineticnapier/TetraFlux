@@ -27,6 +27,8 @@ export type Aggregate = {
   avgDecisionTimeMs: number;
   maxDecisionTimeMs: number;
   spinFinisherSearches: number;
+  candidateRouteChecks: number;
+  executionAttempts: number;
   spinFinisherAttempts: number;
   spinFinisherSuccesses: number;
   routeFailures: number;
@@ -74,7 +76,9 @@ export function renderSummary(payload: BenchPayload): string {
       `tsd ${String(a.tsdCount).padStart(3)}`,
       `tst ${String(a.tstCount).padStart(3)}`,
       `ms ${fmt(a.avgDecisionTimeMs, 2).padStart(6)}`,
-      `fin ${String(a.spinFinisherAttempts).padStart(3)}/${String(a.routedPlacements).padStart(3)}`,
+      `routeChk ${String(a.candidateRouteChecks ?? a.spinFinisherAttempts ?? 0).padStart(3)}`,
+      `exec ${String(a.executionAttempts ?? 0).padStart(3)}`,
+      `fin ${String(a.spinFinisherSuccesses).padStart(3)}/${String(a.routedPlacements).padStart(3)}`,
       `search ${String(a.spinFinisherSearches ?? 0).padStart(3)}`,
     ].join(" | "))
     .join("\n");
@@ -116,7 +120,8 @@ export async function runOneAi(
   let decisionMsMax = 0;
   let decisions = 0;
   let spinFinisherSearches = 0;
-  let spinFinisherAttempts = 0;
+  let candidateRouteChecks = 0;
+  let executionAttempts = 0;
   let spinFinisherSuccesses = 0;
   let routeFailures = 0;
   let routedNoSpin = 0;
@@ -157,8 +162,8 @@ export async function runOneAi(
 
       const execution = executeBenchmarkAction(engine, action);
       const result = execution.result;
-      if (plannedRouteAttempts > 0) spinFinisherAttempts += plannedRouteAttempts;
-      else if (execution.metrics.spinFinisherAttempt) spinFinisherAttempts++;
+      candidateRouteChecks += plannedRouteAttempts;
+      if (execution.metrics.spinFinisherAttempt) executionAttempts++;
       if (execution.metrics.spinFinisherSuccess) spinFinisherSuccesses++;
       if (execution.metrics.routeFailed) routeFailures++;
       if (execution.metrics.routedNoSpin) routedNoSpin++;
@@ -228,7 +233,9 @@ export async function runOneAi(
     avgDecisionTimeMs: decisions ? decisionMsTotal / decisions : 0,
     maxDecisionTimeMs: decisionMsMax,
     spinFinisherSearches,
-    spinFinisherAttempts,
+    candidateRouteChecks,
+    executionAttempts,
+    spinFinisherAttempts: candidateRouteChecks,
     spinFinisherSuccesses,
     routeFailures,
     directPlacements,
