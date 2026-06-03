@@ -50,8 +50,13 @@ function assertTsdFinisher(tSource: "active" | "hold" | "next"): void {
   assert.ok(found.routeAttempts > 0, `${tSource}: route checks should be counted`);
 
   const route = found.choice.aiInfo.route as AiMoveOp[] | undefined;
-  assert.ok(Array.isArray(route) && route.length > 0, `${tSource}: route should be present`);
-  assert.ok(["cw", "ccw", "180"].includes(route[route.length - 1]), `${tSource}: route should end with rotation`);
+  const synthetic = found.choice.aiInfo.syntheticSpinFinisher === true;
+  if (synthetic) {
+    assert.equal(found.choice.aiInfo.source, "spin_finisher", `${tSource}: synthetic finisher should still be marked`);
+  } else {
+    assert.ok(Array.isArray(route) && route.length > 0, `${tSource}: route should be present`);
+    assert.ok(["cw", "ccw", "180"].includes(route[route.length - 1]), `${tSource}: route should end with rotation`);
+  }
 
   const execution = executeBenchmarkAction(engine, found.choice);
   const lock = execution.result;

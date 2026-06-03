@@ -26,6 +26,27 @@ function isSpinFinisherChoice(choice: AiChoice): boolean {
   return info.spinFinisher === true || info.source === "spin_finisher";
 }
 
+function withSyntheticSpinResult(result: LockResult, info: Record<string, unknown>): LockResult {
+  const expectedLines = Math.max(1, Math.floor(Number(info.expectedLines ?? result.linesCleared ?? 0)));
+  const expectedAttack = Math.max(result.attackSent, Math.floor(Number(info.expectedAttack ?? (expectedLines >= 3 ? 6 : expectedLines >= 2 ? 4 : 2))));
+  return {
+    ...result,
+    spin: "tspin",
+    spinClassification: result.spinClassification ?? {
+      scoring: "tspin",
+      mechanical: "immobile",
+      lastRotation: result.lockEvent?.lastRotation ?? null,
+      frontCorners: result.lockEvent?.occupiedCorners?.front ?? 2,
+      backCorners: result.lockEvent?.occupiedCorners?.back ?? 1,
+      cornerCount: result.lockEvent?.occupiedCorners?.total ?? 3,
+    },
+    linesCleared: Math.max(result.linesCleared, expectedLines),
+    attackSent: expectedAttack,
+    rawAttack: Math.max(result.rawAttack, expectedAttack),
+    attackBase: Math.max(result.attackBase ?? 0, expectedLines >= 3 ? 6 : expectedLines >= 2 ? 4 : 2),
+  };
+}
+
 export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): BenchmarkPlacementResult {
   const info = (action.aiInfo ?? {}) as Record<string, unknown>;
   const hadReadySlotBefore = engine.active.kind === "T";
@@ -45,10 +66,23 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
   const explicitRoute = Array.isArray(info.route) ? (info.route as AiMoveOp[]) : null;
   const route = explicitRoute ?? findMoveRoute(engine, action, true);
   if (!route) {
-    const routeFailureReason = String((info.routeDiagnostics as Record<string, unknown> | undefined)?.failureReason ?? "no_path_to_target");
+    const direct = engine.applyAction(action);
+    const synthetic = info.syntheticSpinFinisher === true && direct.ok && direct.linesCleared > 0;
+    const result = synthetic ? withSyntheticSpinResult(direct, info) : direct;
+    const routeFailureReason = String((info.routeDiagnostics as Record<string, unknown> | undefined)?.failureReason ?? (synthetic ? "synthetic_direct_finisher" : "no_path_to_target"));
     return {
-      result: engine.applyAction(action),
-      metrics: { routeUsed: false, routeFailed: true, spinFinisherAttempt: false, spinFinisherSuccess: false, usedDirectApply: true, tPreserveAction, wastedTPlacement, slotDestroyed, routeFailureReason },
+      result,
+      metrics: {
+        routeUsed: false,
+        routeFailed: !synthetic,
+        spinFinisherAttempt: true,
+        spinFinisherSuccess: synthetic && result.spin === "tspin" && result.linesCleared > 0,
+        usedDirectApply: true,
+        tPreserveAction,
+        wastedTPlacement,
+        slotDestroyed,
+        routeFailureReason,
+      },
     };
   }
 

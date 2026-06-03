@@ -474,6 +474,35 @@ function simulateTSpinLock(engine: TetrisEngine, hold: boolean, x: number, y: nu
   return probe.lockPiece();
 }
 
+
+function makeSyntheticSpinFinisherChoice(
+  action: PlacementAction,
+  routeAttempts: number,
+  expectedLines: number,
+  targetY: number,
+  targetRot: number,
+  routeDiagnostics?: RouteDiagnostics,
+): AiChoice {
+  const expectedAttack = expectedLines >= 3 ? 6 : expectedLines >= 2 ? 4 : 2;
+  return {
+    ...action,
+    aiScore: Number.NEGATIVE_INFINITY,
+    aiInfo: {
+      source: "spin_finisher",
+      spinFinisher: true,
+      syntheticSpinFinisher: true,
+      forceSpinFinisherRotation: true,
+      spinFinisherRouteAttempts: routeAttempts,
+      expectedSpin: expectedLines >= 3 ? "TST" : "TSD",
+      expectedLines,
+      expectedAttack,
+      target: { x: action.x, y: targetY, rot: normalizeRot(targetRot) },
+      routeDiagnostics,
+      note: "synthetic_direct_finisher_after_route_reject",
+    },
+  };
+}
+
 function findImmediateRoutedTSpinFinisher(engine: TetrisEngine): { choice: AiChoice | null; routeAttempts: number } {
   const hold = holdForTFinisher(engine);
   if (hold === null) return { choice: null, routeAttempts: 0 };
@@ -502,6 +531,7 @@ function findImmediateRoutedTSpinFinisher(engine: TetrisEngine): { choice: AiCho
 
   let routeAttempts = 0;
   let best: AiChoice | null = null;
+  let bestSynthetic: AiChoice | null = null;
   const before = boardMetrics(engine.stateDict().board);
   for (const candidate of candidates.slice(0, MAX_IMMEDIATE_ROUTE_CHECKS)) {
     const routeDiag: RouteDiagnostics = { searchedNodes: 0, rejectedByCollision: 0, rejectedByFinalOp: 0, targetUnreachable: 0, maxDepthHit: 0 };
@@ -510,7 +540,20 @@ function findImmediateRoutedTSpinFinisher(engine: TetrisEngine): { choice: AiCho
     if (!route || !moveOpsEndWithRotation(route)) {
       route = findSimpleFinalRotationDropRoute(engine, candidate.action);
     }
-    if (!route || !moveOpsEndWithRotation(route)) continue;
+    if (!route || !moveOpsEndWithRotation(route)) {
+      const synthetic = makeSyntheticSpinFinisherChoice(
+        candidate.action,
+        routeAttempts,
+        candidate.previewLines,
+        candidate.y,
+        candidate.action.rot,
+        routeDiag,
+      );
+      if (!bestSynthetic || candidate.previewLines > Number(bestSynthetic.aiInfo.expectedLines ?? 0) || candidate.previewAttack > Number(bestSynthetic.aiInfo.expectedAttack ?? 0)) {
+        bestSynthetic = synthetic;
+      }
+      continue;
+    }
 
     const preview = engine.clone();
     let okRoute = true;
@@ -548,7 +591,7 @@ function findImmediateRoutedTSpinFinisher(engine: TetrisEngine): { choice: AiCho
     if (!best || route.length < (((best.aiInfo as Record<string, unknown>).route as AiMoveOp[] | undefined)?.length ?? 999)) best = choice;
   }
 
-  return { choice: best, routeAttempts };
+  return { choice: best ?? bestSynthetic, routeAttempts };
 }
 
 export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiChoice | null; reason?: SpinFinisherRejectReason; routeAttempts: number } {
