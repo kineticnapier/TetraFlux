@@ -54,9 +54,9 @@ export function findMoveRoute(engine: TetrisEngine, action: PlacementAction, pre
 
   const isTargetBeforeDrop = (e: TetrisEngine) => {
     return e.active.kind === action.piece &&
-    e.active.x === targetX &&
-    normalizeRot(e.active.rot) === targetRot &&
-    e.active.y + e.hardDropDistance(e.active) === targetY;
+      e.active.x === targetX &&
+      normalizeRot(e.active.rot) === targetRot &&
+      e.active.y + e.hardDropDistance(e.active) === targetY;
   };
 
   if (!preferSpinFinish && isTargetBeforeDrop(start)) return prefix;
@@ -384,7 +384,7 @@ export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiC
 
 export function runForcedSpinFinisherProbe(): { found: boolean; route: boolean; spin: SpinType; linesCleared: number; reason?: string } {
   const e = new TetrisEngine(7, 11);
-  const pattern = ["....X.....","...X.XX...","...XXXXX..","...XXXXX.."];
+  const pattern = ["....X.....","...X.XX...","...XXXXX..","...XXXXX.."]; 
   for (let i = 0; i < pattern.length; i++) {
     const y = e.board.length - 1 - i;
     for (let x = 0; x < 10; x++) e.board[y][x] = pattern[i][x] === "X" ? "G" : null;
