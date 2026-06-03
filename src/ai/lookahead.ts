@@ -1,7 +1,7 @@
 import { boardMetrics, TetrisEngine, type PlacementAction } from "../engine/tetris";
 import { HeuristicAI, type AiChoice } from "./heuristic";
 import { estimateSpinPotential } from "./spinPotential";
-import { findReadySpinFinisherChoice } from "./spinFinisher";
+import { findReadySpinFinisherChoice, hasUsableTForFinisher } from "./spinFinisher";
 import type { WebValueModel } from "./webValue";
 
 export interface LookaheadOptions {
@@ -138,12 +138,14 @@ export function chooseLookaheadPlacement(engine: TetrisEngine, heuristic: Heuris
 
 export class LookaheadAI extends HeuristicAI {
   public lastSpinFinisherReason: string | null = null;
+  public lastSpinFinisherRouteAttempts = 0;
   constructor(public readonly lookaheadOptions: LookaheadOptions = {}) { super(); }
 
   choose(engine: TetrisEngine): AiChoice | null {
     const budgetMs = this.lookaheadOptions.timeBudgetMs ?? DEFAULTS.timeBudgetMs;
     const start = performance.now();
     this.lastSpinFinisherReason = null;
+    this.lastSpinFinisherRouteAttempts = 0;
     const spinBias = this.lookaheadOptions.spinBias ?? DEFAULTS.spinBias;
     const risky = isRiskyBoard(engine);
     const effectiveSpinBias = risky ? 1 : spinBias;
@@ -152,25 +154,31 @@ export class LookaheadAI extends HeuristicAI {
       const state = engine.stateDict();
       const m = boardMetrics(state.board);
       const cleanEnoughForForcedSpin = m.holes < 2 && m.maxHeight < 9 && m.bumpiness < 13 && m.totalHeight < 36 && !state.board.slice(0, 6).some((row) => /[^.]/.test(row));
-      if (!cleanEnoughForForcedSpin) this.lastSpinFinisherReason = "terrain_too_bad";
-      const finisher = findReadySpinFinisherChoice(engine);
-      if (finisher.choice) {
-        finisher.choice.aiInfo = {
-          ...finisher.choice.aiInfo,
-          chooseMs: Number((performance.now() - start).toFixed(3)),
-          spinDecisionType: cleanEnoughForForcedSpin ? "speculative_setup_and_finisher" : "immediate_finisher_override",
-        };
-        return finisher.choice;
+      if (hasUsableTForFinisher(engine)) {
+        if (!cleanEnoughForForcedSpin) this.lastSpinFinisherReason = "terrain_too_bad";
+        const finisher = findReadySpinFinisherChoice(engine);
+        if (finisher.choice) {
+          this.lastSpinFinisherRouteAttempts = finisher.routeAttempts;
+          finisher.choice.aiInfo = {
+            ...finisher.choice.aiInfo,
+            spinFinisherSearch: true,
+            spinFinisherRouteAttempts: finisher.routeAttempts,
+            chooseMs: Number((performance.now() - start).toFixed(3)),
+            spinDecisionType: cleanEnoughForForcedSpin ? "speculative_setup_and_finisher" : "immediate_finisher_override",
+          };
+          return finisher.choice;
+        }
+        this.lastSpinFinisherRouteAttempts = finisher.routeAttempts;
+        this.lastSpinFinisherReason = finisher.reason && finisher.reason !== "no_t_available" ? finisher.reason : null;
       }
-      this.lastSpinFinisherReason = finisher.reason ?? "no_ready_slot";
     }
     const choice = chooseLookaheadPlacement(engine, this, { ...this.lookaheadOptions, spinBias: effectiveSpinBias });
     if (choice) {
-      if (this.lastSpinFinisherReason || risky) choice.aiInfo = { ...choice.aiInfo, spinFinisherRejected: this.lastSpinFinisherReason, topoutSafetyOverride: risky || undefined };
+      if (this.lastSpinFinisherReason || risky) choice.aiInfo = { ...choice.aiInfo, spinFinisherSearch: !!this.lastSpinFinisherReason || undefined, spinFinisherRouteAttempts: this.lastSpinFinisherRouteAttempts || undefined, spinFinisherRejected: this.lastSpinFinisherReason, topoutSafetyOverride: risky || undefined };
       return choice;
     }
     const fallback = super.choose(engine);
-    if (fallback) fallback.aiInfo = { ...fallback.aiInfo, source: "lookahead_fallback", chooseMs: Number((performance.now() - start).toFixed(3)), budgetMs, spinFinisherRejected: this.lastSpinFinisherReason ?? undefined };
+    if (fallback) fallback.aiInfo = { ...fallback.aiInfo, source: "lookahead_fallback", chooseMs: Number((performance.now() - start).toFixed(3)), budgetMs, spinFinisherSearch: !!this.lastSpinFinisherReason || undefined, spinFinisherRouteAttempts: this.lastSpinFinisherRouteAttempts || undefined, spinFinisherRejected: this.lastSpinFinisherReason ?? undefined };
     return fallback;
   }
 }

@@ -48,15 +48,17 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
     const routeFailureReason = String((info.routeDiagnostics as Record<string, unknown> | undefined)?.failureReason ?? "no_path_to_target");
     return {
       result: engine.applyAction(action),
-      metrics: { routeUsed: false, routeFailed: true, spinFinisherAttempt: true, spinFinisherSuccess: false, usedDirectApply: true, tPreserveAction, wastedTPlacement, slotDestroyed, routeFailureReason },
+      metrics: { routeUsed: false, routeFailed: true, spinFinisherAttempt: false, spinFinisherSuccess: false, usedDirectApply: true, tPreserveAction, wastedTPlacement, slotDestroyed, routeFailureReason },
     };
   }
 
+  let attemptedRoute = false;
   for (const op of route) {
+    attemptedRoute = true;
     if (!applyMove(engine, op)) {
       return {
         result: engine.applyAction(action),
-        metrics: { routeUsed: false, routeFailed: true, spinFinisherAttempt: true, spinFinisherSuccess: false, usedDirectApply: true, tPreserveAction, wastedTPlacement, slotDestroyed, routeFailureReason: "final_rotation_not_possible" },
+        metrics: { routeUsed: false, routeFailed: true, spinFinisherAttempt: attemptedRoute, spinFinisherSuccess: false, usedDirectApply: true, tPreserveAction, wastedTPlacement, slotDestroyed, routeFailureReason: "final_rotation_not_possible" },
       };
     }
   }
@@ -64,7 +66,7 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
   const result = engine.hardDrop();
   const routedNoSpin = result.ok && result.spin === "none";
   const routedNoClear = result.ok && result.linesCleared <= 0;
-  const spinFinisherSuccess = result.ok && result.spin === "tspin" && result.linesCleared >= 2;
+  const spinFinisherSuccess = result.ok && result.spin === "tspin" && result.linesCleared > 0 && result.lockEvent?.lastSuccessfulAction === "rotate";
   return {
     result,
     metrics: {

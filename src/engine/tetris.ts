@@ -32,10 +32,22 @@ export interface LockEvent {
   x: number;
   y: number;
   rot: number;
+  orientation: number;
   usedHold: boolean;
   boardBefore: string[];
   linesCleared: number;
+  lastSuccessfulAction: "rotate" | "move" | "direct" | "none";
+  lastKickIndex: number | null;
   lastRotation: LastRotationMetadata | null;
+  occupiedCorners?: {
+    tl: boolean;
+    tr: boolean;
+    bl: boolean;
+    br: boolean;
+    front: number;
+    back: number;
+    total: number;
+  };
   lockedCells: Array<[number, number]>;
   directPlacement: boolean;
 }
@@ -635,7 +647,7 @@ export class TetrisEngine {
     return !this.collidesIgnoringLocked(p, lockedCells);
   }
 
-  private tFrontCornerCount(lockedPiece: PieceState, lockedCells: Set<string>): { front: number; back: number; total: number } {
+  private tOccupiedCorners(lockedPiece: PieceState, lockedCells: Set<string>): NonNullable<LockEvent["occupiedCorners"]> {
     const cx = lockedPiece.x + 1;
     const cy = lockedPiece.y + 1;
     const corners = {
@@ -651,7 +663,12 @@ export class TetrisEngine {
       rot === 2 ? Number(corners.bl) + Number(corners.br) :
       Number(corners.tl) + Number(corners.bl);
     const total = Number(corners.tl) + Number(corners.tr) + Number(corners.bl) + Number(corners.br);
-    return { front, back: total - front, total };
+    return { ...corners, front, back: total - front, total };
+  }
+
+  private tFrontCornerCount(lockedPiece: PieceState, lockedCells: Set<string>): { front: number; back: number; total: number } {
+    const corners = this.tOccupiedCorners(lockedPiece, lockedCells);
+    return { front: corners.front, back: corners.back, total: corners.total };
   }
 
   private kickIsMiniUpgrade(lastRotation: LastRotationMetadata | null): boolean {
@@ -747,15 +764,21 @@ export class TetrisEngine {
     }
 
     const lines = this.countFullLines();
+    const lastRotation = this.lastActionWasRotation && this.lastRotationMetadata ? { ...this.lastRotationMetadata, kickOffset: [...this.lastRotationMetadata.kickOffset] as [number, number] } : null;
+    const occupiedCorners = p.kind === "T" ? this.tOccupiedCorners(p, lockedCells) : undefined;
     const lockEvent: LockEvent = {
       piece: p.kind,
       x: p.x,
       y: p.y,
       rot: ((p.rot % 4) + 4) % 4,
+      orientation: ((p.rot % 4) + 4) % 4,
       usedHold: this.holdUsedForCurrentPiece,
       boardBefore: before,
       linesCleared: lines,
-      lastRotation: this.lastActionWasRotation && this.lastRotationMetadata ? { ...this.lastRotationMetadata, kickOffset: [...this.lastRotationMetadata.kickOffset] as [number, number] } : null,
+      lastSuccessfulAction: lastRotation ? "rotate" : (this.placementActionMode ? "direct" : "move"),
+      lastKickIndex: lastRotation?.kickIndex ?? null,
+      lastRotation,
+      occupiedCorners,
       lockedCells: [...lockedCells].map((key) => key.split(",").map(Number) as [number, number]),
       directPlacement: this.placementActionMode,
     };
