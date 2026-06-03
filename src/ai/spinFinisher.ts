@@ -16,7 +16,7 @@ export type RouteDiagnostics = {
 
 const MAX_ROUTE_CANDIDATES_PER_DECISION = 2;
 const TARGET_Y_TOLERANCE = 1;
-const MAX_IMMEDIATE_ROUTE_CHECKS = 4;
+const MAX_IMMEDIATE_ROUTE_CHECKS = 6;
 
 function normalizeRot(rot: number): number { return ((rot % 4) + 4) % 4; }
 export function moveOpsEndWithRotation(ops: AiMoveOp[]): boolean {
@@ -119,7 +119,7 @@ function isStrongImmediateCandidate(kind: string): boolean {
 
 function postFinisherSafe(engine: TetrisEngine): boolean {
   const m = boardMetrics(engine.stateDict().board);
-  return !engine.dead && m.holes <= 2 && m.maxHeight <= 10;
+  return !engine.dead && m.holes <= 4 && m.maxHeight <= 13 && m.totalHeight <= 55;
 }
 
 function candidateScore(target: ReturnType<typeof estimateSpinPotential>["bestTarget"]): number {
@@ -271,8 +271,8 @@ function findImmediateRoutedTSpinFinisher(engine: TetrisEngine): { choice: AiCho
     if (!result.ok || result.spin !== "tspin" || result.linesCleared <= 0 || result.lockEvent?.lastSuccessfulAction !== "rotate") continue;
     const after = boardMetrics(preview.stateDict().board);
     if (result.topout || preview.dead) continue;
-    if (after.holes > before.holes + 1 || !postFinisherSafe(preview)) continue;
-    if (after.maxHeight > Math.max(10, before.maxHeight + 1)) continue;
+    if (after.holes > before.holes + 2 || !postFinisherSafe(preview)) continue;
+    if (after.maxHeight > Math.max(13, before.maxHeight + 3)) continue;
 
     const choice: AiChoice = {
       ...candidate.action,
@@ -306,7 +306,10 @@ export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiC
 
   const state = engine.stateDict();
   const target = estimateSpinPotential(state).bestTarget;
-  if (!target) return { choice: null, reason: "no_ready_slot", routeAttempts };
+  if (!target) {
+    const reason: SpinFinisherRejectReason = immediate.routeAttempts > 0 ? "immediate_candidate_route_failed" : "no_ready_slot";
+    return { choice: null, reason, routeAttempts };
+  }
 
   const spinCapable = ["TSD_LEFT", "TSD_RIGHT", "TST", "STSD", "TSlot"].includes(target.kind);
   if (!spinCapable) return { choice: null, reason: "no_ready_slot", routeAttempts };
@@ -353,8 +356,8 @@ export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiC
     if (result.topout || preview.dead) continue;
     if (result.spin !== "tspin") continue;
     if (result.linesCleared <= 0) continue;
-    if (after.holes > before.holes + 1 || !postFinisherSafe(preview)) continue;
-    if (after.maxHeight > Math.max(10, before.maxHeight + 1)) continue;
+    if (after.holes > before.holes + 2 || !postFinisherSafe(preview)) continue;
+    if (after.maxHeight > Math.max(13, before.maxHeight + 3)) continue;
     const cand: AiChoice = {
       ...action,
       aiScore: Number.NEGATIVE_INFINITY,

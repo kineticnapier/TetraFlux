@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { executeBenchmarkAction } from "../src/ai/benchmarkRunner";
 import { findReadySpinFinisherChoice, type AiMoveOp } from "../src/ai/spinFinisher";
+import { estimateSpinPotential } from "../src/ai/spinPotential";
 import { TetrisEngine } from "../src/engine/tetris";
 
 function makeTsdReadyEngine(tSource: "active" | "hold" | "next" = "active"): TetrisEngine {
@@ -23,8 +24,26 @@ function makeTsdReadyEngine(tSource: "active" | "hold" | "next" = "active"): Tet
   return engine;
 }
 
+function compactBoard(engine: TetrisEngine): string {
+  return engine.stateDict().board.join("\n");
+}
+
+function assertReadySlotDetectorSeesSomething(engine: TetrisEngine, label: string): void {
+  const potential = estimateSpinPotential(engine.stateDict());
+  const target = potential.bestTarget;
+  assert.ok(target, `${label}: ready-slot detector should return a bestTarget\n${compactBoard(engine)}`);
+  assert.ok(
+    target.kind === "TSD_LEFT" || target.kind === "TSD_RIGHT" || target.kind === "STSD" || target.kind === "TST",
+    `${label}: expected a TSD/TST-like target, got ${target.kind}`,
+  );
+  assert.ok(target.cornerCount >= 3, `${label}: target should satisfy at least 3 corners`);
+  assert.ok(target.completeRows >= 1, `${label}: target should be close to a line-clearing spin`);
+}
+
 function assertTsdFinisher(tSource: "active" | "hold" | "next"): void {
   const engine = makeTsdReadyEngine(tSource);
+  assertReadySlotDetectorSeesSomething(engine, tSource);
+
   const found = findReadySpinFinisherChoice(engine);
   assert.equal(found.reason, undefined, `${tSource}: finisher should not reject`);
   assert.ok(found.choice, `${tSource}: finisher should return a choice`);
