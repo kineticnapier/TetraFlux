@@ -16,7 +16,7 @@ export type RouteDiagnostics = {
 
 const MAX_ROUTE_CANDIDATES_PER_DECISION = 2;
 const TARGET_Y_TOLERANCE = 1;
-const MAX_IMMEDIATE_ROUTE_CHECKS = 6;
+const MAX_IMMEDIATE_ROUTE_CHECKS = 10;
 
 function normalizeRot(rot: number): number { return ((rot % 4) + 4) % 4; }
 export function moveOpsEndWithRotation(ops: AiMoveOp[]): boolean {
@@ -32,6 +32,198 @@ export function applyMove(engine: TetrisEngine, op: AiMoveOp): boolean {
   if (op === "ccw") return engine.rotateCcw();
   if (op === "180") return engine.rotate180();
   return engine.move(0, 1);
+}
+
+function sameActive(e: TetrisEngine, piece: PlacementAction["piece"], x: number, y: number, rot: number): boolean {
+  return e.active.kind === piece &&
+    e.active.x === x &&
+    e.active.y === y &&
+    normalizeRot(e.active.rot) === normalizeRot(rot);
+}
+
+function exactRouteKey(e: TetrisEngine): string {
+  return `${e.active.kind}:${e.active.x}:${e.active.y}:${normalizeRot(e.active.rot)}:${e.canHold}:${e.hold ?? "."}`;
+}
+
+function routeDeadlineHit(deadlineMs?: number): boolean {
+  return deadlineMs !== undefined && performance.now() >= deadlineMs;
+}
+
+function prepareRouteStart(engine: TetrisEngine, action: PlacementAction): { start: TetrisEngine; prefix: AiMoveOp[] } | null {
+  const start = engine.clone();
+  const prefix: AiMoveOp[] = [];
+  if (action.hold) {
+    if (!start.holdPiece()) return null;
+    prefix.push("hold");
+  }
+  if (start.active.kind !== action.piece) return null;
+  return { start, prefix };
+}
+
+/**
+ * Exact-position BFS used only for spin finishers.
+ *
+ * Normal placement routing only needs "same hard-drop landing". A T-spin route is
+ * different: the final rotation usually has to happen at a specific low y. This
+ * helper reaches an exact pre-rotation state, then the caller appends the final
+ * rotation. Keeping this separate avoids making ordinary AI routing expensive.
+ */
+function findExactActiveRoute(
+  engine: TetrisEngine,
+  action: PlacementAction,
+  targetX: number,
+  targetY: number,
+  targetRot: number,
+  diagnostics?: RouteDiagnostics,
+  deadlineMs?: number,
+): AiMoveOp[] | null {
+  const diag: RouteDiagnostics = diagnostics ?? { searchedNodes: 0, rejectedByCollision: 0, rejectedByFinalOp: 0, targetUnreachable: 0, maxDepthHit: 0 };
+  const prepared = prepareRouteStart(engine, action);
+  if (!prepared) {
+    diag.failureReason = "target_not_placeable";
+    return null;
+  }
+
+  const { start, prefix } = prepared;
+  if (sameActive(start, action.piece, targetX, targetY, targetRot)) return prefix;
+
+  const ops: AiMoveOp[] = ["left", "right", "soft", "cw", "ccw", "180"];
+  const queue: Array<{ engine: TetrisEngine; path: AiMoveOp[] }> = [{ engine: start, path: [] }];
+  const seen = new Set<string>([exactRouteKey(start)]);
+  const maxPath = 80;
+  const maxStates = 5200;
+
+  for (let head = 0; head < queue.length && seen.size <= maxStates; head++) {
+    if (routeDeadlineHit(deadlineMs)) {
+      diag.failureReason = "route_budget_exceeded";
+      return null;
+    }
+
+    const cur = queue[head];
+    if (cur.path.length >= maxPath) {
+      diag.maxDepthHit++;
+      continue;
+    }
+
+    for (const op of ops) {
+      const next = cur.engine.clone();
+      if (!applyMove(next, op)) {
+        diag.rejectedByCollision++;
+        continue;
+      }
+
+      const key = exactRouteKey(next);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      diag.searchedNodes++;
+
+      const path = [...cur.path, op];
+      const fullPath = [...prefix, ...path];
+      if (sameActive(next, action.piece, targetX, targetY, targetRot)) return fullPath;
+
+      queue.push({ engine: next, path });
+      if (seen.size > maxStates) {
+        diag.maxDepthHit++;
+        break;
+      }
+    }
+  }
+
+  diag.failureReason = "no_path_to_target";
+  return null;
+}
+
+const FINAL_ROTATION_OPS: Array<{ op: AiMoveOp; delta: number }> = [
+  { op: "cw", delta: 1 },
+  { op: "ccw", delta: -1 },
+  { op: "180", delta: 2 },
+];
+
+/**
+ * Build a route that explicitly ends with the rotation that locks the T-spin.
+ *
+ * The older route finder searched for the final state directly. In real T-spins,
+ * the important state is often the predecessor just before the last kick. This
+ * function brute-forces plausible predecessors around the target and then routes
+ * to the predecessor exactly.
+ */
+function findFinalRotationRoute(
+  engine: TetrisEngine,
+  action: PlacementAction,
+  targetY: number,
+  diagnostics?: RouteDiagnostics,
+  deadlineMs?: number,
+): AiMoveOp[] | null {
+  const diag: RouteDiagnostics = diagnostics ?? { searchedNodes: 0, rejectedByCollision: 0, rejectedByFinalOp: 0, targetUnreachable: 0, maxDepthHit: 0 };
+  const prepared = prepareRouteStart(engine, action);
+  if (!prepared) {
+    diag.failureReason = "target_not_placeable";
+    return null;
+  }
+
+  const routedStart = prepared.start;
+  const targetX = action.x;
+  const targetRot = normalizeRot(action.rot);
+
+  const targetProbe = routedStart.clone();
+  targetProbe.active = { kind: action.piece, x: targetX, y: targetY, rot: targetRot };
+  if (targetProbe.collides(targetProbe.active) || targetProbe.hardDropDistance(targetProbe.active) !== 0) {
+    diag.targetUnreachable++;
+    diag.failureReason = "target_not_placeable";
+    return null;
+  }
+
+  let best: AiMoveOp[] | null = null;
+
+  for (const { op, delta } of FINAL_ROTATION_OPS) {
+    const predRot = normalizeRot(targetRot - delta);
+
+    for (let py = targetY - 4; py <= targetY + 4; py++) {
+      for (let px = targetX - 4; px <= targetX + 4; px++) {
+        if (routeDeadlineHit(deadlineMs)) {
+          diag.failureReason = "route_budget_exceeded";
+          return best;
+        }
+
+        const predecessor = routedStart.clone();
+        predecessor.active = { kind: action.piece, x: px, y: py, rot: predRot };
+        if (predecessor.collides(predecessor.active)) continue;
+
+        const afterRotate = predecessor.clone();
+        if (!applyMove(afterRotate, op)) continue;
+        if (!sameActive(afterRotate, action.piece, targetX, targetY, targetRot)) continue;
+
+        const predAction: PlacementAction = {
+          ...action,
+          x: px,
+          rot: predRot,
+          key: `${action.hold ? "H:" : ""}${action.piece}:${px}:${predRot}:pre-spin`,
+        };
+
+        const predRoute = findExactActiveRoute(engine, predAction, px, py, predRot, diag, deadlineMs);
+        if (!predRoute) continue;
+
+        const fullRoute = [...predRoute, op];
+
+        const verify = engine.clone();
+        let ok = true;
+        for (const step of fullRoute) {
+          if (!applyMove(verify, step)) {
+            ok = false;
+            break;
+          }
+        }
+        if (!ok) continue;
+        if (!sameActive(verify, action.piece, targetX, targetY, targetRot)) continue;
+        if (verify.hardDropDistance(verify.active) !== 0) continue;
+
+        if (!best || fullRoute.length < best.length) best = fullRoute;
+      }
+    }
+  }
+
+  if (!best) diag.failureReason = "final_rotation_not_possible";
+  return best;
 }
 
 export function findMoveRoute(engine: TetrisEngine, action: PlacementAction, preferSpinFinish = false, diagnostics?: RouteDiagnostics, deadlineMs?: number, targetYOverride?: number): AiMoveOp[] | null {
@@ -52,6 +244,11 @@ export function findMoveRoute(engine: TetrisEngine, action: PlacementAction, pre
   }
   const targetY = targetYOverride ?? (targetProbe.active.y + targetProbe.hardDropDistance(targetProbe.active));
 
+  if (preferSpinFinish && targetYOverride !== undefined) {
+    const finalRotationRoute = findFinalRotationRoute(engine, action, targetY, diag, deadlineMs);
+    if (finalRotationRoute && moveOpsEndWithRotation(finalRotationRoute)) return finalRotationRoute;
+  }
+
   const isTargetBeforeDrop = (e: TetrisEngine) => {
     return e.active.kind === action.piece &&
       e.active.x === targetX &&
@@ -66,8 +263,8 @@ export function findMoveRoute(engine: TetrisEngine, action: PlacementAction, pre
     : ["cw", "ccw", "180", "left", "right", "soft"];
   const queue: Array<{ engine: TetrisEngine; path: AiMoveOp[] }> = [{ engine: start, path: [] }];
   const seen = new Set<string>([`${start.active.kind}:${start.active.x}:${start.active.y}:${normalizeRot(start.active.rot)}`]);
-  const maxPath = preferSpinFinish ? 42 : 24;
-  const maxStates = preferSpinFinish ? 900 : 110;
+  const maxPath = preferSpinFinish ? 80 : 24;
+  const maxStates = preferSpinFinish ? 5200 : 110;
 
   for (let head = 0; head < queue.length && seen.size <= maxStates; head++) {
     if (deadlineMs !== undefined && performance.now() >= deadlineMs) {
@@ -119,7 +316,7 @@ function isStrongImmediateCandidate(kind: string): boolean {
 
 function postFinisherSafe(engine: TetrisEngine): boolean {
   const m = boardMetrics(engine.stateDict().board);
-  return !engine.dead && m.holes <= 4 && m.maxHeight <= 13 && m.totalHeight <= 55;
+  return !engine.dead && m.holes <= 5 && m.maxHeight <= 14 && m.totalHeight <= 62;
 }
 
 function candidateScore(target: ReturnType<typeof estimateSpinPotential>["bestTarget"]): number {
@@ -132,7 +329,7 @@ function candidateScore(target: ReturnType<typeof estimateSpinPotential>["bestTa
 
 function isBoardDangerousForSpin(engine: TetrisEngine): boolean {
   const m = boardMetrics(engine.stateDict().board);
-  return m.holes >= 2 || m.maxHeight >= 9 || m.bumpiness >= 13 || m.totalHeight >= 36;
+  return m.holes >= 4 || m.maxHeight >= 12 || m.bumpiness >= 18 || m.totalHeight >= 55;
 }
 
 function expectedSpin(kind: string): "TSD" | "TST" | "SPIN" {
@@ -271,8 +468,8 @@ function findImmediateRoutedTSpinFinisher(engine: TetrisEngine): { choice: AiCho
     if (!result.ok || result.spin !== "tspin" || result.linesCleared <= 0 || result.lockEvent?.lastSuccessfulAction !== "rotate") continue;
     const after = boardMetrics(preview.stateDict().board);
     if (result.topout || preview.dead) continue;
-    if (after.holes > before.holes + 2 || !postFinisherSafe(preview)) continue;
-    if (after.maxHeight > Math.max(13, before.maxHeight + 3)) continue;
+    if (after.holes > before.holes + 3 || !postFinisherSafe(preview)) continue;
+    if (after.maxHeight > Math.max(14, before.maxHeight + 4)) continue;
 
     const choice: AiChoice = {
       ...candidate.action,
@@ -356,8 +553,8 @@ export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiC
     if (result.topout || preview.dead) continue;
     if (result.spin !== "tspin") continue;
     if (result.linesCleared <= 0) continue;
-    if (after.holes > before.holes + 2 || !postFinisherSafe(preview)) continue;
-    if (after.maxHeight > Math.max(13, before.maxHeight + 3)) continue;
+    if (after.holes > before.holes + 3 || !postFinisherSafe(preview)) continue;
+    if (after.maxHeight > Math.max(14, before.maxHeight + 4)) continue;
     const cand: AiChoice = {
       ...action,
       aiScore: Number.NEGATIVE_INFINITY,
@@ -384,7 +581,7 @@ export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiC
 
 export function runForcedSpinFinisherProbe(): { found: boolean; route: boolean; spin: SpinType; linesCleared: number; reason?: string } {
   const e = new TetrisEngine(7, 11);
-  const pattern = ["....X.....","...X.XX...","...XXXXX..","...XXXXX.."]; 
+  const pattern = ["....X.....","...X.XX...","...XXXXX..","...XXXXX.."];
   for (let i = 0; i < pattern.length; i++) {
     const y = e.board.length - 1 - i;
     for (let x = 0; x < 10; x++) e.board[y][x] = pattern[i][x] === "X" ? "G" : null;
