@@ -41,7 +41,7 @@ canvas {
   gap: 8px;
 }
 
-button, input {
+button, input, select {
   border: 1px solid rgba(148, 163, 184, 0.25);
   background: #111827;
   color: #e5e7eb;
@@ -65,6 +65,10 @@ label {
 input {
   width: 72px;
   font-family: Consolas, monospace;
+}
+
+select {
+  font-family: inherit;
 }
 
 #status {
@@ -125,6 +129,17 @@ input {
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+.bench-ai-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 0 0 12px;
+}
+
+.bench-ai-choices input {
+  width: auto;
 }
 
 #benchOutput {

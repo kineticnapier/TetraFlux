@@ -51,12 +51,10 @@ export function findMoveRoute(engine: TetrisEngine, action: PlacementAction, pre
     diag.failureReason = "target_not_placeable";
     return null;
   }
-  const targetY = targetProbe.hardDropDistance(targetProbe.active);
+  const targetY = targetProbe.active.y + targetProbe.hardDropDistance(targetProbe.active);
 
   const isTargetBeforeDrop = (e: TetrisEngine) => {
-    const dropY = e.hardDropDistance(e.active);
-    const dropped = { ...e.active, y: dropY };
-    const droppedY = dropped.y;
+    const droppedY = e.active.y + e.hardDropDistance(e.active);
     return e.active.kind === action.piece &&
     e.active.x === targetX &&
     normalizeRot(e.active.rot) === targetRot &&
@@ -145,15 +143,15 @@ function expectedSpin(kind: string): "TSD" | "TST" | "SPIN" {
 }
 
 export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiChoice | null; reason?: SpinFinisherRejectReason } {
+  const tNow = engine.active.kind === "T" || (engine.canHold && (engine.hold === "T" || (engine.hold === null && engine.queue[0] === "T")));
+  if (!tNow) return { choice: null, reason: "no_t_available" };
+
   const state = engine.stateDict();
   const target = estimateSpinPotential(state).bestTarget;
   if (!target) return { choice: null, reason: "no_ready_slot" };
 
   const spinCapable = ["TSD_LEFT", "TSD_RIGHT", "TST", "STSD", "TSlot"].includes(target.kind);
   if (!spinCapable) return { choice: null, reason: "no_ready_slot" };
-
-  const tNow = engine.active.kind === "T" || (engine.canHold && (engine.hold === "T" || (engine.hold === null && engine.queue[0] === "T")));
-  if (!tNow) return { choice: null, reason: "no_t_available" };
 
   const expectedLines = expectedLinesForSpinKind(target.kind);
   const expectedSpinType = expectedSpin(target.kind);

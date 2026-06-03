@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { randomBytes } from "node:crypto";
 import { HeuristicAI, type AiChoice } from "../src/ai/heuristic";
 import { LookaheadAI } from "../src/ai/lookahead";
 import { estimateSpinPotential } from "../src/ai/spinPotential";
@@ -45,17 +46,18 @@ function parseArgs() {
   const args = process.argv.slice(2);
   let games = 50;
   let maxPieces = 500;
-  let seedBase = 1337;
+  let seedBase: number | null = null;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if ((a === "-n" || a === "--games") && args[i + 1]) games = Number(args[++i]);
     else if ((a === "-p" || a === "--max-pieces") && args[i + 1]) maxPieces = Number(args[++i]);
     else if ((a === "-s" || a === "--seed") && args[i + 1]) seedBase = Number(args[++i]);
   }
+  const randomSeed = randomBytes(4).readUInt32LE(0);
   return {
     games: Number.isFinite(games) && games > 0 ? Math.floor(games) : 50,
     maxPieces: Number.isFinite(maxPieces) && maxPieces > 0 ? Math.floor(maxPieces) : 500,
-    seedBase: Number.isFinite(seedBase) ? Math.floor(seedBase) : 1337,
+    seedBase: seedBase !== null && Number.isFinite(seedBase) ? Math.floor(seedBase) : randomSeed,
   };
 }
 

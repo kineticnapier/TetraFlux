@@ -1,7 +1,7 @@
 import "./style.css";
 import { HeuristicAI } from "./ai/heuristic";
-import { LookaheadAI } from "./ai/lookahead";
 import type { AiChoice } from "./ai/heuristic";
+import { BUILTIN_AI_FACTORIES, createBuiltinAi, randomBuiltinAi, type AiLike } from "./ai/registry";
 import { WebPolicyAI } from "./ai/webPolicy";
 import { estimateSpinPotential } from "./ai/spinPotential";
 import { boardMetrics, TetrisEngine, type Cell, type LockResult, type PieceKind, type PlacementAction, type PieceState } from "./engine/tetris";
@@ -13,8 +13,6 @@ import { drawBoard, drawPanel } from "./render";
 type Winner = "human" | "ai";
 type GameMode = "human_vs_ai" | "ai_vs_ai" | "lab" | "zenith";
 type AutoUploadStatus = "idle" | "uploading" | "uploaded" | "failed" | "skipped" | "selfplay" | "disabled";
-
-interface AiLike { choose(engine: TetrisEngine): AiChoice | null; }
 
 type AiMoveOp = "hold" | "left" | "right" | "cw" | "ccw" | "180" | "soft";
 
@@ -80,87 +78,6 @@ interface SpinPlanTarget {
 }
 
 type TouchAction = "left" | "right" | "down" | "cw" | "ccw" | "180" | "hold" | "drop" | "start" | "next";
-
-type BattleOpponentKind =
-  | "heuristic"
-  | "aggressive"
-  | "defensive"
-  | "downstacker"
-  | "combo"
-  | "spin"
-  | "noisyHybrid";
-
-interface BattleOpponentSpec {
-  kind: BattleOpponentKind;
-  name: string;
-  make(base: AiLike): AiLike;
-}
-
-class WeightedHeuristicAI extends HeuristicAI {
-  variantName: string;
-
-  constructor(name: string, weights: Partial<HeuristicAI> = {}) {
-    super();
-    this.variantName = name;
-    Object.assign(this, weights);
-  }
-}
-
-class NoisyAi implements AiLike {
-  private rngState: number;
-
-  constructor(private readonly base: AiLike, private readonly noise = 0.35, seed = seedNow()) {
-    this.rngState = seed || 1;
-  }
-
-  private rand(): number {
-    let t = (this.rngState += 0x6D2B79F5);
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  }
-
-  choose(engine: TetrisEngine): AiChoice | null {
-    const choice = this.base.choose(engine);
-    if (!choice) return null;
-
-    if (this.rand() < this.noise * 0.22) {
-      const h = new WeightedHeuristicAI("Noisy fallback", {
-        holeWeight: 7.4 + this.rand() * 1.6,
-        heightWeight: 0.6 + this.rand() * 0.5,
-        bumpWeight: 0.25 + this.rand() * 0.45,
-        attackBonus: 1.4 + this.rand() * 1.8,
-        lineBonus: 3.2 + this.rand() * 1.8,
-      });
-      const fallback = h.choose(engine);
-      if (fallback) {
-        fallback.aiInfo = { ...fallback.aiInfo, opponent: "NoisyHybrid fallback" };
-        return fallback;
-      }
-    }
-
-    return {
-      ...choice,
-      aiScore: choice.aiScore + (this.rand() - 0.5) * this.noise,
-      aiInfo: { ...choice.aiInfo, opponent: "NoisyHybrid", noise: this.noise },
-    };
-  }
-}
-
-const BATTLE_OPPONENTS: BattleOpponentSpec[] = [
-  { kind: "heuristic", name: "Heuristic", make: () => new LookaheadAI({ depth: 2, beamWidth: 50, includeHold: true, spinBias: 0.8, maxCandidatesPerNode: 24, maxNodesPerDepth: 220, timeBudgetMs: 7.5 }) },
-  { kind: "aggressive", name: "Aggressive", make: () => new WeightedHeuristicAI("Aggressive", { attackBonus: 5.2, lineBonus: 4.8, holeWeight: 6.4, heightWeight: 0.62, bumpWeight: 0.28, wellWeight: 0.08, holdPenalty: 0.02 }) },
-  { kind: "defensive", name: "Defensive", make: () => new WeightedHeuristicAI("Defensive", { holeWeight: 13.0, heightWeight: 1.35, bumpWeight: 0.72, wellWeight: 0.28, lineBonus: 2.8, attackBonus: 0.9, holdPenalty: 0.03 }) },
-  { kind: "downstacker", name: "Downstacker", make: () => new WeightedHeuristicAI("Downstacker", { holeWeight: 11.2, heightWeight: 1.05, bumpWeight: 0.45, wellWeight: 0.04, lineBonus: 5.0, attackBonus: 1.15, holdPenalty: 0.01 }) },
-  { kind: "combo", name: "Combo", make: () => new WeightedHeuristicAI("Combo", { holeWeight: 7.2, heightWeight: 0.72, bumpWeight: 0.18, wellWeight: -0.12, lineBonus: 5.8, attackBonus: 1.65, holdPenalty: 0.02 }) },
-  { kind: "spin", name: "Spin", make: () => { const ai = new LookaheadAI({ depth: 1, beamWidth: 24, includeHold: true, spinBias: 1.2, maxCandidatesPerNode: 16, maxNodesPerDepth: 120, timeBudgetMs: 2.8 }); Object.assign(ai, { holeWeight: 10.1, heightWeight: 0.88, maxHeightWeight: 2.35, bumpWeight: 0.55, wellWeight: 0.04, lineBonus: 3.7, attackBonus: 4.7, spinPotentialBonus: 2.95, holdPenalty: 0.01 }); return ai; } },
-  { kind: "noisyHybrid", name: "Noisy Hybrid", make: (base) => new NoisyAi(base, 0.55) },
-];
-
-function randomBattleOpponent(base: AiLike): { ai: AiLike; name: string; kind: BattleOpponentKind } {
-  const spec = BATTLE_OPPONENTS[Math.floor(Math.random() * BATTLE_OPPONENTS.length)] ?? BATTLE_OPPONENTS[0];
-  return { ai: spec.make(base), name: spec.name, kind: spec.kind };
-}
 
 interface ValueModelInfo {
   loaded: boolean;
@@ -579,6 +496,54 @@ const settingsBtn = document.querySelector<HTMLButtonElement>("#settingsBtn")!;
 const presenceBadge = document.querySelector<HTMLSpanElement>("#presenceBadge")!;
 const toolbar = document.querySelector<HTMLDivElement>("#toolbar")!;
 
+const battleAiControl = document.createElement("div");
+battleAiControl.id = "battleAiControl";
+battleAiControl.style.display = "none";
+battleAiControl.style.alignItems = "center";
+battleAiControl.style.gap = "6px";
+
+const battleLeftAiSelect = document.createElement("select");
+battleLeftAiSelect.id = "battleLeftAi";
+const battleRightAiSelect = document.createElement("select");
+battleRightAiSelect.id = "battleRightAi";
+for (const select of [battleLeftAiSelect, battleRightAiSelect]) {
+  select.style.minWidth = "128px";
+  select.style.border = "1px solid rgba(148, 163, 184, 0.25)";
+  select.style.background = "#111827";
+  select.style.color = "#e5e7eb";
+  select.style.borderRadius = "10px";
+  select.style.padding = "8px 10px";
+  select.style.fontWeight = "650";
+}
+
+function appendBattleAiOptions(select: HTMLSelectElement, includeRandom: boolean): void {
+  const options = [
+    ...(includeRandom ? [{ id: "random", name: "Random" }] : []),
+    { id: "loaded", name: "Loaded model" },
+    ...BUILTIN_AI_FACTORIES.map((spec) => ({ id: spec.id, name: spec.name })),
+  ];
+  for (const item of options) {
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = item.name;
+    select.appendChild(option);
+  }
+}
+
+appendBattleAiOptions(battleLeftAiSelect, true);
+appendBattleAiOptions(battleRightAiSelect, true);
+battleLeftAiSelect.value = "loaded";
+battleRightAiSelect.value = "random";
+
+const battleLeftAiLabel = document.createElement("label");
+battleLeftAiLabel.textContent = "Player A AI";
+battleLeftAiLabel.appendChild(battleLeftAiSelect);
+const battleRightAiLabel = document.createElement("label");
+battleRightAiLabel.textContent = "Player B AI";
+battleRightAiLabel.appendChild(battleRightAiSelect);
+battleAiControl.append(battleLeftAiLabel, battleRightAiLabel);
+toolbar.insertBefore(battleAiControl, settingsBtn);
+
 const quickPlayModControl = document.createElement("div");
 quickPlayModControl.id = "quickPlayMod";
 quickPlayModControl.title = "Normal mods";
@@ -692,6 +657,12 @@ function updateQuickPlayModSelectUi(mode: GameMode): void {
   const specialW = Math.max(178, specialModSelect.offsetWidth || 178);
   specialModSelect.style.left = `${Math.round(rect.left + 482 * scale - specialW / 2)}px`;
   specialModSelect.style.top = `${Math.round(rect.top + 168 * scale)}px`;
+}
+
+function updateBattleAiControlUi(mode: GameMode): void {
+  const active = isAiBattleScreen(mode);
+  battleAiControl.hidden = !active;
+  battleAiControl.style.display = active ? "flex" : "none";
 }
 
 const settingsModal = document.querySelector<HTMLDivElement>("#settingsModal")!;
@@ -867,7 +838,13 @@ function bindSettingsUi(): void {
   closeSettingsBtn.addEventListener("click", closeSettings);
   settingsModal.addEventListener("click", (e) => { if (e.target === settingsModal) closeSettings(); });
   saveSettingsBtn.addEventListener("click", () => { readSettingsFromDom(); closeSettings(); setStatus("Settings saved."); });
-  resetSettingsBtn.addEventListener("click", () => { settings = cloneSettings(DEFAULT_SETTINGS); saveSettingsToStorage(); applySettingsToDom(); setStatus("Settings reset."); });
+  resetSettingsBtn.addEventListener("click", () => {
+    if (!window.confirm("Reset all settings, including key bindings, DAS/ARR/SDF, gravity, lock delay, and AI speed?")) return;
+    settings = cloneSettings(DEFAULT_SETTINGS);
+    saveSettingsToStorage();
+    applySettingsToDom();
+    setStatus("Settings reset.");
+  });
 }
 
 function seedNow(): number { return (Date.now() ^ Math.floor(Math.random() * 1_000_000_000)) >>> 0; }
@@ -1441,7 +1418,9 @@ class Ft5Trainer {
   battleLeftName = "HybridAI";
   battleRightAi: AiLike = new HeuristicAI();
   battleRightName = "HeuristicAI";
-  battleOpponentKind: BattleOpponentKind = "heuristic";
+  battleLeftAiId = "loaded";
+  battleRightAiId = "random";
+  battleOpponentKind = "random";
 
   logger = new MatchLogger();
   selfplayLogger = new SelfplayLogger();
@@ -1497,11 +1476,14 @@ class Ft5Trainer {
     this.aiDetails = details;
 
     // AI Battle is now AI Battle self-training: loaded model vs itself.
-    this.battleLeftAi = ai;
-    this.battleLeftName = name;
-    this.battleRightAi = ai;
-    this.battleRightName = name;
-    this.battleOpponentKind = "heuristic";
+    if (this.battleLeftAiId === "loaded") {
+      this.battleLeftAi = ai;
+      this.battleLeftName = name;
+    }
+    if (this.battleRightAiId === "loaded") {
+      this.battleRightAi = ai;
+      this.battleRightName = name;
+    }
 
     setStatus(`AI loaded: ${name}`);
   }
@@ -1515,6 +1497,7 @@ class Ft5Trainer {
     this.mode = mode;
     this.resetMatch();
     updateQuickPlayModSelectUi(this.mode);
+    updateBattleAiControlUi(this.mode);
   }
 
   toggleMode(): void {
@@ -1532,6 +1515,12 @@ class Ft5Trainer {
     return "Human vs AI";
   }
   updateModeButton(): void { toggleModeBtn.textContent = `Mode: ${this.modeLabel()}`; }
+
+  setBattleAiSelection(side: "left" | "right", id: string): void {
+    if (side === "left") this.battleLeftAiId = id;
+    else this.battleRightAiId = id;
+    if (isAiBattleScreen(this.mode)) this.resetMatch();
+  }
 
   inputSettings() { return { dasMs: settings.dasMs, arrMs: settings.arrMs, sdfCellsPerSecond: settings.sdfCellsPerSecond }; }
 
@@ -1753,12 +1742,13 @@ class Ft5Trainer {
     this.input = new MovementInput(this.human, () => this.inputSettings());
 
     if (this.mode === "ai_vs_ai") {
-      const opponent = randomBattleOpponent(this.ai);
-      this.battleLeftAi = this.ai;
-      this.battleLeftName = this.aiName;
-      this.battleRightAi = opponent.ai;
-      this.battleRightName = opponent.name;
-      this.battleOpponentKind = opponent.kind;
+      const left = this.makeBattleAi(this.battleLeftAiId);
+      const right = this.makeBattleAi(this.battleRightAiId);
+      this.battleLeftAi = left.ai;
+      this.battleLeftName = left.name;
+      this.battleRightAi = right.ai;
+      this.battleRightName = right.name;
+      this.battleOpponentKind = this.battleRightAiId;
     } else if (this.mode === "lab") {
       this.battleLeftAi = this.ai;
       this.battleLeftName = this.aiName;
@@ -1806,6 +1796,16 @@ class Ft5Trainer {
                 ? `Garbage Lab: ${this.aiName} clears garbage forever. +${settings.labGarbagePerBag} garbage/bag.`
                 : "Press R to start Garbage Lab.")
             : (this.matchStarted ? "Climb Zenith Tower. New climbers always start at 0.0m." : "Press R to start Human vs AI FT7.");
+  }
+
+  private makeBattleAi(id: string): { ai: AiLike; name: string } {
+    if (id === "loaded") return { ai: this.ai, name: this.aiName };
+    if (id === "random") {
+      const entry = randomBuiltinAi();
+      return { ai: entry.ai, name: entry.name };
+    }
+    const entry = createBuiltinAi(id);
+    return { ai: entry.ai, name: entry.name };
   }
 
   finishRound(winner: Winner): void {
@@ -2134,6 +2134,11 @@ class Ft5Trainer {
   }
 
   private findReadySpinFinisher(engine: TetrisEngine, legal: PlacementAction[]): SpinFinisher | null {
+    const tNow =
+      engine.active.kind === "T" ||
+      (engine.canHold && (engine.hold === "T" || (engine.hold === null && engine.queue[0] === "T")));
+    if (!tNow) return null;
+
     const state = engine.stateDict();
     const spinPotential = estimateSpinPotential(state);
     const target = spinPotential.bestTarget;
@@ -2142,11 +2147,6 @@ class Ft5Trainer {
     const kind = target.kind;
     const spinCapable = kind === "TSD_LEFT" || kind === "TSD_RIGHT" || kind === "TST" || kind === "STSD" || kind === "TSlot";
     if (!spinCapable) return null;
-
-    const tNow =
-      engine.active.kind === "T" ||
-      (engine.canHold && (engine.hold === "T" || (engine.hold === null && engine.queue[0] === "T")));
-    if (!tNow) return null;
 
     const expectedLines = this.expectedLinesForSpinKind(kind);
     if (expectedLines < 1) return null;
@@ -2206,7 +2206,7 @@ class Ft5Trainer {
     const targetProbe = start.clone();
     targetProbe.active = { kind: action.piece, x: targetX, y: 0, rot: targetRot };
     if (targetProbe.collides(targetProbe.active)) return null;
-    const targetY = targetProbe.hardDropDistance(targetProbe.active);
+    const targetY = targetProbe.active.y + targetProbe.hardDropDistance(targetProbe.active);
 
     const isTarget = (e: TetrisEngine) =>
       e.active.kind === action.piece &&
@@ -2218,7 +2218,7 @@ class Ft5Trainer {
       e.active.kind === action.piece &&
       e.active.x === targetX &&
       this.normalizeRot(e.active.rot) === targetRot &&
-      e.hardDropDistance(e.active) === targetY;
+      e.active.y + e.hardDropDistance(e.active) === targetY;
 
     const acceptFast = (ops: AiMoveOp[]) =>
       !preferSpinFinish || this.moveOpsEndWithRotation(ops);
@@ -2292,7 +2292,7 @@ class Ft5Trainer {
         seen.add(key);
 
         const path = [...item.path, op];
-        if (isTarget(next)) {
+        if (isTarget(next) || isTargetBeforeDrop(next)) {
           const fullPath = [...prefix, ...path];
 
           // Prefer a path whose final visible operation is rotation. For spin
@@ -3766,12 +3766,15 @@ function tick(ts: number): void {
 
 bindSettingsUi();
 applySettingsToDom();
+updateBattleAiControlUi(trainer.mode);
 window.addEventListener("keydown", (e) => trainer.handleKeyDown(e));
 window.addEventListener("keyup", (e) => trainer.handleKeyUp(e));
 window.addEventListener("blur", () => trainer.input.clearAllHeld());
 newMatchBtn.addEventListener("click", () => trainer.resetMatch());
 nextRoundBtn.addEventListener("click", () => trainer.nextRound());
 toggleModeBtn.addEventListener("click", () => trainer.toggleMode());
+battleLeftAiSelect.addEventListener("change", () => trainer.setBattleAiSelection("left", battleLeftAiSelect.value));
+battleRightAiSelect.addEventListener("change", () => trainer.setBattleAiSelection("right", battleRightAiSelect.value));
 downloadBtn.addEventListener("click", () => {
   if (trainer.mode === "zenith") {
     setStatus("Zenith mode does not record training logs.");
@@ -3803,6 +3806,7 @@ copyBtn.addEventListener("click", async () => {
   setStatus(isAiBattleScreen(trainer.mode) ? "Copied selfplay logs to clipboard." : "Copied logs to clipboard.");
 });
 clearBtn.addEventListener("click", () => {
+  if (!window.confirm("Clear locally saved match and selfplay log copies?")) return;
   trainer.logger.clearLocal();
   trainer.selfplayLogger.clearLocal();
   setStatus("Cleared local saved log copies. Current in-memory match remains.");

@@ -11,7 +11,7 @@ self.onmessage = async (ev: MessageEvent<Msg>) => {
   const started = performance.now();
   try {
     self.postMessage({ type: "started", message: "Worker benchmark started" });
-    const ais = await buildBrowserAis();
+    const ais = await buildBrowserAis(msg.config.aiIds);
     const results: BenchPayload["results"] = {};
     for (const entry of ais) {
       if (canceled) break;
