@@ -2038,7 +2038,11 @@ class Ft5Trainer {
 
     const special = this.specialMod();
 
-    if (isAllSpinEnabled(this.mode) && result.spin === "spin" && result.piece !== "T") {
+    const nonTMechanicalSpin =
+      result.piece !== "T" &&
+      result.spinClassification?.mechanical === "immobile";
+
+    if (isAllSpinEnabled(this.mode) && nonTMechanicalSpin) {
       const full = this.allSpinFullAttack(result.linesCleared);
       if (full > rawAttack) {
         rawAttack = full;
@@ -2364,7 +2368,9 @@ class Ft5Trainer {
   }
 
   private spinResultBonus(result: LockResult): number {
-    if (result.spin === "none") return 0;
+    const mechanicalSpin = result.spinClassification?.mechanical === "immobile";
+    if (result.spin === "none" && !mechanicalSpin) return 0;
+    if (result.spin === "none") return 2.5;
 
     const attackBonus = Math.max(0, result.attackSent) * 2.0;
     const lineBonus = result.linesCleared > 0 ? 4 + result.linesCleared * 2 : 1.5;
@@ -2756,13 +2762,16 @@ class Ft5Trainer {
       if (!execution.reachedTarget || !this.moveOpsEndWithRotation(execution.ops)) continue;
 
       const result = execution.result;
-      if (result.spin === "none" || result.linesCleared <= 0) continue;
+      const mechanicalAllSpin = isAllSpinEnabled(this.mode) && result.piece !== "T" && result.spinClassification?.mechanical === "immobile";
+      if ((result.spin === "none" && !mechanicalAllSpin) || result.linesCleared <= 0) continue;
 
       const base = scoreAfter ? scoreAfter(engine, action).score : 0;
+      const spinType = result.spin !== "none" ? result.spin : "spin";
+      const attackValue = result.attackSent > 0 ? result.attackSent : (mechanicalAllSpin ? this.allSpinFullAttack(result.linesCleared) : 0);
       const fireValue =
-        result.attackSent * 120 +
+        attackValue * 120 +
         result.linesCleared * 40 +
-        (result.spin === "tspin" ? 90 : result.spin === "tspin-mini" ? 35 : 50);
+        (spinType === "tspin" ? 90 : spinType === "tspin-mini" ? 35 : 50);
       const score = base - 20000 - fireValue + execution.ops.length * 0.08;
 
       if (score < bestScore) {
@@ -2772,9 +2781,10 @@ class Ft5Trainer {
           aiScore: score,
           aiInfo: {
             spinFire: true,
-            spinFireType: result.spin,
-            spinFireAttack: result.attackSent,
+            spinFireType: spinType,
+            spinFireAttack: attackValue,
             spinFireLines: result.linesCleared,
+            spinClassification: result.spinClassification,
             spinFireOps: execution.ops.join(","),
             srsVerified: true,
           },

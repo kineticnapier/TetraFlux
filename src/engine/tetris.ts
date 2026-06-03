@@ -7,12 +7,46 @@ export const PIECES = ["I", "J", "L", "O", "S", "T", "Z"] as const;
 export type PieceKind = typeof PIECES[number];
 export type Cell = PieceKind | "G" | "B" | null;
 export type SpinType = "none" | "tspin" | "tspin-mini" | "spin";
+export type RotationDirection = "none" | "cw" | "ccw" | "180";
+export type RotationSystemId = "guideline_srs";
+export type MechanicalSpinType = "none" | "immobile";
 
 export interface PieceState {
   kind: PieceKind;
   x: number;
   y: number;
   rot: number;
+}
+
+export interface LastRotationMetadata {
+  direction: RotationDirection;
+  fromRot: number;
+  toRot: number;
+  kickIndex: number;
+  kickOffset: [number, number];
+  rotationSystem: RotationSystemId;
+}
+
+export interface LockEvent {
+  piece: PieceKind;
+  x: number;
+  y: number;
+  rot: number;
+  usedHold: boolean;
+  boardBefore: string[];
+  linesCleared: number;
+  lastRotation: LastRotationMetadata | null;
+  lockedCells: Array<[number, number]>;
+  directPlacement: boolean;
+}
+
+export interface SpinClassification {
+  scoring: SpinType;
+  mechanical: MechanicalSpinType;
+  lastRotation: LastRotationMetadata | null;
+  frontCorners?: number;
+  backCorners?: number;
+  cornerCount?: number;
 }
 
 export interface PlacementAction {
@@ -41,6 +75,8 @@ export interface LockResult {
   combo: number;
   b2b: number;
   spin: SpinType;
+  spinClassification?: SpinClassification;
+  lockEvent?: LockEvent;
   topout: boolean;
   boardBefore?: string[];
   boardAfter?: string[];
@@ -363,7 +399,7 @@ export class TetrisEngine {
   lastResult: LockResult | null = null;
 
   private lastActionWasRotation = false;
-  private lastKickIndex = 0;
+  private lastRotationMetadata: LastRotationMetadata | null = null;
   private placementActionMode = false;
 
   // Garbage holes are intentionally "sticky" so incoming garbage looks closer
@@ -401,7 +437,9 @@ export class TetrisEngine {
     e.b2b = this.b2b;
     e.lastResult = this.lastResult ? { ...this.lastResult } : null;
     e.lastActionWasRotation = this.lastActionWasRotation;
-    e.lastKickIndex = this.lastKickIndex;
+    e.lastRotationMetadata = this.lastRotationMetadata
+      ? { ...this.lastRotationMetadata, kickOffset: [...this.lastRotationMetadata.kickOffset] as [number, number] }
+      : null;
     e.placementActionMode = this.placementActionMode;
     e.garbageHole = this.garbageHole;
     e.garbageHoleRunRemaining = this.garbageHoleRunRemaining;
@@ -468,9 +506,18 @@ export class TetrisEngine {
     if (!this.collides(p)) {
       this.active = p;
       this.lastActionWasRotation = false;
+      this.lastRotationMetadata = null;
       return true;
     }
     return false;
+  }
+
+  private rotationDirection(delta: number): RotationDirection {
+    const d = ((delta % 4) + 4) % 4;
+    if (d === 1) return "cw";
+    if (d === 2) return "180";
+    if (d === 3) return "ccw";
+    return "none";
   }
 
   private kickTable(kind: PieceKind, oldRot: number, newRot: number, delta: number): Array<[number, number]> {
@@ -495,7 +542,14 @@ export class TetrisEngine {
       if (!this.collides(p)) {
         this.active = p;
         this.lastActionWasRotation = true;
-        this.lastKickIndex = i;
+        this.lastRotationMetadata = {
+          direction: this.rotationDirection(delta),
+          fromRot: oldRot,
+          toRot: newRot,
+          kickIndex: i,
+          kickOffset: [kx, ky],
+          rotationSystem: "guideline_srs",
+        };
         return true;
       }
     }
@@ -540,7 +594,7 @@ export class TetrisEngine {
     this.canHold = false;
     this.holdUsedForCurrentPiece = true;
     this.lastActionWasRotation = false;
-    this.lastKickIndex = 0;
+    this.lastRotationMetadata = null;
 
     if (this.collides(this.active)) {
       this.dead = true;
@@ -581,42 +635,78 @@ export class TetrisEngine {
     return !this.collidesIgnoringLocked(p, lockedCells);
   }
 
-  private detectSpin(linesCleared: number, lockedPiece: PieceState, lockedCells: Set<string>): SpinType {
-    if (!this.lastActionWasRotation) return "none";
+  private tFrontCornerCount(lockedPiece: PieceState, lockedCells: Set<string>): { front: number; back: number; total: number } {
+    const cx = lockedPiece.x + 1;
+    const cy = lockedPiece.y + 1;
+    const corners = {
+      tl: this.isOccupiedOrWallIgnoringLocked(cx - 1, cy - 1, lockedCells),
+      tr: this.isOccupiedOrWallIgnoringLocked(cx + 1, cy - 1, lockedCells),
+      bl: this.isOccupiedOrWallIgnoringLocked(cx - 1, cy + 1, lockedCells),
+      br: this.isOccupiedOrWallIgnoringLocked(cx + 1, cy + 1, lockedCells),
+    };
+    const rot = ((lockedPiece.rot % 4) + 4) % 4;
+    const front =
+      rot === 0 ? Number(corners.tl) + Number(corners.tr) :
+      rot === 1 ? Number(corners.tr) + Number(corners.br) :
+      rot === 2 ? Number(corners.bl) + Number(corners.br) :
+      Number(corners.tl) + Number(corners.bl);
+    const total = Number(corners.tl) + Number(corners.tr) + Number(corners.bl) + Number(corners.br);
+    return { front, back: total - front, total };
+  }
 
-    // AI/applyAction places a final (x, rot) directly, without a key path.
-    // Awarding spin credit here makes impossible fake spins extremely common,
-    // because many final placements are immobile even though they were not
-    // actually rotated into the slot. Human-controlled rotations still use
-    // normal spin detection.
-    if (this.placementActionMode) return "none";
+  private kickIsMiniUpgrade(lastRotation: LastRotationMetadata | null): boolean {
+    if (!lastRotation || lastRotation.rotationSystem !== "guideline_srs") return false;
+    const [kx, ky] = lastRotation.kickOffset;
+    return lastRotation.kickIndex >= 4 && Math.abs(kx) === 1 && Math.abs(ky) === 2;
+  }
 
-    if (lockedPiece.kind === "T") {
-      const cx = lockedPiece.x + 1;
-      const cy = lockedPiece.y + 1;
-      const corners = [
-        this.isOccupiedOrWallIgnoringLocked(cx - 1, cy - 1, lockedCells),
-        this.isOccupiedOrWallIgnoringLocked(cx + 1, cy - 1, lockedCells),
-        this.isOccupiedOrWallIgnoringLocked(cx - 1, cy + 1, lockedCells),
-        this.isOccupiedOrWallIgnoringLocked(cx + 1, cy + 1, lockedCells)
-      ].filter(Boolean).length;
-
-      if (corners >= 3) {
-        if (linesCleared === 1 && this.lastKickIndex < 4) return "tspin-mini";
-        return "tspin";
-      }
-    }
-
-    // Approximate all-piece spin:
-    // after a rotation, if the final piece cannot move left, right, or down,
-    // mark it as a generic spin. This is not exact TETR.IO SRS+, but it makes
-    // I/J/L/O/S/Z spin clears visible, scorable, and learnable in this sandbox.
+  private mechanicalSpin(lockedPiece: PieceState, lockedCells: Set<string>, lastRotation: LastRotationMetadata | null, directPlacement: boolean): MechanicalSpinType {
+    if (!lastRotation || directPlacement || lockedPiece.kind === "O") return "none";
     const immobile =
       !this.moveWouldWorkIgnoringLocked(lockedPiece, 1, 0, lockedCells) &&
       !this.moveWouldWorkIgnoringLocked(lockedPiece, -1, 0, lockedCells) &&
       !this.moveWouldWorkIgnoringLocked(lockedPiece, 0, 1, lockedCells);
 
-    return immobile ? "spin" : "none";
+    return immobile ? "immobile" : "none";
+  }
+
+  private classifySpin(lockEvent: LockEvent, lockedPiece: PieceState, lockedCells: Set<string>): SpinClassification {
+    const mechanical = this.mechanicalSpin(lockedPiece, lockedCells, lockEvent.lastRotation, lockEvent.directPlacement);
+    if (!lockEvent.lastRotation || lockEvent.directPlacement) {
+      return { scoring: "none", mechanical, lastRotation: lockEvent.lastRotation };
+    }
+
+    if (lockedPiece.kind !== "T") {
+      return { scoring: "none", mechanical, lastRotation: lockEvent.lastRotation };
+    }
+
+    const corners = this.tFrontCornerCount(lockedPiece, lockedCells);
+    if (corners.total < 3) {
+      return {
+        scoring: "none",
+        mechanical,
+        lastRotation: lockEvent.lastRotation,
+        frontCorners: corners.front,
+        backCorners: corners.back,
+        cornerCount: corners.total,
+      };
+    }
+
+    let scoring: SpinType = "none";
+    if (corners.front === 2 && corners.back >= 1) {
+      scoring = "tspin";
+    } else if (corners.front === 1 && corners.back === 2) {
+      scoring = this.kickIsMiniUpgrade(lockEvent.lastRotation) ? "tspin" : "tspin-mini";
+    }
+
+    return {
+      scoring,
+      mechanical,
+      lastRotation: lockEvent.lastRotation,
+      frontCorners: corners.front,
+      backCorners: corners.back,
+      cornerCount: corners.total,
+    };
   }
 
   lockPiece(): LockResult {
@@ -657,7 +747,20 @@ export class TetrisEngine {
     }
 
     const lines = this.countFullLines();
-    const spin = this.detectSpin(lines, p, lockedCells);
+    const lockEvent: LockEvent = {
+      piece: p.kind,
+      x: p.x,
+      y: p.y,
+      rot: ((p.rot % 4) + 4) % 4,
+      usedHold: this.holdUsedForCurrentPiece,
+      boardBefore: before,
+      linesCleared: lines,
+      lastRotation: this.lastActionWasRotation && this.lastRotationMetadata ? { ...this.lastRotationMetadata, kickOffset: [...this.lastRotationMetadata.kickOffset] as [number, number] } : null,
+      lockedCells: [...lockedCells].map((key) => key.split(",").map(Number) as [number, number]),
+      directPlacement: this.placementActionMode,
+    };
+    const spinClassification = this.classifySpin(lockEvent, p, lockedCells);
+    const spin = spinClassification.scoring;
     this.clearLines();
     if (lines > 0) this.convertBrokenGarbageToNormal();
     this.lines += lines;
@@ -710,6 +813,8 @@ export class TetrisEngine {
       combo: comboBefore,
       b2b: b2bBefore,
       spin,
+      spinClassification,
+      lockEvent,
       topout: hiddenOccupied || this.dead,
       boardBefore: before,
       boardAfter: boardToStrings(this.board, true)
@@ -717,7 +822,7 @@ export class TetrisEngine {
 
     this.lastResult = result;
     this.lastActionWasRotation = false;
-    this.lastKickIndex = 0;
+    this.lastRotationMetadata = null;
     this.placementActionMode = false;
     return result;
   }
@@ -734,7 +839,7 @@ export class TetrisEngine {
     this.active = { kind: this.queue.shift()!, x: 3, y: 0, rot: 0 };
     this.queue.push(this.bag.next());
     this.lastActionWasRotation = false;
-    this.lastKickIndex = 0;
+    this.lastRotationMetadata = null;
     if (this.collides(this.active)) this.dead = true;
   }
 
@@ -856,7 +961,7 @@ export class TetrisEngine {
     // impossible fake spins and generate too much attack.
     this.placementActionMode = true;
     this.lastActionWasRotation = false;
-    this.lastKickIndex = 0;
+    this.lastRotationMetadata = null;
 
     return this.hardDrop();
   }

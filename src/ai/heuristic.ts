@@ -17,6 +17,7 @@ export class HeuristicAI {
   lineBonus = 4.0;
   attackBonus = 2.0;
   spinPotentialBonus = 0.75;
+  spinClassificationBonus = 0.9;
   topoutPenalty = 100000.0;
   holdPenalty = 0.05;
 
@@ -93,6 +94,14 @@ export class HeuristicAI {
     const terrainPenalty = newHolePenalty + maxHeightRisePenalty + bumpRisePenalty + centerTowerRisePenalty;
 
     const noAttackPressure = result.attackSent <= 0 ? Math.max(0, metrics.totalHeight - 72) : 0;
+    const mechanicalSpin = result.spinClassification?.mechanical === "immobile";
+    const scoringSpin =
+      result.spin === "tspin" ? 7.5 :
+      result.spin === "tspin-mini" ? 3.2 :
+      result.spin === "spin" ? 4.5 :
+      0;
+    const mechanicalSpinBonus = scoringSpin <= 0 && mechanicalSpin ? 0.75 : 0;
+    const spinClassificationBonusApplied = (scoringSpin + mechanicalSpinBonus) * this.spinClassificationBonus * (spinStrength > 0 ? spinStrength : 1);
 
     let spinPotentialScale = 1;
     if (metrics.holes >= 12 || metrics.maxHeight >= 18) spinPotentialScale = 0;
@@ -122,6 +131,7 @@ export class HeuristicAI {
     score += this.wellWeight * metrics.wells;
     score -= this.lineBonus * result.linesCleared;
     score -= this.attackBonus * result.attackSent;
+    score -= spinClassificationBonusApplied;
     score += this.spinTerrainPressureWeight * noAttackPressure;
     score += terrainPenalty;
     score -= this.spinPotentialBonus * spinPotentialApplied;
@@ -175,6 +185,8 @@ export class HeuristicAI {
         lines: result.linesCleared,
         attack: result.attackSent,
         spin: result.spin,
+        spinClassification: result.spinClassification,
+        spinClassificationBonus: Number(spinClassificationBonusApplied.toFixed(4)),
         spinPotential,
         spinPotentialRaw: spinPotential.bonus,
         spinPotentialApplied,
