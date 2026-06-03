@@ -632,10 +632,27 @@ export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiC
   if (!ranked.length) return { choice: null, reason: "route_not_found", routeAttempts };
 
   let best: AiChoice | null = null;
+  let bestSynthetic: AiChoice | null = null;
   let sawRouteFailure = false;
   for (const { action } of ranked) {
     const routeDiag: RouteDiagnostics = { searchedNodes: 0, rejectedByCollision: 0, rejectedByFinalOp: 0, targetUnreachable: 0, maxDepthHit: 0 };
     routeAttempts++;
+
+    // Diagnostic fallback: the target detector says this is a ready T-spin clear,
+    // but the key-route search often fails before the AI ever returns a finisher
+    // choice. Keep a synthetic choice so benchmark/main can prove whether the
+    // bottleneck is route execution or ready-slot creation. This is deliberately
+    // lower priority than a real routed choice.
+    const syntheticCandidate = makeSyntheticSpinFinisherChoice(
+      action,
+      routeAttempts,
+      expectedLines,
+      target.y + HIDDEN_ROWS,
+      action.rot,
+      routeDiag,
+    );
+    if (!bestSynthetic) bestSynthetic = syntheticCandidate;
+
     let route = findMoveRoute(engine, action, true, routeDiag, undefined, target.y + HIDDEN_ROWS);
     if (!route || !moveOpsEndWithRotation(route)) {
       route = findSimpleFinalRotationDropRoute(engine, action);
@@ -678,6 +695,7 @@ export function findReadySpinFinisherChoice(engine: TetrisEngine): { choice: AiC
     if (!best || route.length < ((best.aiInfo as any).route?.length ?? 999)) best = cand;
   }
   if (!best) {
+    if (bestSynthetic) return { choice: bestSynthetic, routeAttempts };
     return { choice: null, reason: sawRouteFailure ? "immediate_candidate_route_failed" : "route_not_found", routeAttempts };
   }
   return { choice: best, routeAttempts };
