@@ -1,9 +1,24 @@
 import { boardMetrics, TetrisEngine, type PlacementAction } from "../engine/tetris";
 import { estimateSpinPotential } from "./spinPotential";
+import { getGarbagePressureContext, scoreGarbagePressureResponse } from "./garbagePressure";
 
 export interface AiChoice extends PlacementAction {
   aiScore: number;
   aiInfo: Record<string, unknown>;
+}
+
+function zeroGarbagePressureInfo(mode = "normal", pendingGarbage = 0): Record<string, unknown> {
+  return {
+    mode,
+    pendingGarbage,
+    danger: 0,
+    penalty: 0,
+    cancelReward: 0,
+    clearReward: 0,
+    downstackReward: 0,
+    safetyPenalty: 0,
+    estimatedRemainingGarbage: pendingGarbage,
+  };
 }
 
 export class HeuristicAI {
@@ -30,6 +45,12 @@ export class HeuristicAI {
   wastedTPenalty = 5.2;
   slotDestroyedPenalty = 4.4;
   nearReadySpinSlotBonus = 2.2;
+
+  // This is intentionally enabled on the base heuristic so every built-in AI
+  // variant, WebPolicy fallback, and NoisyHybrid fallback reacts to incoming
+  // garbage without needing a LookaheadAI-specific option.
+  useGarbagePressure = true;
+  garbagePressureSensitivity = 1.0;
 
   private terrainDiagnostics(board: string[], heights: number[]): {
     coveredCells: number;
@@ -93,6 +114,21 @@ export class HeuristicAI {
     const centerTowerRisePenalty = Math.max(0, centerTowerDelta - 0.75) * this.centerTowerRisePenaltyWeight;
     const terrainPenalty = newHolePenalty + maxHeightRisePenalty + bumpRisePenalty + centerTowerRisePenalty;
 
+    const pressureContext = getGarbagePressureContext(engine);
+    const pressureScore = this.useGarbagePressure
+      ? scoreGarbagePressureResponse({
+        before: pressureContext,
+        result,
+        beforeMetrics,
+        afterMetrics: metrics,
+        holeDelta,
+        maxHeightDelta,
+        bumpinessDelta,
+      })
+      : null;
+    const pressureSensitivity = Math.max(0, Number(this.garbagePressureSensitivity) || 0);
+    const garbagePressurePenalty = pressureScore ? pressureScore.penalty * pressureSensitivity : 0;
+
     const noAttackPressure = result.attackSent <= 0 ? Math.max(0, metrics.totalHeight - 72) : 0;
     const mechanicalSpin = result.spinClassification?.mechanical === "immobile";
     const scoringSpin =
@@ -115,6 +151,8 @@ export class HeuristicAI {
         spinPotentialScale *= pressureScale;
       }
       if (holeDelta > 0) spinPotentialScale *= Math.max(0.15, 1 - holeDelta * 0.22);
+      if (pressureContext.mode === "downstack") spinPotentialScale *= 0.65;
+      else if (pressureContext.mode === "emergency") spinPotentialScale *= 0.25;
     }
     spinPotentialScale = Math.max(0, Math.min(1, spinPotentialScale));
     const spinPotentialApplied = spinPotential.bonus * spinPotentialScale;
@@ -134,6 +172,7 @@ export class HeuristicAI {
     score -= spinClassificationBonusApplied;
     score += this.spinTerrainPressureWeight * noAttackPressure;
     score += terrainPenalty;
+    score += garbagePressurePenalty;
     score -= this.spinPotentialBonus * spinPotentialApplied;
 
     let tPreserved = false;
@@ -177,6 +216,22 @@ export class HeuristicAI {
     if (action.hold) score += this.holdPenalty;
     if (e.dead || result.topout) score += this.topoutPenalty;
 
+    const garbagePressureInfo = pressureScore
+      ? {
+        mode: pressureContext.mode,
+        pendingGarbage: pressureContext.pendingGarbage,
+        danger: pressureContext.danger,
+        sensitivity: Number(pressureSensitivity.toFixed(3)),
+        penalty: Number(garbagePressurePenalty.toFixed(4)),
+        rawPenalty: Number(pressureScore.penalty.toFixed(4)),
+        cancelReward: Number(pressureScore.cancelReward.toFixed(4)),
+        clearReward: Number(pressureScore.clearReward.toFixed(4)),
+        downstackReward: Number(pressureScore.downstackReward.toFixed(4)),
+        safetyPenalty: Number(pressureScore.safetyPenalty.toFixed(4)),
+        estimatedRemainingGarbage: pressureScore.estimatedRemainingGarbage,
+      }
+      : zeroGarbagePressureInfo(pressureContext.mode, pressureContext.pendingGarbage);
+
     return {
       score,
       info: {
@@ -201,6 +256,9 @@ export class HeuristicAI {
         slotDestroyedPenalty: Number(slotDestroyedPenaltyApplied.toFixed(4)),
         nearReadySpinSlotBonus: Number(nearReadySpinSlotBonusApplied.toFixed(4)),
         terrainPenalty: Number(terrainPenalty.toFixed(4)),
+        garbagePressure: garbagePressureInfo,
+        garbagePressureMode: pressureContext.mode,
+        pendingGarbage: pressureContext.pendingGarbage,
         beforeMetrics: {
           ...beforeMetrics,
           centerTower: Number(beforeTerrain.centerTower.toFixed(3)),
