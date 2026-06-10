@@ -3,6 +3,7 @@ import { HeuristicAI, type AiChoice } from "./heuristic";
 import { estimateSpinPotential } from "./spinPotential";
 import { findReadySpinFinisherChoice, hasUsableTForFinisher } from "./spinFinisher";
 import { executeChoiceWithOptionalRoute, generateTwistChoices, hasRouteInfo } from "./twistMoveGenerator";
+import { adjustForGarbagePressure, getGarbagePressureContext, scoreGarbagePressureResponse, shouldSkipSpeculativeFinisher, type GarbagePressureContext } from "./garbagePressure";
 import type { WebValueModel } from "./webValue";
 
 export interface LookaheadOptions {
@@ -18,6 +19,8 @@ export interface LookaheadOptions {
   maxTwistCandidates?: number;
   twistTimeBudgetMs?: number;
   twistBias?: number;
+  useGarbagePressure?: boolean;
+  garbagePressureSensitivity?: number;
 }
 
 type Node = {
@@ -49,6 +52,8 @@ const DEFAULTS: Required<Omit<LookaheadOptions, "valueModel">> = {
   maxTwistCandidates: 10,
   twistTimeBudgetMs: 2.5,
   twistBias: 1,
+  useGarbagePressure: true,
+  garbagePressureSensitivity: 1,
 };
 
 function isRiskyBoard(engine: TetrisEngine): boolean {
@@ -80,8 +85,8 @@ function actionDedupeKey(action: AiChoice): string {
   return `${action.hold}:${action.piece}:${action.x}:${y}:${action.rot}:${route}`;
 }
 
-function buildCandidates(engine: TetrisEngine, o: Required<Omit<LookaheadOptions, "valueModel">>, deadlineMs: number): AiChoice[] {
-  const direct = engine.legalPlacements(o.includeHold).map((a) => asChoice(a, { source: "legal_direct" }));
+function buildCandidates(engine: TetrisEngine, o: Required<Omit<LookaheadOptions, "valueModel">>, deadlineMs: number, pressure?: GarbagePressureContext): AiChoice[] {
+  const direct = engine.legalPlacements(o.includeHold).map((a) => asChoice(a, { source: "legal_direct", garbagePressureMode: pressure?.mode, pendingGarbage: pressure?.pendingGarbage }));
   if (!o.includeTwists) return direct;
 
   const twistDeadline = Math.min(deadlineMs, performance.now() + Math.max(0.25, o.twistTimeBudgetMs));
@@ -130,7 +135,7 @@ function terrainDiagnostics(board: string[], heights: number[]): { coveredCells:
   return { coveredCells, centerTower, roughPenalty };
 }
 
-function evaluateChoice(engine: TetrisEngine, action: AiChoice, heuristic: HeuristicAI, spinBias: number, valueModel: WebValueModel | null | undefined): CandidateProbe | null {
+function evaluateChoice(engine: TetrisEngine, action: AiChoice, heuristic: HeuristicAI, spinBias: number, valueModel: WebValueModel | null | undefined, pressure?: GarbagePressureContext): CandidateProbe | null {
   const beforeState = engine.stateDict();
   const beforeMetrics = boardMetrics(beforeState.board);
   const beforeTerrain = terrainDiagnostics(beforeState.board, beforeMetrics.heights);
@@ -161,6 +166,16 @@ function evaluateChoice(engine: TetrisEngine, action: AiChoice, heuristic: Heuri
   const bumpRisePenalty = Math.max(0, bumpinessDelta - 2) * heuristic.bumpRisePenaltyWeight;
   const centerTowerRisePenalty = Math.max(0, centerTowerDelta - 0.75) * heuristic.centerTowerRisePenaltyWeight;
   const terrainPenalty = newHolePenalty + maxHeightRisePenalty + bumpRisePenalty + centerTowerRisePenalty;
+  const garbagePressure = pressure ?? getGarbagePressureContext(engine);
+  const garbagePressureScore = scoreGarbagePressureResponse({
+    before: garbagePressure,
+    result,
+    beforeMetrics,
+    afterMetrics: metrics,
+    holeDelta,
+    maxHeightDelta,
+    bumpinessDelta,
+  });
 
   const noAttackPressure = result.attackSent <= 0 ? Math.max(0, metrics.totalHeight - 72) : 0;
   const mechanicalSpin = result.spinClassification?.mechanical === "immobile";
@@ -238,6 +253,7 @@ function evaluateChoice(engine: TetrisEngine, action: AiChoice, heuristic: Heuri
   score -= spinClassificationBonusApplied;
   score += heuristic.spinTerrainPressureWeight * noAttackPressure;
   score += terrainPenalty;
+  score += garbagePressureScore.penalty;
   score -= heuristic.spinPotentialBonus * spinPotentialApplied;
   score += wastedTPenaltyApplied + slotDestroyedPenaltyApplied;
   score -= tPreservationBonusApplied + nearReadySpinSlotBonusApplied;
@@ -271,6 +287,19 @@ function evaluateChoice(engine: TetrisEngine, action: AiChoice, heuristic: Heuri
     slotDestroyedPenalty: Number(slotDestroyedPenaltyApplied.toFixed(4)),
     nearReadySpinSlotBonus: Number(nearReadySpinSlotBonusApplied.toFixed(4)),
     terrainPenalty: Number(terrainPenalty.toFixed(4)),
+    garbagePressure: {
+      mode: garbagePressure.mode,
+      pendingGarbage: garbagePressure.pendingGarbage,
+      danger: garbagePressure.danger,
+      penalty: Number(garbagePressureScore.penalty.toFixed(4)),
+      cancelReward: Number(garbagePressureScore.cancelReward.toFixed(4)),
+      clearReward: Number(garbagePressureScore.clearReward.toFixed(4)),
+      downstackReward: Number(garbagePressureScore.downstackReward.toFixed(4)),
+      safetyPenalty: Number(garbagePressureScore.safetyPenalty.toFixed(4)),
+      estimatedRemainingGarbage: garbagePressureScore.estimatedRemainingGarbage,
+    },
+    garbagePressureMode: garbagePressure.mode,
+    pendingGarbage: garbagePressure.pendingGarbage,
     routeBonus: Number(routeBonus.toFixed(4)),
     routeUsedInLookahead: execution.routeUsed || undefined,
     beforeMetrics: {
@@ -302,11 +331,13 @@ function evaluateChoice(engine: TetrisEngine, action: AiChoice, heuristic: Heuri
 export function chooseLookaheadPlacement(engine: TetrisEngine, heuristic: HeuristicAI, options: LookaheadOptions = {}): AiChoice | null {
   const o = { ...DEFAULTS, ...options };
   const startMs = performance.now();
-  const deadlineMs = startMs + o.timeBudgetMs;
-  const depth = clampDepth(engine, o.depth);
-  (engine as unknown as { spinBias?: number }).spinBias = o.spinBias;
+  const rootPressure = getGarbagePressureContext(engine);
+  const pressureOptions = o.useGarbagePressure ? adjustForGarbagePressure(o, rootPressure, o.garbagePressureSensitivity) : { ...o, pressureMultiplier: 0 };
+  const deadlineMs = startMs + pressureOptions.timeBudgetMs;
+  const depth = clampDepth(engine, pressureOptions.depth);
+  (engine as unknown as { spinBias?: number }).spinBias = pressureOptions.spinBias;
 
-  const rootLegal = buildCandidates(engine, o, deadlineMs);
+  const rootLegal = buildCandidates(engine, pressureOptions, deadlineMs, rootPressure);
   if (!rootLegal.length) return null;
 
   let expandedNodes = 0;
@@ -314,29 +345,31 @@ export function chooseLookaheadPlacement(engine: TetrisEngine, heuristic: Heuris
   let routeCandidatesSeen = 0;
   const rootNodes: Node[] = [];
 
-  for (const action of rootLegal.slice(0, o.maxNodesPerDepth)) {
+  for (const action of rootLegal.slice(0, pressureOptions.maxNodesPerDepth)) {
     if (performance.now() > deadlineMs) break;
     if (action.aiInfo?.twistRoute) twistCandidatesSeen++;
     if (hasRouteInfo(action)) routeCandidatesSeen++;
 
-    const probe = evaluateChoice(engine, action, heuristic, o.spinBias, o.valueModel);
+    const probe = evaluateChoice(engine, action, heuristic, pressureOptions.spinBias, o.valueModel, rootPressure);
     if (!probe) continue;
     expandedNodes++;
     const spinBonus = (probe.lock.spin !== "none" ? 12 : 0) + probe.lock.attackSent * 4 + probe.lock.linesCleared * 2;
-    rootNodes.push({ engine: probe.engineAfter, firstAction: probe.action, seq: [probe.action], score: probe.score - spinBonus * o.spinBias, leafInfo: probe.info });
+    rootNodes.push({ engine: probe.engineAfter, firstAction: probe.action, seq: [probe.action], score: probe.score - spinBonus * pressureOptions.spinBias, leafInfo: probe.info });
   }
 
   if (!rootNodes.length) return null;
   rootNodes.sort((a, b) => a.score - b.score);
-  let beam = rootNodes.slice(0, o.beamWidth);
+  let beam = rootNodes.slice(0, pressureOptions.beamWidth);
 
   for (let ply = 1; ply < depth; ply++) {
-    if (performance.now() - startMs > o.timeBudgetMs) break;
+    if (performance.now() - startMs > pressureOptions.timeBudgetMs) break;
     const next: Node[] = [];
 
     for (const node of beam) {
-      if (performance.now() - startMs > o.timeBudgetMs) break;
-      const legal = buildCandidates(node.engine, { ...o, maxTwistCandidates: Math.max(2, Math.floor(o.maxTwistCandidates / 2)) }, deadlineMs);
+      if (performance.now() - startMs > pressureOptions.timeBudgetMs) break;
+      const nodePressure = getGarbagePressureContext(node.engine);
+      const nodeOptions = pressureOptions.useGarbagePressure ? adjustForGarbagePressure({ ...pressureOptions, maxTwistCandidates: Math.max(2, Math.floor(pressureOptions.maxTwistCandidates / 2)) }, nodePressure, pressureOptions.garbagePressureSensitivity) : { ...pressureOptions, maxTwistCandidates: Math.max(2, Math.floor(pressureOptions.maxTwistCandidates / 2)), pressureMultiplier: 0 };
+      const legal = buildCandidates(node.engine, nodeOptions, deadlineMs, nodePressure);
       if (!legal.length) {
         next.push(node);
         continue;
@@ -344,23 +377,23 @@ export function chooseLookaheadPlacement(engine: TetrisEngine, heuristic: Heuris
 
       const ranked: CandidateProbe[] = [];
       for (const action of legal) {
-        if (performance.now() - startMs > o.timeBudgetMs) break;
-        const probe = evaluateChoice(node.engine, action, heuristic, o.spinBias, o.valueModel);
+        if (performance.now() - startMs > pressureOptions.timeBudgetMs) break;
+        const probe = evaluateChoice(node.engine, action, heuristic, nodeOptions.spinBias, o.valueModel, nodePressure);
         if (probe) ranked.push(probe);
       }
       ranked.sort((a, b) => a.score - b.score);
 
-      for (const cand of ranked.slice(0, o.maxCandidatesPerNode)) {
-        if (next.length >= o.maxNodesPerDepth) break;
+      for (const cand of ranked.slice(0, nodeOptions.maxCandidatesPerNode)) {
+        if (next.length >= nodeOptions.maxNodesPerDepth) break;
         expandedNodes++;
 
         const state = cand.engineAfter.stateDict();
         const m = boardMetrics(state.board);
         const spinPotential = estimateSpinPotential(state);
         const terrainPenalty = m.holes * 0.9 + Math.max(0, m.maxHeight - 13) * 2 + m.bumpiness * 0.12 + Math.max(0, Math.max(m.heights[4] ?? 0, m.heights[5] ?? 0) - ((m.heights[0] + m.heights[9]) / 2)) * 0.8;
-        const spinPotentialReward = terrainPenalty < 18 ? spinPotential.bonus * 0.6 * o.spinBias : spinPotential.bonus * 0.18 * o.spinBias;
-        const finisherReward = (cand.lock.spin !== "none" && cand.lock.linesCleared > 0) ? (24 + cand.lock.attackSent * 6) * o.spinBias : 0;
-        const routeReward = cand.routeUsed ? (cand.lock.spin !== "none" ? 18 : 2) * (o.twistBias ?? 1) : 0;
+        const spinPotentialReward = terrainPenalty < 18 ? spinPotential.bonus * 0.6 * nodeOptions.spinBias : spinPotential.bonus * 0.18 * nodeOptions.spinBias;
+        const finisherReward = (cand.lock.spin !== "none" && cand.lock.linesCleared > 0) ? (24 + cand.lock.attackSent * 6) * nodeOptions.spinBias : 0;
+        const routeReward = cand.routeUsed ? (cand.lock.spin !== "none" ? 18 : 2) * (nodeOptions.twistBias ?? 1) : 0;
         const topoutPenalty = (cand.engineAfter.dead || cand.lock.topout) ? 50000 : 0;
 
         const seqScore = node.score + cand.score - (cand.lock.attackSent * 2.8 + cand.lock.linesCleared * 1.6) - spinPotentialReward - finisherReward - routeReward + terrainPenalty + topoutPenalty;
@@ -370,7 +403,7 @@ export function chooseLookaheadPlacement(engine: TetrisEngine, heuristic: Heuris
 
     if (!next.length) break;
     next.sort((a, b) => a.score - b.score);
-    beam = next.slice(0, o.beamWidth);
+    beam = next.slice(0, pressureOptions.beamWidth);
   }
 
   beam.sort((a, b) => a.score - b.score);
@@ -384,7 +417,11 @@ export function chooseLookaheadPlacement(engine: TetrisEngine, heuristic: Heuris
       ...best.firstAction.aiInfo,
       source: best.firstAction.aiInfo?.source ?? "lookahead_beam",
       lookaheadDepth: depth,
-      beamWidth: o.beamWidth,
+      beamWidth: pressureOptions.beamWidth,
+      garbagePressureMode: rootPressure.mode,
+      pendingGarbage: rootPressure.pendingGarbage,
+      garbagePressureDanger: rootPressure.danger,
+      pressureAdjusted: pressureOptions.pressureMultiplier > 0 || undefined,
       expandedNodes,
       twistCandidatesSeen,
       routeCandidatesSeen,
@@ -408,10 +445,14 @@ export class LookaheadAI extends HeuristicAI {
     this.lastSpinFinisherReason = null;
     this.lastSpinFinisherRouteAttempts = 0;
     const spinBias = this.lookaheadOptions.spinBias ?? DEFAULTS.spinBias;
+    const pressure = getGarbagePressureContext(engine);
     const risky = isRiskyBoard(engine);
-    const effectiveSpinBias = risky ? 1 : spinBias;
+    const usePressure = this.lookaheadOptions.useGarbagePressure ?? DEFAULTS.useGarbagePressure;
+    const pressureSensitivity = this.lookaheadOptions.garbagePressureSensitivity ?? DEFAULTS.garbagePressureSensitivity;
+    const pressureAdjusted = usePressure ? adjustForGarbagePressure({ ...DEFAULTS, ...this.lookaheadOptions, valueModel: undefined, spinBias }, pressure, pressureSensitivity) : { ...DEFAULTS, ...this.lookaheadOptions, valueModel: undefined, spinBias, pressureMultiplier: 0 };
+    const effectiveSpinBias = risky ? 1 : pressureAdjusted.spinBias;
     (engine as unknown as { spinBias?: number }).spinBias = effectiveSpinBias;
-    if (effectiveSpinBias > 1) {
+    if (effectiveSpinBias > 1 && !shouldSkipSpeculativeFinisher(pressure)) {
       const state = engine.stateDict();
       const m = boardMetrics(state.board);
       const cleanEnoughForForcedSpin = m.holes < 2 && m.maxHeight < 9 && m.bumpiness < 13 && m.totalHeight < 36 && !state.board.slice(0, 6).some((row) => /[^.]/.test(row));
@@ -426,20 +467,25 @@ export class LookaheadAI extends HeuristicAI {
             spinFinisherRouteAttempts: finisher.routeAttempts,
             chooseMs: Number((performance.now() - start).toFixed(3)),
             spinDecisionType: cleanEnoughForForcedSpin ? "speculative_setup_and_finisher" : "immediate_finisher_override",
+            garbagePressureMode: pressure.mode,
+            pendingGarbage: pressure.pendingGarbage,
+            pressureAdjusted: pressureAdjusted.pressureMultiplier > 0 || undefined,
           };
           return finisher.choice;
         }
         this.lastSpinFinisherRouteAttempts = finisher.routeAttempts;
         this.lastSpinFinisherReason = finisher.reason && finisher.reason !== "no_t_available" ? finisher.reason : null;
       }
+    } else if (shouldSkipSpeculativeFinisher(pressure)) {
+      this.lastSpinFinisherReason = `garbage_pressure_${pressure.mode}`;
     }
-    const choice = chooseLookaheadPlacement(engine, this, { ...this.lookaheadOptions, spinBias: effectiveSpinBias });
+    const choice = chooseLookaheadPlacement(engine, this, { ...this.lookaheadOptions, spinBias: effectiveSpinBias, useGarbagePressure: usePressure, garbagePressureSensitivity: pressureSensitivity });
     if (choice) {
-      if (this.lastSpinFinisherReason || risky) choice.aiInfo = { ...choice.aiInfo, spinFinisherSearch: !!this.lastSpinFinisherReason || undefined, spinFinisherRouteAttempts: this.lastSpinFinisherRouteAttempts || undefined, spinFinisherRejected: this.lastSpinFinisherReason, topoutSafetyOverride: risky || undefined };
+      if (this.lastSpinFinisherReason || risky) choice.aiInfo = { ...choice.aiInfo, spinFinisherSearch: !!this.lastSpinFinisherReason || undefined, spinFinisherRouteAttempts: this.lastSpinFinisherRouteAttempts || undefined, spinFinisherRejected: this.lastSpinFinisherReason, topoutSafetyOverride: risky || undefined, garbagePressureMode: pressure.mode, pendingGarbage: pressure.pendingGarbage, pressureAdjusted: pressureAdjusted.pressureMultiplier > 0 || undefined };
       return choice;
     }
     const fallback = super.choose(engine);
-    if (fallback) fallback.aiInfo = { ...fallback.aiInfo, source: "lookahead_fallback", chooseMs: Number((performance.now() - start).toFixed(3)), budgetMs, spinFinisherSearch: !!this.lastSpinFinisherReason || undefined, spinFinisherRouteAttempts: this.lastSpinFinisherRouteAttempts || undefined, spinFinisherRejected: this.lastSpinFinisherReason ?? undefined };
+    if (fallback) fallback.aiInfo = { ...fallback.aiInfo, source: "lookahead_fallback", chooseMs: Number((performance.now() - start).toFixed(3)), budgetMs, spinFinisherSearch: !!this.lastSpinFinisherReason || undefined, spinFinisherRouteAttempts: this.lastSpinFinisherRouteAttempts || undefined, spinFinisherRejected: this.lastSpinFinisherReason ?? undefined, garbagePressureMode: pressure.mode, pendingGarbage: pressure.pendingGarbage, pressureAdjusted: pressureAdjusted.pressureMultiplier > 0 || undefined };
     return fallback;
   }
 }

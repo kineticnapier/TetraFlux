@@ -88,6 +88,8 @@ export function makeSpinAI(): AiLike {
     maxTwistCandidates: 10,
     twistTimeBudgetMs: 2.2,
     twistBias: 1.1,
+    useGarbagePressure: true,
+    garbagePressureSensitivity: 1.35,
   });
   Object.assign(ai, {
     holeWeight: 10.4,
