@@ -77,24 +77,32 @@ function seedNow(): number {
 
 export function makeSpinAI(): AiLike {
   const ai = new LookaheadAI({
-    depth: 1,
-    beamWidth: 24,
+    depth: 2,
+    beamWidth: 34,
     includeHold: true,
-    spinBias: 1.2,
-    maxCandidatesPerNode: 16,
-    maxNodesPerDepth: 120,
-    timeBudgetMs: 2.8,
+    spinBias: 1.25,
+    maxCandidatesPerNode: 18,
+    maxNodesPerDepth: 150,
+    timeBudgetMs: 7.5,
+    includeTwists: true,
+    maxTwistCandidates: 10,
+    twistTimeBudgetMs: 2.2,
+    twistBias: 1.1,
   });
   Object.assign(ai, {
-    holeWeight: 10.1,
+    holeWeight: 10.4,
     heightWeight: 0.88,
     maxHeightWeight: 2.35,
-    bumpWeight: 0.55,
+    bumpWeight: 0.56,
     wellWeight: 0.04,
     lineBonus: 3.7,
-    attackBonus: 4.7,
-    spinPotentialBonus: 2.95,
+    attackBonus: 4.8,
+    spinPotentialBonus: 2.8,
+    spinClassificationBonus: 1.15,
     holdPenalty: 0.01,
+    wastedTPenalty: 5.8,
+    slotDestroyedPenalty: 4.8,
+    nearReadySpinSlotBonus: 2.4,
   });
   return ai;
 }

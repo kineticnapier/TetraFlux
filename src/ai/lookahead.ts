@@ -1,7 +1,8 @@
-import { boardMetrics, TetrisEngine, type PlacementAction } from "../engine/tetris";
+import { boardMetrics, TetrisEngine, type LockResult, type PlacementAction } from "../engine/tetris";
 import { HeuristicAI, type AiChoice } from "./heuristic";
 import { estimateSpinPotential } from "./spinPotential";
 import { findReadySpinFinisherChoice, hasUsableTForFinisher } from "./spinFinisher";
+import { executeChoiceWithOptionalRoute, generateTwistChoices, hasRouteInfo } from "./twistMoveGenerator";
 import type { WebValueModel } from "./webValue";
 
 export interface LookaheadOptions {
@@ -13,14 +14,27 @@ export interface LookaheadOptions {
   maxCandidatesPerNode?: number;
   maxNodesPerDepth?: number;
   timeBudgetMs?: number;
+  includeTwists?: boolean;
+  maxTwistCandidates?: number;
+  twistTimeBudgetMs?: number;
+  twistBias?: number;
 }
 
 type Node = {
   engine: TetrisEngine;
-  firstAction: PlacementAction;
-  seq: PlacementAction[];
+  firstAction: AiChoice;
+  seq: AiChoice[];
   score: number;
   leafInfo: Record<string, unknown>;
+};
+
+type CandidateProbe = {
+  action: AiChoice;
+  score: number;
+  info: Record<string, unknown>;
+  lock: LockResult;
+  engineAfter: TetrisEngine;
+  routeUsed: boolean;
 };
 
 const DEFAULTS: Required<Omit<LookaheadOptions, "valueModel">> = {
@@ -31,8 +45,11 @@ const DEFAULTS: Required<Omit<LookaheadOptions, "valueModel">> = {
   maxCandidatesPerNode: 36,
   maxNodesPerDepth: 300,
   timeBudgetMs: 9,
+  includeTwists: false,
+  maxTwistCandidates: 10,
+  twistTimeBudgetMs: 2.5,
+  twistBias: 1,
 };
-
 
 function isRiskyBoard(engine: TetrisEngine): boolean {
   const state = engine.stateDict();
@@ -46,26 +63,267 @@ function clampDepth(engine: TetrisEngine, depth: number): number {
   return Math.max(1, Math.min(depth, q + 2));
 }
 
+function asChoice(action: PlacementAction, info: Record<string, unknown> = {}): AiChoice {
+  const existing = action as AiChoice;
+  return {
+    ...action,
+    aiScore: Number.isFinite(existing.aiScore) ? existing.aiScore : 0,
+    aiInfo: { ...(existing.aiInfo ?? {}), ...info },
+  };
+}
+
+function actionDedupeKey(action: AiChoice): string {
+  const info = action.aiInfo ?? {};
+  const target = info.target as { x?: number; y?: number; rot?: number } | undefined;
+  const y = typeof target?.y === "number" ? target.y : "drop";
+  const route = Array.isArray(info.route) ? `r:${(info.route as unknown[]).slice(-5).join(",")}` : "direct";
+  return `${action.hold}:${action.piece}:${action.x}:${y}:${action.rot}:${route}`;
+}
+
+function buildCandidates(engine: TetrisEngine, o: Required<Omit<LookaheadOptions, "valueModel">>, deadlineMs: number): AiChoice[] {
+  const direct = engine.legalPlacements(o.includeHold).map((a) => asChoice(a, { source: "legal_direct" }));
+  if (!o.includeTwists) return direct;
+
+  const twistDeadline = Math.min(deadlineMs, performance.now() + Math.max(0.25, o.twistTimeBudgetMs));
+  const twists = generateTwistChoices(engine, {
+    includeHold: o.includeHold,
+    maxChoices: o.maxTwistCandidates,
+    maxStates: 1400,
+    maxPathLength: 34,
+    deadlineMs: twistDeadline,
+    includeNonClearingMechanical: false,
+  });
+
+  const out: AiChoice[] = [];
+  const seen = new Set<string>();
+
+  // Put twist choices first. Later sorting still decides, but if budgets are cut
+  // short the rare routed candidates should not be starved by ordinary placements.
+  for (const action of [...twists, ...direct]) {
+    const key = actionDedupeKey(action);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(action);
+  }
+  return out;
+}
+
+function terrainDiagnostics(board: string[], heights: number[]): { coveredCells: number; centerTower: number; roughPenalty: number } {
+  let coveredCells = 0;
+  for (let x = 0; x < 10; x++) {
+    let cover = 0;
+    for (let y = 0; y < board.length; y++) {
+      if ((board[y]?.[x] ?? ".") !== ".") cover++;
+      else if (cover > 0) coveredCells += cover;
+    }
+  }
+
+  const centerMax = Math.max(heights[4] ?? 0, heights[5] ?? 0);
+  const sideAvg = ((heights[0] ?? 0) + (heights[1] ?? 0) + (heights[8] ?? 0) + (heights[9] ?? 0)) / 4;
+  const centerTower = Math.max(0, centerMax - sideAvg);
+  const roughPenalty = heights.reduce((sum, h, i) => {
+    const left = i > 0 ? heights[i - 1] : h;
+    const right = i < heights.length - 1 ? heights[i + 1] : h;
+    return sum + Math.max(0, h - Math.max(left ?? h, right ?? h) - 2);
+  }, 0);
+
+  return { coveredCells, centerTower, roughPenalty };
+}
+
+function evaluateChoice(engine: TetrisEngine, action: AiChoice, heuristic: HeuristicAI, spinBias: number, valueModel: WebValueModel | null | undefined): CandidateProbe | null {
+  const beforeState = engine.stateDict();
+  const beforeMetrics = boardMetrics(beforeState.board);
+  const beforeTerrain = terrainDiagnostics(beforeState.board, beforeMetrics.heights);
+  const beforeSpin = estimateSpinPotential(beforeState);
+
+  const clone = engine.clone();
+  const execution = executeChoiceWithOptionalRoute(clone, action);
+  const result = execution.result;
+  if (!result.ok) return null;
+
+  const state = clone.stateDict();
+  const metrics = boardMetrics(state.board);
+  const terrain = terrainDiagnostics(state.board, metrics.heights);
+  const spinPotential = estimateSpinPotential(state);
+
+  const spinBiasSafe = Number.isFinite(spinBias) ? Math.max(1, spinBias) : 1;
+  const spinStrength = spinBiasSafe > 1 ? Math.min(2.8, spinBiasSafe) : 0;
+  const actionInfo = action.aiInfo ?? {};
+  const twistBiasRaw = actionInfo.twistRoute ? 1 : 0;
+
+  const holeDelta = metrics.holes - beforeMetrics.holes;
+  const maxHeightDelta = metrics.maxHeight - beforeMetrics.maxHeight;
+  const bumpinessDelta = metrics.bumpiness - beforeMetrics.bumpiness;
+  const centerTowerDelta = terrain.centerTower - beforeTerrain.centerTower;
+
+  const newHolePenalty = Math.max(0, holeDelta) * heuristic.newHolePenaltyWeight;
+  const maxHeightRisePenalty = Math.max(0, maxHeightDelta - 1) * heuristic.maxHeightRisePenaltyWeight;
+  const bumpRisePenalty = Math.max(0, bumpinessDelta - 2) * heuristic.bumpRisePenaltyWeight;
+  const centerTowerRisePenalty = Math.max(0, centerTowerDelta - 0.75) * heuristic.centerTowerRisePenaltyWeight;
+  const terrainPenalty = newHolePenalty + maxHeightRisePenalty + bumpRisePenalty + centerTowerRisePenalty;
+
+  const noAttackPressure = result.attackSent <= 0 ? Math.max(0, metrics.totalHeight - 72) : 0;
+  const mechanicalSpin = result.spinClassification?.mechanical === "immobile";
+  const scoringSpin =
+    result.spin === "tspin" ? 7.5 :
+    result.spin === "tspin-mini" ? 3.2 :
+    result.spin === "spin" ? 4.5 :
+    0;
+  const mechanicalSpinBonus = scoringSpin <= 0 && mechanicalSpin ? 1.15 : 0;
+  const spinClassificationBonusApplied = (scoringSpin + mechanicalSpinBonus) * heuristic.spinClassificationBonus * (spinStrength > 0 ? spinStrength : 1);
+
+  let spinPotentialScale = 1;
+  if (metrics.holes >= 12 || metrics.maxHeight >= 18) spinPotentialScale = 0;
+  else {
+    if (metrics.holes >= 8) spinPotentialScale *= 0.2;
+    if (metrics.maxHeight >= 16) spinPotentialScale *= 0.35;
+    if (metrics.bumpiness >= 24) spinPotentialScale *= 0.55;
+    if (metrics.bumpiness >= 30) spinPotentialScale *= 0.4;
+    if (noAttackPressure > 0) spinPotentialScale *= Math.max(0.2, 1 - noAttackPressure / 32);
+    if (holeDelta > 0) spinPotentialScale *= Math.max(0.15, 1 - holeDelta * 0.22);
+  }
+  spinPotentialScale = Math.max(0, Math.min(1, spinPotentialScale));
+  const spinPotentialApplied = spinPotential.bonus * spinPotentialScale;
+
+  const queue = Array.isArray(beforeState.queue) ? beforeState.queue : [];
+  const tQueueIndex = queue.findIndex((p) => p === "T");
+  const hasNearReadySlot = !!beforeSpin.bestTarget && beforeSpin.bestTarget.score >= 6.8 && beforeSpin.bestTarget.lineDeficit <= 4;
+  const activeT = beforeState.active?.kind === "T";
+  const holdT = beforeState.hold === "T";
+  const queueTSoon = tQueueIndex >= 0 && tQueueIndex <= 3;
+  const tAvailabilityReason = activeT ? "active" : holdT ? "hold" : queueTSoon ? `queue_${tQueueIndex}` : "unavailable";
+
+  let tPreserved = false;
+  let tPreservationBonusApplied = 0;
+  let wastedTPenaltyApplied = 0;
+  let slotDestroyedPenaltyApplied = 0;
+  let nearReadySpinSlotBonusApplied = 0;
+
+  if (spinStrength > 0) {
+    const spinPotentialDrop = Math.max(0, beforeSpin.bonus - spinPotential.bonus);
+    const usedTForOrdinary = action.piece === "T" && (result.spin === "none" || result.linesCleared <= 0);
+    const usedHoldTOrdinary = usedTForOrdinary && action.hold && holdT;
+
+    if (usedTForOrdinary && hasNearReadySlot && (activeT || holdT || queueTSoon)) {
+      wastedTPenaltyApplied += heuristic.wastedTPenalty * spinStrength * (activeT || holdT ? 1.25 : 0.9);
+    }
+    if (usedHoldTOrdinary && metrics.maxHeight < 16) wastedTPenaltyApplied += heuristic.wastedTPenalty * 0.75 * spinStrength;
+    if (hasNearReadySlot && spinPotentialDrop > 0.45) slotDestroyedPenaltyApplied += heuristic.slotDestroyedPenalty * spinStrength * Math.min(2.2, spinPotentialDrop / 0.8);
+    if (!usedTForOrdinary && hasNearReadySlot && (queueTSoon || holdT || activeT)) nearReadySpinSlotBonusApplied += heuristic.nearReadySpinSlotBonus * spinStrength;
+    if (action.hold && activeT && beforeState.hold !== "T" && hasNearReadySlot) {
+      tPreserved = true;
+      tPreservationBonusApplied += heuristic.tPreservationBonus * spinStrength * 1.15;
+    } else if (!usedTForOrdinary && (holdT || queueTSoon) && hasNearReadySlot && (action.piece !== "T" || action.hold)) {
+      tPreserved = true;
+      tPreservationBonusApplied += heuristic.tPreservationBonus * spinStrength * 0.7;
+    }
+  }
+
+  const routeBonus = hasRouteInfo(action)
+    ? ((result.spin !== "none" ? 18 : mechanicalSpin ? 4.5 : 1.2) * Math.max(1, spinBiasSafe) + result.attackSent * 2.4 + result.linesCleared * 1.6)
+    : 0;
+
+  let score = 0;
+  score += heuristic.holeWeight * metrics.holes;
+  score += heuristic.coveredHoleWeight * terrain.coveredCells;
+  score += heuristic.heightWeight * metrics.totalHeight;
+  score += heuristic.maxHeightWeight * Math.max(0, metrics.maxHeight - 9) ** 1.25;
+  score += heuristic.maxHeightWeight * 2.2 * Math.max(0, metrics.maxHeight - 13) ** 1.5;
+  score += heuristic.centerTowerWeight * terrain.centerTower ** 1.35;
+  score += heuristic.bumpWeight * metrics.bumpiness;
+  score += heuristic.bumpWeight * 1.55 * terrain.roughPenalty;
+  score += heuristic.wellWeight * metrics.wells;
+  score -= heuristic.lineBonus * result.linesCleared;
+  score -= heuristic.attackBonus * result.attackSent;
+  score -= spinClassificationBonusApplied;
+  score += heuristic.spinTerrainPressureWeight * noAttackPressure;
+  score += terrainPenalty;
+  score -= heuristic.spinPotentialBonus * spinPotentialApplied;
+  score += wastedTPenaltyApplied + slotDestroyedPenaltyApplied;
+  score -= tPreservationBonusApplied + nearReadySpinSlotBonusApplied;
+  score -= routeBonus;
+  if (action.hold) score += heuristic.holdPenalty;
+  if (clone.dead || result.topout) score += heuristic.topoutPenalty;
+
+  const value = valueModel ? valueModel.evaluate(beforeState, action) * 0.2 : 0;
+  score -= value;
+
+  const aiInfo: Record<string, unknown> = {
+    ...(action.aiInfo ?? {}),
+    metrics,
+    terrain,
+    lines: result.linesCleared,
+    attack: result.attackSent,
+    spin: result.spin,
+    spinClassification: result.spinClassification,
+    spinClassificationBonus: Number(spinClassificationBonusApplied.toFixed(4)),
+    spinPotential,
+    spinPotentialRaw: spinPotential.bonus,
+    spinPotentialApplied,
+    spinPotentialScale: Number(spinPotentialScale.toFixed(4)),
+    tAvailabilityReason,
+    hasNearReadySlot,
+    nearReadySlotScore: Number((beforeSpin.bestTarget?.score ?? 0).toFixed(4)),
+    nearReadySlotLineDeficit: beforeSpin.bestTarget?.lineDeficit ?? null,
+    tPreserved,
+    tPreservationBonus: Number(tPreservationBonusApplied.toFixed(4)),
+    wastedTPenalty: Number(wastedTPenaltyApplied.toFixed(4)),
+    slotDestroyedPenalty: Number(slotDestroyedPenaltyApplied.toFixed(4)),
+    nearReadySpinSlotBonus: Number(nearReadySpinSlotBonusApplied.toFixed(4)),
+    terrainPenalty: Number(terrainPenalty.toFixed(4)),
+    routeBonus: Number(routeBonus.toFixed(4)),
+    routeUsedInLookahead: execution.routeUsed || undefined,
+    beforeMetrics: {
+      ...beforeMetrics,
+      centerTower: Number(beforeTerrain.centerTower.toFixed(3)),
+      coveredCells: beforeTerrain.coveredCells,
+      roughPenalty: Number(beforeTerrain.roughPenalty.toFixed(3)),
+    },
+    afterMetrics: {
+      ...metrics,
+      centerTower: Number(terrain.centerTower.toFixed(3)),
+      coveredCells: terrain.coveredCells,
+      roughPenalty: Number(terrain.roughPenalty.toFixed(3)),
+    },
+    deltas: {
+      holes: holeDelta,
+      maxHeight: maxHeightDelta,
+      bumpiness: Number(bumpinessDelta.toFixed(3)),
+      centerTower: Number(centerTowerDelta.toFixed(3)),
+    },
+    topout: clone.dead || result.topout,
+    value,
+    twistBias: twistBiasRaw || undefined,
+  };
+
+  return { action: { ...action, aiScore: score, aiInfo }, score, info: aiInfo, lock: result, engineAfter: clone, routeUsed: execution.routeUsed };
+}
+
 export function chooseLookaheadPlacement(engine: TetrisEngine, heuristic: HeuristicAI, options: LookaheadOptions = {}): AiChoice | null {
   const o = { ...DEFAULTS, ...options };
   const startMs = performance.now();
+  const deadlineMs = startMs + o.timeBudgetMs;
   const depth = clampDepth(engine, o.depth);
-  const rootLegal = engine.legalPlacements(o.includeHold);
   (engine as unknown as { spinBias?: number }).spinBias = o.spinBias;
+
+  const rootLegal = buildCandidates(engine, o, deadlineMs);
   if (!rootLegal.length) return null;
 
   let expandedNodes = 0;
+  let twistCandidatesSeen = 0;
+  let routeCandidatesSeen = 0;
   const rootNodes: Node[] = [];
 
   for (const action of rootLegal.slice(0, o.maxNodesPerDepth)) {
-    const after = heuristic.scoreAfter(engine, action);
-    const clone = engine.clone();
-    (clone as unknown as { spinBias?: number }).spinBias = o.spinBias;
-    const lock = clone.applyAction(action);
-    if (!lock.ok) continue;
+    if (performance.now() > deadlineMs) break;
+    if (action.aiInfo?.twistRoute) twistCandidatesSeen++;
+    if (hasRouteInfo(action)) routeCandidatesSeen++;
+
+    const probe = evaluateChoice(engine, action, heuristic, o.spinBias, o.valueModel);
+    if (!probe) continue;
     expandedNodes++;
-    const spinBonus = (lock.spin !== "none" ? 12 : 0) + lock.attackSent * 4 + lock.linesCleared * 2;
-    rootNodes.push({ engine: clone, firstAction: action, seq: [action], score: after.score - spinBonus * o.spinBias, leafInfo: after.info });
+    const spinBonus = (probe.lock.spin !== "none" ? 12 : 0) + probe.lock.attackSent * 4 + probe.lock.linesCleared * 2;
+    rootNodes.push({ engine: probe.engineAfter, firstAction: probe.action, seq: [probe.action], score: probe.score - spinBonus * o.spinBias, leafInfo: probe.info });
   }
 
   if (!rootNodes.length) return null;
@@ -78,35 +336,35 @@ export function chooseLookaheadPlacement(engine: TetrisEngine, heuristic: Heuris
 
     for (const node of beam) {
       if (performance.now() - startMs > o.timeBudgetMs) break;
-      const legal = node.engine.legalPlacements(o.includeHold);
+      const legal = buildCandidates(node.engine, { ...o, maxTwistCandidates: Math.max(2, Math.floor(o.maxTwistCandidates / 2)) }, deadlineMs);
       if (!legal.length) {
         next.push(node);
         continue;
       }
 
-      const ranked = legal.map((action) => ({ action, probe: heuristic.scoreAfter(node.engine, action) }))
-        .sort((a, b) => a.probe.score - b.probe.score)
-        .slice(0, o.maxCandidatesPerNode);
+      const ranked: CandidateProbe[] = [];
+      for (const action of legal) {
+        if (performance.now() - startMs > o.timeBudgetMs) break;
+        const probe = evaluateChoice(node.engine, action, heuristic, o.spinBias, o.valueModel);
+        if (probe) ranked.push(probe);
+      }
+      ranked.sort((a, b) => a.score - b.score);
 
-      for (const cand of ranked) {
+      for (const cand of ranked.slice(0, o.maxCandidatesPerNode)) {
         if (next.length >= o.maxNodesPerDepth) break;
-        const clone = node.engine.clone();
-        (clone as unknown as { spinBias?: number }).spinBias = o.spinBias;
-        const lock = clone.applyAction(cand.action);
-        if (!lock.ok) continue;
         expandedNodes++;
 
-        const state = clone.stateDict();
+        const state = cand.engineAfter.stateDict();
         const m = boardMetrics(state.board);
         const spinPotential = estimateSpinPotential(state);
         const terrainPenalty = m.holes * 0.9 + Math.max(0, m.maxHeight - 13) * 2 + m.bumpiness * 0.12 + Math.max(0, Math.max(m.heights[4] ?? 0, m.heights[5] ?? 0) - ((m.heights[0] + m.heights[9]) / 2)) * 0.8;
         const spinPotentialReward = terrainPenalty < 18 ? spinPotential.bonus * 0.6 * o.spinBias : spinPotential.bonus * 0.18 * o.spinBias;
-        const finisherReward = (lock.spin !== "none" && lock.linesCleared > 0) ? (24 + lock.attackSent * 6) * o.spinBias : 0;
-        const topoutPenalty = (clone.dead || lock.topout) ? 50000 : 0;
-        const value = o.valueModel ? o.valueModel.evaluate(node.engine.stateDict(), cand.action) * 0.2 : 0;
+        const finisherReward = (cand.lock.spin !== "none" && cand.lock.linesCleared > 0) ? (24 + cand.lock.attackSent * 6) * o.spinBias : 0;
+        const routeReward = cand.routeUsed ? (cand.lock.spin !== "none" ? 18 : 2) * (o.twistBias ?? 1) : 0;
+        const topoutPenalty = (cand.engineAfter.dead || cand.lock.topout) ? 50000 : 0;
 
-        const seqScore = node.score + cand.probe.score - (lock.attackSent * 2.8 + lock.linesCleared * 1.6) - spinPotentialReward - finisherReward + terrainPenalty + topoutPenalty - value;
-        next.push({ engine: clone, firstAction: node.firstAction, seq: [...node.seq, cand.action], score: seqScore, leafInfo: { ...cand.probe.info, terrainPenalty, spinPotential: spinPotential.bonus, finisherReward, value } });
+        const seqScore = node.score + cand.score - (cand.lock.attackSent * 2.8 + cand.lock.linesCleared * 1.6) - spinPotentialReward - finisherReward - routeReward + terrainPenalty + topoutPenalty;
+        next.push({ engine: cand.engineAfter, firstAction: node.firstAction, seq: [...node.seq, cand.action], score: seqScore, leafInfo: { ...cand.info, terrainPenalty, spinPotential: spinPotential.bonus, finisherReward, routeReward } });
       }
     }
 
@@ -123,10 +381,13 @@ export function chooseLookaheadPlacement(engine: TetrisEngine, heuristic: Heuris
     ...best.firstAction,
     aiScore: best.score,
     aiInfo: {
-      source: "lookahead_beam",
+      ...best.firstAction.aiInfo,
+      source: best.firstAction.aiInfo?.source ?? "lookahead_beam",
       lookaheadDepth: depth,
       beamWidth: o.beamWidth,
       expandedNodes,
+      twistCandidatesSeen,
+      routeCandidatesSeen,
       bestSequenceScore: Number(best.score.toFixed(3)),
       plannedSequence: best.seq.slice(0, 5).map((a) => a.key),
       leafMetrics: best.leafInfo,

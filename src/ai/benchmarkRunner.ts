@@ -63,7 +63,45 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
   const wastedTPlacement = Number(info.wastedTPenalty ?? 0) > 0;
   const slotDestroyed = Number(info.slotDestroyedPenalty ?? 0) > 0;
   const spinFinisherAttempt = isSpinFinisherChoice(action);
+  const explicitRoute = Array.isArray(info.route) ? (info.route as AiMoveOp[]) : null;
+
   if (!spinFinisherAttempt) {
+    if (explicitRoute && explicitRoute.length > 0) {
+      let attemptedRoute = false;
+      for (const op of explicitRoute) {
+        attemptedRoute = true;
+        if (!applyMove(engine, op)) {
+          const fallback = engine.applyAction(action);
+          const inferredWasted = action.piece === "T" && fallback.ok && fallback.spin === "none" && fallback.linesCleared === 0;
+          return {
+            result: fallback,
+            metrics: { routeUsed: false, routeFailed: true, spinFinisherAttempt: false, spinFinisherSuccess: false, usedDirectApply: true, tPreserveAction, wastedTPlacement: wastedTPlacement || inferredWasted, slotDestroyed, routeFailureReason: attemptedRoute ? "route_op_failed" : "empty_route" },
+          };
+        }
+      }
+
+      const result = engine.hardDrop();
+      const routedNoSpin = result.ok && result.spin === "none";
+      const routedNoClear = result.ok && result.linesCleared <= 0;
+      const inferredWasted = action.piece === "T" && result.ok && result.spin === "none" && result.linesCleared === 0;
+      return {
+        result,
+        metrics: {
+          routeUsed: true,
+          routeFailed: false,
+          spinFinisherAttempt: false,
+          spinFinisherSuccess: false,
+          usedDirectApply: false,
+          tPreserveAction,
+          wastedTPlacement: wastedTPlacement || inferredWasted,
+          slotDestroyed: slotDestroyed || routedNoSpin,
+          routedNoSpin,
+          routedNoClear,
+          routeFailureReason: routedNoSpin ? "route_no_spin" : (routedNoClear ? "route_no_clear" : undefined),
+        },
+      };
+    }
+
     const result = engine.applyAction(action);
     const inferredWasted = action.piece === "T" && result.ok && result.spin === "none" && result.linesCleared === 0;
     return {
@@ -72,7 +110,6 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
     };
   }
 
-  const explicitRoute = Array.isArray(info.route) ? (info.route as AiMoveOp[]) : null;
   const route = explicitRoute ?? findMoveRoute(engine, action, true);
   if (!route) {
     const direct = engine.applyAction(action);
