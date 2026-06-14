@@ -8,6 +8,10 @@ export interface BenchmarkPlacementMetrics {
   routeFailed: boolean;
   spinFinisherAttempt: boolean;
   spinFinisherSuccess: boolean;
+  physicalRouteAttempt?: boolean;
+  physicalRouteSuccess?: boolean;
+  syntheticFallbackAttempt?: boolean;
+  syntheticFallbackSuccess?: boolean;
   usedDirectApply: boolean;
   tPreserveAction: boolean;
   wastedTPlacement: boolean;
@@ -101,6 +105,8 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
             routeFailed: true,
             spinFinisherAttempt: false,
             spinFinisherSuccess: false,
+            physicalRouteAttempt: true,
+            physicalRouteSuccess: false,
             usedDirectApply: true,
             tPreserveAction,
             wastedTPlacement: wastedTPlacement || inferredWasted,
@@ -119,6 +125,8 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
         routeFailed: false,
         spinFinisherAttempt: false,
         spinFinisherSuccess: false,
+        physicalRouteAttempt: true,
+        physicalRouteSuccess: true,
         usedDirectApply: false,
         tPreserveAction,
         wastedTPlacement: wastedTPlacement || inferredWasted,
@@ -154,6 +162,8 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
       routeFailed: !synthetic,
       spinFinisherAttempt: true,
       spinFinisherSuccess: synthetic && result.spin === "tspin" && result.linesCleared > 0,
+      syntheticFallbackAttempt: info.syntheticSpinFinisher === true,
+      syntheticFallbackSuccess: synthetic && result.spin === "tspin" && result.linesCleared > 0,
       usedDirectApply: true,
       tPreserveAction,
       wastedTPlacement,
@@ -172,6 +182,8 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
         routeFailed: true,
         spinFinisherAttempt: attemptedRoute,
         spinFinisherSuccess: false,
+        physicalRouteAttempt: attemptedRoute,
+        physicalRouteSuccess: false,
         usedDirectApply: true,
         tPreserveAction,
         wastedTPlacement,
@@ -190,6 +202,8 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
     routeFailed: false,
     spinFinisherAttempt: true,
     spinFinisherSuccess,
+    physicalRouteAttempt: true,
+    physicalRouteSuccess: true,
     usedDirectApply: false,
     tPreserveAction,
     wastedTPlacement,

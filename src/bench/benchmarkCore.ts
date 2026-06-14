@@ -84,6 +84,7 @@ export type BenchPayload = {
   games: number;
   maxPieces: number;
   seedBase: number;
+  aiIds?: string[];
   benchmarkGarbage: BenchmarkGarbageEnvironmentConfig;
   aiCount: number;
   results: Record<string, Aggregate>;
