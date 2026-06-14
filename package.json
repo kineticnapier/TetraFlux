@@ -11,8 +11,7 @@
     "test:spin-finisher": "node tools/run_spin_finisher_fixture_test.mjs",
     "test:twist-generator": "node tools/run_twist_move_fixture_test.mjs",
     "test:garbage-pressure": "node tools/run_garbage_pressure_fixture_test.mjs",
-    "test:benchmark-garbage": "node tools/run_benchmark_garbage_fixture_test.mjs",
-    "test:b2b-pressure": "node tools/run_b2b_pressure_fixture_test.mjs"
+    "test:benchmark-garbage": "node tools/run_benchmark_garbage_fixture_test.mjs"
   },
   "dependencies": {},
   "devDependencies": {

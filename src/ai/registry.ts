@@ -51,7 +51,6 @@ class NoisyAi implements AiLike {
     if (this.rand() < this.noise * 0.22) {
       const h = new WeightedHeuristicAI("Noisy fallback", {
         garbagePressureSensitivity: 1.1,
-        b2bPressureSensitivity: 0.9,
         holeWeight: 7.4 + this.rand() * 1.6,
         heightWeight: 0.6 + this.rand() * 0.5,
         bumpWeight: 0.25 + this.rand() * 0.45,
@@ -92,8 +91,6 @@ export function makeSpinAI(): AiLike {
     twistBias: 1.1,
     useGarbagePressure: true,
     garbagePressureSensitivity: 1.15,
-    useB2BPressure: true,
-    b2bPressureSensitivity: 1.35,
   });
   Object.assign(ai, {
     holeWeight: 10.4,
@@ -109,19 +106,18 @@ export function makeSpinAI(): AiLike {
     wastedTPenalty: 5.8,
     slotDestroyedPenalty: 4.8,
     nearReadySpinSlotBonus: 2.4,
-    b2bPressureSensitivity: 1.35,
   });
   return ai;
 }
 
 export const BUILTIN_AI_FACTORIES: AiFactorySpec[] = [
-  { id: "heuristic", name: "HeuristicAI", make: () => new WeightedHeuristicAI("HeuristicAI", { garbagePressureSensitivity: 1.0, b2bPressureSensitivity: 1.0 }) },
-  { id: "lookahead", name: "LookaheadAI", make: () => new LookaheadAI({ depth: 3, beamWidth: 50, includeHold: true, spinBias: 1, maxCandidatesPerNode: 36, maxNodesPerDepth: 300, timeBudgetMs: 9, useGarbagePressure: true, garbagePressureSensitivity: 1.0, useB2BPressure: true, b2bPressureSensitivity: 1.05 }) },
+  { id: "heuristic", name: "HeuristicAI", make: () => new WeightedHeuristicAI("HeuristicAI", { garbagePressureSensitivity: 1.0 }) },
+  { id: "lookahead", name: "LookaheadAI", make: () => new LookaheadAI({ depth: 3, beamWidth: 50, includeHold: true, spinBias: 1, maxCandidatesPerNode: 36, maxNodesPerDepth: 300, timeBudgetMs: 9, useGarbagePressure: true, garbagePressureSensitivity: 1.0 }) },
   { id: "spin", name: "SpinAI", make: makeSpinAI },
-  { id: "aggressive", name: "Aggressive", make: () => new WeightedHeuristicAI("Aggressive", { garbagePressureSensitivity: 0.95, b2bPressureSensitivity: 1.25, attackBonus: 5.2, lineBonus: 4.8, holeWeight: 6.4, heightWeight: 0.62, bumpWeight: 0.28, wellWeight: 0.08, holdPenalty: 0.02 }) },
-  { id: "defensive", name: "Defensive", make: () => new WeightedHeuristicAI("Defensive", { garbagePressureSensitivity: 1.25, b2bPressureSensitivity: 0.85, holeWeight: 13.0, heightWeight: 1.35, bumpWeight: 0.72, wellWeight: 0.28, lineBonus: 2.8, attackBonus: 0.9, holdPenalty: 0.03 }) },
-  { id: "downstacker", name: "Downstacker", make: () => new WeightedHeuristicAI("Downstacker", { garbagePressureSensitivity: 1.35, b2bPressureSensitivity: 0.75, holeWeight: 11.2, heightWeight: 1.05, bumpWeight: 0.45, wellWeight: 0.04, lineBonus: 5.0, attackBonus: 1.15, holdPenalty: 0.01 }) },
-  { id: "combo", name: "Combo", make: () => new WeightedHeuristicAI("Combo", { garbagePressureSensitivity: 1.05, b2bPressureSensitivity: 0.95, holeWeight: 7.2, heightWeight: 0.72, bumpWeight: 0.18, wellWeight: -0.12, lineBonus: 5.8, attackBonus: 1.65, holdPenalty: 0.02 }) },
+  { id: "aggressive", name: "Aggressive", make: () => new WeightedHeuristicAI("Aggressive", { garbagePressureSensitivity: 0.95, attackBonus: 5.2, lineBonus: 4.8, holeWeight: 6.4, heightWeight: 0.62, bumpWeight: 0.28, wellWeight: 0.08, holdPenalty: 0.02 }) },
+  { id: "defensive", name: "Defensive", make: () => new WeightedHeuristicAI("Defensive", { garbagePressureSensitivity: 1.25, holeWeight: 13.0, heightWeight: 1.35, bumpWeight: 0.72, wellWeight: 0.28, lineBonus: 2.8, attackBonus: 0.9, holdPenalty: 0.03 }) },
+  { id: "downstacker", name: "Downstacker", make: () => new WeightedHeuristicAI("Downstacker", { garbagePressureSensitivity: 1.35, holeWeight: 11.2, heightWeight: 1.05, bumpWeight: 0.45, wellWeight: 0.04, lineBonus: 5.0, attackBonus: 1.15, holdPenalty: 0.01 }) },
+  { id: "combo", name: "Combo", make: () => new WeightedHeuristicAI("Combo", { garbagePressureSensitivity: 1.05, holeWeight: 7.2, heightWeight: 0.72, bumpWeight: 0.18, wellWeight: -0.12, lineBonus: 5.8, attackBonus: 1.65, holdPenalty: 0.02 }) },
   { id: "noisy_hybrid", name: "Noisy Hybrid", make: () => new NoisyAi(createBuiltinAi("lookahead").ai, 0.55) },
 ];
 

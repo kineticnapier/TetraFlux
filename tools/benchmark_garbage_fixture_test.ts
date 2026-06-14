@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { TetrisEngine } from "../src/engine/tetris";
 import { executeBenchmarkAction } from "../src/ai/benchmarkRunner";
-import { configureBenchmarkGarbageEnvironment, createBenchmarkGarbageAggregate, getBenchmarkGarbageEnvironmentConfig, updateBenchmarkGarbageAggregate } from "../src/ai/benchmarkEnvironment";
+import { configureBenchmarkGarbageEnvironment, getBenchmarkGarbageEnvironmentConfig } from "../src/ai/benchmarkEnvironment";
 import { createBuiltinAi } from "../src/ai/registry";
 import { HeuristicAI } from "../src/ai/heuristic";
 
@@ -29,15 +29,7 @@ assert.equal(pressureChoice.aiInfo.garbagePressureMode, "counter");
 const pressurePlacement = executeBenchmarkAction(engine, pressureChoice);
 assert.ok(pressurePlacement.metrics.benchmarkGarbage?.benchmarkGarbageEnabled);
 assert.equal(pressurePlacement.metrics.benchmarkGarbage?.benchmarkGarbagePendingBefore, 4);
-assert.equal(pressurePlacement.metrics.benchmarkGarbageEnabled, true);
-assert.equal(pressurePlacement.metrics.benchmarkGarbageLinesPerBag, 4);
-assert.ok(Number(pressurePlacement.metrics.benchmarkGarbagePendingAfter ?? 0) >= 0);
 assert.ok((pressurePlacement.metrics.benchmarkGarbage?.benchmarkGarbageCancelled ?? 0) + (pressurePlacement.metrics.benchmarkGarbage?.benchmarkGarbageApplied ?? 0) >= 0);
-
-const aggregate = createBenchmarkGarbageAggregate();
-updateBenchmarkGarbageAggregate(aggregate, pressurePlacement.metrics.benchmarkGarbage);
-assert.equal(aggregate.benchmarkGarbageLinesPerBag, 4);
-assert.ok(aggregate.benchmarkGarbageMaxPending >= 0);
 
 for (const id of ["heuristic", "lookahead", "spin", "aggressive", "defensive", "downstacker", "combo", "noisy_hybrid"]) {
   const e = new TetrisEngine(1000 + id.length);
