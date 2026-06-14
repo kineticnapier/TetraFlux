@@ -60,6 +60,8 @@ const DEFAULT_CONFIG: BenchmarkGarbageEnvironmentConfig = {
   applyAfterResponse: true,
 };
 
+const ENABLED_DEFAULT_LINES_PER_BAG = 4;
+
 let explicitConfig: Partial<BenchmarkGarbageEnvironmentConfig> | null = null;
 const lastQueuedAtPiece = new WeakMap<TetrisEngine, number>();
 const queuedBagsByEngine = new WeakMap<TetrisEngine, Set<number>>();
@@ -130,8 +132,10 @@ function readRuntimeConfig(): BenchmarkGarbageEnvironmentConfig {
   const storedMaxBags = storage?.getItem(STORAGE_KEYS.maxBags) ?? null;
   const storedApply = storage?.getItem(STORAGE_KEYS.applyAfterResponse) ?? null;
 
-  const linesPerBag = intAtLeast(explicitConfig?.linesPerBag ?? urlLines ?? envLines ?? storedLines ?? DEFAULT_CONFIG.linesPerBag, DEFAULT_CONFIG.linesPerBag, 0);
-  const enabled = boolValue(explicitConfig?.enabled ?? urlEnabled ?? envEnabled ?? storedEnabled ?? (linesPerBag > 0), linesPerBag > 0);
+  const rawLinesPerBag = intAtLeast(explicitConfig?.linesPerBag ?? urlLines ?? envLines ?? storedLines ?? DEFAULT_CONFIG.linesPerBag, DEFAULT_CONFIG.linesPerBag, 0);
+  const requestedEnabled = boolValue(explicitConfig?.enabled ?? urlEnabled ?? envEnabled ?? storedEnabled ?? (rawLinesPerBag > 0), rawLinesPerBag > 0);
+  const linesPerBag = requestedEnabled && rawLinesPerBag <= 0 ? ENABLED_DEFAULT_LINES_PER_BAG : rawLinesPerBag;
+  const enabled = requestedEnabled;
   const startBag = intAtLeast(explicitConfig?.startBag ?? urlStartBag ?? envStartBag ?? storedStartBag ?? DEFAULT_CONFIG.startBag, DEFAULT_CONFIG.startBag, 1);
   const maxBags = intAtLeast(explicitConfig?.maxBags ?? urlMaxBags ?? envMaxBags ?? storedMaxBags ?? DEFAULT_CONFIG.maxBags, DEFAULT_CONFIG.maxBags, 0);
   const applyAfterResponse = boolValue(explicitConfig?.applyAfterResponse ?? urlApply ?? envApply ?? storedApply ?? DEFAULT_CONFIG.applyAfterResponse, DEFAULT_CONFIG.applyAfterResponse);

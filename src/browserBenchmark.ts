@@ -30,7 +30,19 @@ function numberInputValue(input: HTMLInputElement, fallback: number, min: number
   return Math.max(min, Math.min(max, n));
 }
 
+function normalizeGarbageInputValues(panel: HTMLDivElement): void {
+  const enabled = panel.querySelector<HTMLInputElement>("#benchGarbageEnabled")!;
+  const lines = panel.querySelector<HTMLInputElement>("#benchGarbageLines")!;
+
+  // The most common UX path is checking "enabled" and immediately pressing Run.
+  // A 0-lines enabled state is effectively OFF, so promote it to a useful default.
+  if (enabled.checked && numberInputValue(lines, 0, 0, 20) <= 0) {
+    lines.value = "4";
+  }
+}
+
 function readGarbageInputs(panel: HTMLDivElement): BenchmarkGarbageEnvironmentConfig {
+  normalizeGarbageInputValues(panel);
   const enabled = panel.querySelector<HTMLInputElement>("#benchGarbageEnabled")!;
   const lines = panel.querySelector<HTMLInputElement>("#benchGarbageLines")!;
   const start = panel.querySelector<HTMLInputElement>("#benchGarbageStartBag")!;
@@ -86,18 +98,40 @@ function ensureBenchmarkUi(): void {
         <button id="benchDownload" disabled>Download JSON</button>
         <button id="benchRestore">Restore Last Result</button>
         <button id="benchForcedSpin">Forced Spin Probe</button>
+        <button id="benchHelpToggle">Help</button>
       </div>
       <fieldset class="bench-garbage-card" data-benchmark-garbage-host="true">
         <legend>Benchmark garbage</legend>
         <div class="bench-controls bench-garbage-controls">
           <label><input id="benchGarbageEnabled" type="checkbox" /> enabled</label>
-          <label>lines/bag <input id="benchGarbageLines" type="number" min="0" max="20" step="1" value="0" /></label>
+          <label>lines/bag <input id="benchGarbageLines" type="number" min="0" max="20" step="1" value="4" /></label>
           <label>from bag <input id="benchGarbageStartBag" type="number" min="1" max="99" step="1" value="1" /></label>
           <label>max bags <input id="benchGarbageMaxBags" type="number" min="0" max="999" step="1" value="0" /></label>
           <label><input id="benchGarbageApply" type="checkbox" /> apply remaining</label>
         </div>
         <div id="benchGarbageSummary" class="hint">Bench garbage: OFF</div>
       </fieldset>
+      <section id="benchHelpPanel" class="bench-help-card" hidden>
+        <h3>Benchmark help</h3>
+        <div class="bench-help-grid">
+          <div>
+            <strong>Benchmark garbage</strong>
+            <p><b>enabled</b> queues garbage every bag. <b>lines/bag</b> is the amount queued after each 7 locked pieces. <b>from bag</b> delays the first queue. <b>max bags</b> limits the number of queued bags; 0 means unlimited. <b>apply remaining</b> applies uncountered pending garbage after the AI's response.</p>
+          </div>
+          <div>
+            <strong>Useful garbage metrics</strong>
+            <p><b>LinesQueued</b> is total sent by the benchmark. <b>LinesCancelled</b> is canceled by attack. <b>LinesApplied</b> actually entered the board. <b>MaxPending</b> is the largest pending queue seen.</p>
+          </div>
+          <div>
+            <strong>Spin / route metrics</strong>
+            <p><b>routedPlacements</b> means the AI used a key-by-key route. <b>route_no_spin</b> means the route locked but did not count as a spin. <b>tspinCount / tsdCount</b> are actual scoring spin clears.</p>
+          </div>
+          <div>
+            <strong>B2B metrics</strong>
+            <p><b>b2bMax</b> is the highest B2B chain. <b>b2bBreaks</b> counts normal line clears that cut the chain. <b>b2bReleaseEstimateMax</b> is the current model's release-value estimate, not real attack yet.</p>
+          </div>
+        </div>
+      </section>
       <div id="benchAiChoices" class="bench-ai-choices"></div>
       <div>Runs in a Web Worker while this tab is open. Browsers may throttle it in background tabs.</div>
       <pre id="benchOutput">Ready. Browser benchmark runs in a worker and keeps UI responsive.</pre>
@@ -110,6 +144,8 @@ function ensureBenchmarkUi(): void {
   const downloadBtn = panel.querySelector<HTMLButtonElement>("#benchDownload")!;
   const output = panel.querySelector<HTMLPreElement>("#benchOutput")!;
   const forcedBtn = panel.querySelector<HTMLButtonElement>("#benchForcedSpin")!;
+  const helpToggleBtn = panel.querySelector<HTMLButtonElement>("#benchHelpToggle")!;
+  const helpPanel = panel.querySelector<HTMLElement>("#benchHelpPanel")!;
   const restoreBtn = panel.querySelector<HTMLButtonElement>("#benchRestore")!;
   const gamesInput = panel.querySelector<HTMLInputElement>("#benchGames")!;
   const maxPiecesInput = panel.querySelector<HTMLInputElement>("#benchMaxPieces")!;
@@ -136,7 +172,11 @@ function ensureBenchmarkUi(): void {
   };
 
   writeGarbageInputs(panel);
-  for (const input of garbageInputs) input.addEventListener("change", () => writeGarbageInputs(panel, readGarbageInputs(panel)));
+  for (const input of garbageInputs) {
+    const update = () => writeGarbageInputs(panel, readGarbageInputs(panel));
+    input.addEventListener("change", update);
+    input.addEventListener("input", update);
+  }
 
   void listBrowserAiOptions().then((options) => {
     aiChoices.textContent = "";
@@ -168,6 +208,10 @@ function ensureBenchmarkUi(): void {
   forcedBtn.addEventListener("click", () => {
     const probe = runForcedSpinFinisherProbe();
     output.textContent = `Forced spin probe: found=${probe.found} route=${probe.route} spin=${probe.spin} lines=${probe.linesCleared}${probe.reason ? ` reason=${probe.reason}` : ""}`;
+  });
+  helpToggleBtn.addEventListener("click", () => {
+    helpPanel.hidden = !helpPanel.hidden;
+    helpToggleBtn.textContent = helpPanel.hidden ? "Help" : "Hide help";
   });
   runBtn.addEventListener("click", () => {
     const games = Math.max(1, Math.min(500, Math.floor(Number(gamesInput.value) || 8)));
