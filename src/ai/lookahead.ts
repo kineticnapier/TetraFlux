@@ -4,6 +4,7 @@ import { estimateSpinPotential } from "./spinPotential";
 import { findReadySpinFinisherChoice, hasUsableTForFinisher } from "./spinFinisher";
 import { executeChoiceWithOptionalRoute, generateTwistChoices, hasRouteInfo } from "./twistMoveGenerator";
 import { adjustForGarbagePressure, getGarbagePressureContext, scoreGarbagePressureResponse, shouldSkipSpeculativeFinisher, type GarbagePressureContext } from "./garbagePressure";
+import { estimateB2BReleaseAttack, scoreB2BPressureResponse } from "./b2bPressure";
 import type { WebValueModel } from "./webValue";
 
 export interface LookaheadOptions {
@@ -21,6 +22,8 @@ export interface LookaheadOptions {
   twistBias?: number;
   useGarbagePressure?: boolean;
   garbagePressureSensitivity?: number;
+  useB2BPressure?: boolean;
+  b2bPressureSensitivity?: number;
 }
 
 type Node = {
@@ -54,6 +57,8 @@ const DEFAULTS: Required<Omit<LookaheadOptions, "valueModel">> = {
   twistBias: 1,
   useGarbagePressure: true,
   garbagePressureSensitivity: 1,
+  useB2BPressure: true,
+  b2bPressureSensitivity: 1,
 };
 
 function isRiskyBoard(engine: TetrisEngine): boolean {
@@ -138,6 +143,7 @@ function terrainDiagnostics(board: string[], heights: number[]): { coveredCells:
 function evaluateChoice(engine: TetrisEngine, action: AiChoice, heuristic: HeuristicAI, spinBias: number, valueModel: WebValueModel | null | undefined, pressure?: GarbagePressureContext): CandidateProbe | null {
   const beforeState = engine.stateDict();
   const beforeMetrics = boardMetrics(beforeState.board);
+  const beforeB2B = Math.max(0, Math.floor(Number(beforeState.b2b ?? 0)));
   const beforeTerrain = terrainDiagnostics(beforeState.board, beforeMetrics.heights);
   const beforeSpin = estimateSpinPotential(beforeState);
 
@@ -147,6 +153,7 @@ function evaluateChoice(engine: TetrisEngine, action: AiChoice, heuristic: Heuri
   if (!result.ok) return null;
 
   const state = clone.stateDict();
+  const afterB2B = Math.max(0, Math.floor(Number(state.b2b ?? 0)));
   const metrics = boardMetrics(state.board);
   const terrain = terrainDiagnostics(state.board, metrics.heights);
   const spinPotential = estimateSpinPotential(state);
@@ -176,6 +183,12 @@ function evaluateChoice(engine: TetrisEngine, action: AiChoice, heuristic: Heuri
     maxHeightDelta,
     bumpinessDelta,
   });
+  const useB2BPressure = (heuristic as unknown as { useB2BPressure?: boolean }).useB2BPressure ?? true;
+  const b2bSensitivityRaw = Number((heuristic as unknown as { b2bPressureSensitivity?: number }).b2bPressureSensitivity ?? 1);
+  const b2bSensitivity = Math.max(0, Number.isFinite(b2bSensitivityRaw) ? b2bSensitivityRaw : 1);
+  const b2bScore = useB2BPressure
+    ? scoreB2BPressureResponse({ beforeB2B, afterB2B, result, pressure: garbagePressure, maxHeightDelta, holeDelta })
+    : null;
 
   const noAttackPressure = result.attackSent <= 0 ? Math.max(0, metrics.totalHeight - 72) : 0;
   const mechanicalSpin = result.spinClassification?.mechanical === "immobile";
@@ -254,6 +267,7 @@ function evaluateChoice(engine: TetrisEngine, action: AiChoice, heuristic: Heuri
   score += heuristic.spinTerrainPressureWeight * noAttackPressure;
   score += terrainPenalty;
   score += garbagePressureScore.penalty;
+  score += (b2bScore?.penalty ?? 0) * b2bSensitivity;
   score -= heuristic.spinPotentialBonus * spinPotentialApplied;
   score += wastedTPenaltyApplied + slotDestroyedPenaltyApplied;
   score -= tPreservationBonusApplied + nearReadySpinSlotBonusApplied;
@@ -287,6 +301,27 @@ function evaluateChoice(engine: TetrisEngine, action: AiChoice, heuristic: Heuri
     slotDestroyedPenalty: Number(slotDestroyedPenaltyApplied.toFixed(4)),
     nearReadySpinSlotBonus: Number(nearReadySpinSlotBonusApplied.toFixed(4)),
     terrainPenalty: Number(terrainPenalty.toFixed(4)),
+    b2bPressure: b2bScore ? {
+      beforeB2B,
+      afterB2B,
+      sensitivity: Number(b2bSensitivity.toFixed(3)),
+      penalty: Number(((b2bScore?.penalty ?? 0) * b2bSensitivity).toFixed(4)),
+      rawPenalty: Number((b2bScore?.penalty ?? 0).toFixed(4)),
+      preserveReward: Number((b2bScore?.preserveReward ?? 0).toFixed(4)),
+      growReward: Number((b2bScore?.growReward ?? 0).toFixed(4)),
+      releaseReward: Number((b2bScore?.releaseReward ?? 0).toFixed(4)),
+      breakPenalty: Number((b2bScore?.breakPenalty ?? 0).toFixed(4)),
+      pressureScale: Number((b2bScore?.pressureScale ?? 1).toFixed(3)),
+      difficult: b2bScore.difficult,
+      brokeB2B: b2bScore.brokeB2B,
+      maintainedB2B: b2bScore.maintainedB2B,
+      releaseEstimate: estimateB2BReleaseAttack(afterB2B),
+    } : null,
+    b2bBefore: beforeB2B,
+    b2bAfter: afterB2B,
+    b2bBroke: b2bScore?.brokeB2B || undefined,
+    b2bMaintained: b2bScore?.maintainedB2B || undefined,
+    b2bReleaseEstimate: estimateB2BReleaseAttack(afterB2B),
     garbagePressure: {
       mode: garbagePressure.mode,
       pendingGarbage: garbagePressure.pendingGarbage,

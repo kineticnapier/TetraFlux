@@ -1,6 +1,7 @@
 import { boardMetrics, TetrisEngine, type PlacementAction } from "../engine/tetris";
 import { estimateSpinPotential } from "./spinPotential";
 import { getGarbagePressureContext, scoreGarbagePressureResponse } from "./garbagePressure";
+import { estimateB2BReleaseAttack, scoreB2BPressureResponse } from "./b2bPressure";
 
 export interface AiChoice extends PlacementAction {
   aiScore: number;
@@ -51,6 +52,8 @@ export class HeuristicAI {
   // garbage without needing a LookaheadAI-specific option.
   useGarbagePressure = true;
   garbagePressureSensitivity = 1.0;
+  useB2BPressure = true;
+  b2bPressureSensitivity = 1.0;
 
   private terrainDiagnostics(board: string[], heights: number[]): {
     coveredCells: number;
@@ -130,6 +133,18 @@ export class HeuristicAI {
       : null;
     const pressureSensitivity = Math.max(0, Number(this.garbagePressureSensitivity) || 0);
     const garbagePressurePenalty = pressureScore ? pressureScore.penalty * pressureSensitivity : 0;
+    const b2bScore = this.useB2BPressure
+      ? scoreB2BPressureResponse({
+        beforeB2B,
+        afterB2B,
+        result,
+        pressure: pressureContext,
+        maxHeightDelta,
+        holeDelta,
+      })
+      : null;
+    const b2bSensitivity = Math.max(0, Number(this.b2bPressureSensitivity) || 0);
+    const b2bPressurePenalty = b2bScore ? b2bScore.penalty * b2bSensitivity : 0;
 
     const noAttackPressure = result.attackSent <= 0 ? Math.max(0, metrics.totalHeight - 72) : 0;
     const mechanicalSpin = result.spinClassification?.mechanical === "immobile";
@@ -175,6 +190,7 @@ export class HeuristicAI {
     score += this.spinTerrainPressureWeight * noAttackPressure;
     score += terrainPenalty;
     score += garbagePressurePenalty;
+    score += b2bPressurePenalty;
     score -= this.spinPotentialBonus * spinPotentialApplied;
 
     let tPreserved = false;
@@ -218,6 +234,25 @@ export class HeuristicAI {
     if (action.hold) score += this.holdPenalty;
     if (e.dead || result.topout) score += this.topoutPenalty;
 
+    const b2bPressureInfo = b2bScore
+      ? {
+        beforeB2B,
+        afterB2B,
+        sensitivity: Number(b2bSensitivity.toFixed(3)),
+        penalty: Number(b2bPressurePenalty.toFixed(4)),
+        rawPenalty: Number(b2bScore.penalty.toFixed(4)),
+        preserveReward: Number(b2bScore.preserveReward.toFixed(4)),
+        growReward: Number(b2bScore.growReward.toFixed(4)),
+        releaseReward: Number(b2bScore.releaseReward.toFixed(4)),
+        breakPenalty: Number(b2bScore.breakPenalty.toFixed(4)),
+        pressureScale: Number(b2bScore.pressureScale.toFixed(3)),
+        difficult: b2bScore.difficult,
+        brokeB2B: b2bScore.brokeB2B,
+        maintainedB2B: b2bScore.maintainedB2B,
+        releaseEstimate: estimateB2BReleaseAttack(afterB2B),
+      }
+      : null;
+
     const garbagePressureInfo = pressureScore
       ? {
         mode: pressureContext.mode,
@@ -259,6 +294,13 @@ export class HeuristicAI {
         nearReadySpinSlotBonus: Number(nearReadySpinSlotBonusApplied.toFixed(4)),
         terrainPenalty: Number(terrainPenalty.toFixed(4)),
         garbagePressure: garbagePressureInfo,
+        b2bPressure: b2bPressureInfo,
+        b2bBefore: beforeB2B,
+        b2bAfter: afterB2B,
+        b2bPressurePenalty: Number(b2bPressurePenalty.toFixed(4)),
+        b2bReleaseEstimate: estimateB2BReleaseAttack(afterB2B),
+        b2bBroke: b2bScore?.brokeB2B || undefined,
+        b2bMaintained: b2bScore?.maintainedB2B || undefined,
         garbagePressureMode: pressureContext.mode,
         pendingGarbage: pressureContext.pendingGarbage,
         beforeMetrics: {

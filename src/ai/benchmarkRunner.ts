@@ -1,7 +1,7 @@
 import type { AiChoice } from "./heuristic";
 import { boardMetrics, TetrisEngine, type LockResult } from "../engine/tetris";
 import { applyMove, type AiMoveOp, findMoveRoute } from "./spinFinisher";
-import { applyBenchmarkGarbageEnvironmentAfterLock, type BenchmarkGarbageStepMetrics } from "./benchmarkEnvironment";
+import { applyBenchmarkGarbageEnvironmentAfterLock, flattenBenchmarkGarbageMetrics, type BenchmarkGarbageStepMetrics } from "./benchmarkEnvironment";
 
 export interface BenchmarkPlacementMetrics {
   routeUsed: boolean;
@@ -16,6 +16,23 @@ export interface BenchmarkPlacementMetrics {
   routedNoSpin?: boolean;
   routedNoClear?: boolean;
   benchmarkGarbage?: BenchmarkGarbageStepMetrics;
+  benchmarkGarbageEnabled?: boolean;
+  benchmarkGarbageMode?: string;
+  benchmarkGarbageLinesPerBag?: number;
+  benchmarkGarbageStartBag?: number;
+  benchmarkGarbageMaxBags?: number;
+  benchmarkGarbageApplyAfterResponse?: boolean;
+  benchmarkGarbagePiecesLocked?: number;
+  benchmarkGarbageBagProgress?: number;
+  benchmarkGarbagePendingBefore?: number;
+  benchmarkGarbagePendingAfter?: number;
+  benchmarkGarbageAttackSent?: number;
+  benchmarkGarbageCancelled?: number;
+  benchmarkGarbageApplied?: number;
+  benchmarkGarbageQueued?: number;
+  benchmarkGarbageBagIndex?: number;
+  benchmarkGarbageBagsQueued?: number;
+  benchmarkGarbageRemainingConfiguredBags?: number;
 }
 
 export interface BenchmarkPlacementResult {
@@ -30,7 +47,7 @@ function isSpinFinisherChoice(choice: AiChoice): boolean {
 
 function withBenchmarkGarbage(engine: TetrisEngine, result: LockResult, metrics: BenchmarkPlacementMetrics): BenchmarkPlacementResult {
   const benchmarkGarbage = applyBenchmarkGarbageEnvironmentAfterLock(engine, result);
-  return { result, metrics: { ...metrics, benchmarkGarbage } };
+  return { result, metrics: { ...metrics, benchmarkGarbage, ...flattenBenchmarkGarbageMetrics(benchmarkGarbage) } };
 }
 
 function syntheticResultSafe(result: LockResult): boolean {
