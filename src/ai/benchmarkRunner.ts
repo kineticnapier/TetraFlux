@@ -1,6 +1,7 @@
 import type { AiChoice } from "./heuristic";
 import { boardMetrics, TetrisEngine, type LockResult } from "../engine/tetris";
 import { applyMove, type AiMoveOp, findMoveRoute } from "./spinFinisher";
+import { applyBenchmarkGarbageEnvironmentAfterLock, flattenBenchmarkGarbageMetrics, type BenchmarkGarbageStepMetrics } from "./benchmarkEnvironment";
 
 export interface BenchmarkPlacementMetrics {
   routeUsed: boolean;
@@ -14,6 +15,24 @@ export interface BenchmarkPlacementMetrics {
   routeFailureReason?: string;
   routedNoSpin?: boolean;
   routedNoClear?: boolean;
+  benchmarkGarbage?: BenchmarkGarbageStepMetrics;
+  benchmarkGarbageEnabled?: boolean;
+  benchmarkGarbageMode?: string;
+  benchmarkGarbageLinesPerBag?: number;
+  benchmarkGarbageStartBag?: number;
+  benchmarkGarbageMaxBags?: number;
+  benchmarkGarbageApplyAfterResponse?: boolean;
+  benchmarkGarbagePiecesLocked?: number;
+  benchmarkGarbageBagProgress?: number;
+  benchmarkGarbagePendingBefore?: number;
+  benchmarkGarbagePendingAfter?: number;
+  benchmarkGarbageAttackSent?: number;
+  benchmarkGarbageCancelled?: number;
+  benchmarkGarbageApplied?: number;
+  benchmarkGarbageQueued?: number;
+  benchmarkGarbageBagIndex?: number;
+  benchmarkGarbageBagsQueued?: number;
+  benchmarkGarbageRemainingConfiguredBags?: number;
 }
 
 export interface BenchmarkPlacementResult {
@@ -26,6 +45,10 @@ function isSpinFinisherChoice(choice: AiChoice): boolean {
   return info.spinFinisher === true || info.source === "spin_finisher";
 }
 
+function withBenchmarkGarbage(engine: TetrisEngine, result: LockResult, metrics: BenchmarkPlacementMetrics): BenchmarkPlacementResult {
+  const benchmarkGarbage = applyBenchmarkGarbageEnvironmentAfterLock(engine, result);
+  return { result, metrics: { ...metrics, benchmarkGarbage, ...flattenBenchmarkGarbageMetrics(benchmarkGarbage) } };
+}
 
 function syntheticResultSafe(result: LockResult): boolean {
   if (!result.ok || result.topout || result.linesCleared <= 0) return false;
@@ -63,46 +86,98 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
   const wastedTPlacement = Number(info.wastedTPenalty ?? 0) > 0;
   const slotDestroyed = Number(info.slotDestroyedPenalty ?? 0) > 0;
   const spinFinisherAttempt = isSpinFinisherChoice(action);
+  const explicitRoute = Array.isArray(info.route) ? (info.route as AiMoveOp[]) : null;
+
   if (!spinFinisherAttempt) {
+    if (explicitRoute && explicitRoute.length > 0) {
+      let attemptedRoute = false;
+      for (const op of explicitRoute) {
+        attemptedRoute = true;
+        if (!applyMove(engine, op)) {
+          const fallback = engine.applyAction(action);
+          const inferredWasted = action.piece === "T" && fallback.ok && fallback.spin === "none" && fallback.linesCleared === 0;
+          return withBenchmarkGarbage(engine, fallback, {
+            routeUsed: false,
+            routeFailed: true,
+            spinFinisherAttempt: false,
+            spinFinisherSuccess: false,
+            usedDirectApply: true,
+            tPreserveAction,
+            wastedTPlacement: wastedTPlacement || inferredWasted,
+            slotDestroyed,
+            routeFailureReason: attemptedRoute ? "route_op_failed" : "empty_route",
+          });
+        }
+      }
+
+      const result = engine.hardDrop();
+      const routedNoSpin = result.ok && result.spin === "none";
+      const routedNoClear = result.ok && result.linesCleared <= 0;
+      const inferredWasted = action.piece === "T" && result.ok && result.spin === "none" && result.linesCleared === 0;
+      return withBenchmarkGarbage(engine, result, {
+        routeUsed: true,
+        routeFailed: false,
+        spinFinisherAttempt: false,
+        spinFinisherSuccess: false,
+        usedDirectApply: false,
+        tPreserveAction,
+        wastedTPlacement: wastedTPlacement || inferredWasted,
+        slotDestroyed: slotDestroyed || routedNoSpin,
+        routedNoSpin,
+        routedNoClear,
+        routeFailureReason: routedNoSpin ? "route_no_spin" : (routedNoClear ? "route_no_clear" : undefined),
+      });
+    }
+
     const result = engine.applyAction(action);
     const inferredWasted = action.piece === "T" && result.ok && result.spin === "none" && result.linesCleared === 0;
-    return {
-      result,
-      metrics: { routeUsed: false, routeFailed: false, spinFinisherAttempt: false, spinFinisherSuccess: false, usedDirectApply: true, tPreserveAction, wastedTPlacement: wastedTPlacement || inferredWasted, slotDestroyed },
-    };
+    return withBenchmarkGarbage(engine, result, {
+      routeUsed: false,
+      routeFailed: false,
+      spinFinisherAttempt: false,
+      spinFinisherSuccess: false,
+      usedDirectApply: true,
+      tPreserveAction,
+      wastedTPlacement: wastedTPlacement || inferredWasted,
+      slotDestroyed,
+    });
   }
 
-  const explicitRoute = Array.isArray(info.route) ? (info.route as AiMoveOp[]) : null;
   const route = explicitRoute ?? findMoveRoute(engine, action, true);
   if (!route) {
     const direct = engine.applyAction(action);
     const synthetic = info.syntheticSpinFinisher === true && syntheticResultSafe(direct);
     const result = synthetic ? withSyntheticSpinResult(direct, info) : direct;
     const routeFailureReason = String((info.routeDiagnostics as Record<string, unknown> | undefined)?.failureReason ?? (synthetic ? "synthetic_direct_finisher" : "no_path_to_target"));
-    return {
-      result,
-      metrics: {
-        routeUsed: false,
-        routeFailed: !synthetic,
-        spinFinisherAttempt: true,
-        spinFinisherSuccess: synthetic && result.spin === "tspin" && result.linesCleared > 0,
-        usedDirectApply: true,
-        tPreserveAction,
-        wastedTPlacement,
-        slotDestroyed,
-        routeFailureReason,
-      },
-    };
+    return withBenchmarkGarbage(engine, result, {
+      routeUsed: false,
+      routeFailed: !synthetic,
+      spinFinisherAttempt: true,
+      spinFinisherSuccess: synthetic && result.spin === "tspin" && result.linesCleared > 0,
+      usedDirectApply: true,
+      tPreserveAction,
+      wastedTPlacement,
+      slotDestroyed,
+      routeFailureReason,
+    });
   }
 
   let attemptedRoute = false;
   for (const op of route) {
     attemptedRoute = true;
     if (!applyMove(engine, op)) {
-      return {
-        result: engine.applyAction(action),
-        metrics: { routeUsed: false, routeFailed: true, spinFinisherAttempt: attemptedRoute, spinFinisherSuccess: false, usedDirectApply: true, tPreserveAction, wastedTPlacement, slotDestroyed, routeFailureReason: "final_rotation_not_possible" },
-      };
+      const fallback = engine.applyAction(action);
+      return withBenchmarkGarbage(engine, fallback, {
+        routeUsed: false,
+        routeFailed: true,
+        spinFinisherAttempt: attemptedRoute,
+        spinFinisherSuccess: false,
+        usedDirectApply: true,
+        tPreserveAction,
+        wastedTPlacement,
+        slotDestroyed,
+        routeFailureReason: "final_rotation_not_possible",
+      });
     }
   }
 
@@ -110,20 +185,17 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
   const routedNoSpin = result.ok && result.spin === "none";
   const routedNoClear = result.ok && result.linesCleared <= 0;
   const spinFinisherSuccess = result.ok && result.spin === "tspin" && result.linesCleared > 0 && result.lockEvent?.lastSuccessfulAction === "rotate";
-  return {
-    result,
-    metrics: {
-      routeUsed: true,
-      routeFailed: false,
-      spinFinisherAttempt: true,
-      spinFinisherSuccess,
-      usedDirectApply: false,
-      tPreserveAction,
-      wastedTPlacement,
-      slotDestroyed: slotDestroyed || routedNoSpin,
-      routedNoSpin,
-      routedNoClear,
-      routeFailureReason: routedNoSpin ? "route_no_spin" : (routedNoClear ? "route_no_clear" : undefined),
-    },
-  };
+  return withBenchmarkGarbage(engine, result, {
+    routeUsed: true,
+    routeFailed: false,
+    spinFinisherAttempt: true,
+    spinFinisherSuccess,
+    usedDirectApply: false,
+    tPreserveAction,
+    wastedTPlacement,
+    slotDestroyed: slotDestroyed || routedNoSpin,
+    routedNoSpin,
+    routedNoClear,
+    routeFailureReason: routedNoSpin ? "route_no_spin" : (routedNoClear ? "route_no_clear" : undefined),
+  });
 }

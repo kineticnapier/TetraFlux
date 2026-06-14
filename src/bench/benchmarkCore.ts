@@ -1,12 +1,23 @@
 import type { AiChoice } from "../ai/heuristic";
 import { buildBrowserAiEntries } from "../ai/registry";
 import { estimateSpinPotential } from "../ai/spinPotential";
+import { estimateB2BReleaseAttack, isDifficultB2BClear } from "../ai/b2bPressure";
 import { executeBenchmarkAction } from "../ai/benchmarkRunner";
+import {
+  benchmarkGarbageConfigSummary,
+  configureBenchmarkGarbageEnvironment,
+  createBenchmarkGarbageAggregate,
+  getBenchmarkGarbageEnvironmentConfig,
+  resetBenchmarkGarbageTracking,
+  updateBenchmarkGarbageAggregate,
+  type BenchmarkGarbageAggregateMetrics,
+  type BenchmarkGarbageEnvironmentConfig,
+} from "../ai/benchmarkEnvironment";
 import { boardMetrics, TetrisEngine } from "../engine/tetris";
 
 export type AiLike = { choose(engine: TetrisEngine): AiChoice | null };
 
-export type Aggregate = {
+export type Aggregate = BenchmarkGarbageAggregateMetrics & {
   games: number;
   rounds: number;
   piecesSurvived: number;
@@ -50,16 +61,30 @@ export type Aggregate = {
   tPreserveActions: number;
   wastedTPlacements: number;
   slotDestroyedCount: number;
+  b2bMax: number;
+  b2bEnd: number;
+  b2bDifficultClears: number;
+  b2bMaintains: number;
+  b2bBreaks: number;
+  b2bReleaseEstimateMax: number;
+  b2bReleaseEstimateEnd: number;
 };
 
 export type BenchEntry = { name: string; ai: AiLike };
-export type BenchConfig = { games: number; maxPieces: number; seedBase: number; aiIds?: string[] };
+export type BenchConfig = {
+  games: number;
+  maxPieces: number;
+  seedBase: number;
+  aiIds?: string[];
+  benchmarkGarbage?: Partial<BenchmarkGarbageEnvironmentConfig>;
+};
 export type BenchPayload = {
   generatedAt: string;
   environment: "browser";
   games: number;
   maxPieces: number;
   seedBase: number;
+  benchmarkGarbage: BenchmarkGarbageEnvironmentConfig;
   aiCount: number;
   results: Record<string, Aggregate>;
   worker?: boolean;
@@ -79,11 +104,18 @@ export function renderSummary(payload: BenchPayload): string {
       `topout ${String(a.topoutCount).padStart(3)}`,
       `atk ${String(a.attackSent).padStart(5)}`,
       `app ${fmt(a.attackPerPiece ?? 0, 3).padStart(5)}`,
+      `b2b ${String(a.b2bMax ?? 0).padStart(3)}`,
+      `b2bBr ${String(a.b2bBreaks ?? 0).padStart(3)}`,
       `holes ${fmt(a.avgHoles, 2).padStart(6)}`,
       `h ${fmt(a.avgMaxHeight, 2).padStart(5)}`,
       `bump ${fmt(a.avgBumpiness, 2).padStart(6)}`,
       `tsd ${String(a.tsdCount).padStart(3)}`,
       `tst ${String(a.tstCount).padStart(3)}`,
+      `gQ ${String(a.benchmarkGarbageLinesQueued ?? 0).padStart(4)}`,
+      `gC ${String(a.benchmarkGarbageLinesCancelled ?? 0).padStart(4)}`,
+      `gA ${String(a.benchmarkGarbageLinesApplied ?? 0).padStart(4)}`,
+      `gMax ${String(a.benchmarkGarbageMaxPending ?? 0).padStart(3)}`,
+      `gTurns ${String(a.benchmarkGarbagePressureTurns ?? 0).padStart(4)}`,
       `ms ${fmt(a.avgDecisionTimeMs, 2).padStart(6)}`,
       `routeChk ${String(a.candidateRouteChecks ?? a.spinFinisherAttempts ?? 0).padStart(3)}`,
       `exec ${String(a.executionAttempts ?? 0).padStart(3)}`,
@@ -98,6 +130,7 @@ export function renderSummary(payload: BenchPayload): string {
     "TetraFlux Browser AI Benchmark",
     `generated: ${payload.generatedAt}`,
     `games=${payload.games} maxPieces=${payload.maxPieces} seed=${payload.seedBase} ai=${payload.aiCount}`,
+    benchmarkGarbageConfigSummary(payload.benchmarkGarbage),
     "",
     rows,
   ].join("\n");
@@ -114,6 +147,9 @@ export async function runOneAi(
   isCanceled: () => boolean,
   onProgress?: (e: ProgressEvent) => void,
 ): Promise<Aggregate> {
+  const garbageConfig = configureBenchmarkGarbageEnvironment(cfg.benchmarkGarbage ?? getBenchmarkGarbageEnvironmentConfig());
+  const garbageAggregate = createBenchmarkGarbageAggregate(garbageConfig);
+
   let piecesSurvived = 0;
   let linesCleared = 0;
   let attackSent = 0;
@@ -151,6 +187,12 @@ export async function runOneAi(
   let tPreserveActions = 0;
   let wastedTPlacements = 0;
   let slotDestroyedCount = 0;
+  let b2bMax = 0;
+  let b2bEnd = 0;
+  let b2bDifficultClears = 0;
+  let b2bMaintains = 0;
+  let b2bBreaks = 0;
+  let b2bReleaseEstimateMax = 0;
   const spinFinisherRejectReasons: Record<string, number> = {};
   const routeFailureReasons: Record<string, number> = {};
 
@@ -158,6 +200,7 @@ export async function runOneAi(
     if (isCanceled()) throw new Error("Benchmark canceled");
     const seed = cfg.seedBase + g * 31;
     const engine = new TetrisEngine(seed, seed + 17);
+    resetBenchmarkGarbageTracking(engine);
 
     for (let p = 0; p < cfg.maxPieces && !engine.dead; p++) {
       if (isCanceled()) throw new Error("Benchmark canceled");
@@ -182,6 +225,17 @@ export async function runOneAi(
 
       const execution = executeBenchmarkAction(engine, action);
       const result = execution.result;
+      const afterStateForB2B = engine.stateDict();
+      const beforeB2B = Math.max(0, Math.floor(Number(beforeState.b2b ?? 0)));
+      const afterB2B = Math.max(0, Math.floor(Number(afterStateForB2B.b2b ?? 0)));
+      const difficultB2B = isDifficultB2BClear(result);
+      if (difficultB2B) b2bDifficultClears++;
+      if (beforeB2B > 0 && difficultB2B && afterB2B >= beforeB2B) b2bMaintains++;
+      if (beforeB2B > 0 && result.linesCleared > 0 && !difficultB2B) b2bBreaks++;
+      b2bMax = Math.max(b2bMax, beforeB2B, afterB2B);
+      b2bEnd = afterB2B;
+      b2bReleaseEstimateMax = Math.max(b2bReleaseEstimateMax, estimateB2BReleaseAttack(beforeB2B), estimateB2BReleaseAttack(afterB2B));
+      updateBenchmarkGarbageAggregate(garbageAggregate, execution.metrics.benchmarkGarbage);
       candidateRouteChecks += plannedRouteAttempts;
       if (execution.metrics.spinFinisherAttempt) executionAttempts++;
       if (execution.metrics.spinFinisherSuccess) spinFinisherSuccesses++;
@@ -285,5 +339,13 @@ export async function runOneAi(
     tPreserveActions,
     wastedTPlacements,
     slotDestroyedCount,
+    b2bMax,
+    b2bEnd,
+    b2bDifficultClears,
+    b2bMaintains,
+    b2bBreaks,
+    b2bReleaseEstimateMax,
+    b2bReleaseEstimateEnd: estimateB2BReleaseAttack(b2bEnd),
+    ...garbageAggregate,
   };
 }
