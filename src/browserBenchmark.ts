@@ -123,6 +123,10 @@ function ensureBenchmarkUi(): void {
             <p><b>LinesQueued</b> is total sent by the benchmark. <b>LinesCancelled</b> is canceled by attack. <b>LinesApplied</b> actually entered the board. <b>MaxPending</b> is the largest pending queue seen.</p>
           </div>
           <div>
+            <strong>Garbage hole metrics</strong>
+            <p><b>gHole</b> in the summary is progress/worse turns. <b>garbageHoleBlocksReduced</b> counts blocks removed above the detected garbage hole column. <b>garbageHoleAccessDeltaTotal</b> shows whether the AI opened the lane toward the hole.</p>
+          </div>
+          <div>
             <strong>Spin / route metrics</strong>
             <p><b>routedPlacements</b> means the AI used a key-by-key route. <b>route_no_spin</b> means the route locked but did not count as a spin. <b>tspinCount / tsdCount</b> are actual scoring spin clears.</p>
           </div>

@@ -2,6 +2,7 @@ import { boardMetrics, TetrisEngine, type PlacementAction } from "../engine/tetr
 import { estimateSpinPotential } from "./spinPotential";
 import { getGarbagePressureContext, scoreGarbagePressureResponse } from "./garbagePressure";
 import { estimateB2BReleaseAttack, scoreB2BPressureResponse } from "./b2bPressure";
+import { analyzeGarbageHole, scoreGarbageHoleResponse } from "./garbageHoleTracker";
 
 export interface AiChoice extends PlacementAction {
   aiScore: number;
@@ -54,6 +55,8 @@ export class HeuristicAI {
   garbagePressureSensitivity = 1.0;
   useB2BPressure = true;
   b2bPressureSensitivity = 1.0;
+  useGarbageHoleTracking = true;
+  garbageHoleSensitivity = 1.0;
 
   private terrainDiagnostics(board: string[], heights: number[]): {
     coveredCells: number;
@@ -87,6 +90,7 @@ export class HeuristicAI {
     const beforeMetrics = boardMetrics(beforeState.board);
     const beforeB2B = Math.max(0, Math.floor(Number(beforeState.b2b ?? 0)));
     const beforeTerrain = this.terrainDiagnostics(beforeState.board, beforeMetrics.heights);
+    const beforeGarbageHole = analyzeGarbageHole(beforeState.board);
 
     const e = engine.clone();
     const result = e.applyAction(action);
@@ -94,6 +98,7 @@ export class HeuristicAI {
     const afterB2B = Math.max(0, Math.floor(Number(state.b2b ?? 0)));
     const metrics = boardMetrics(state.board);
     const terrain = this.terrainDiagnostics(state.board, metrics.heights);
+    const afterGarbageHole = analyzeGarbageHole(state.board);
     const spinPotential = estimateSpinPotential(state);
     const spinBiasRaw = Number((engine as unknown as { spinBias?: number }).spinBias ?? 1);
     const spinBias = Number.isFinite(spinBiasRaw) ? Math.max(1, spinBiasRaw) : 1;
@@ -145,6 +150,16 @@ export class HeuristicAI {
       : null;
     const b2bSensitivity = Math.max(0, Number(this.b2bPressureSensitivity) || 0);
     const b2bPressurePenalty = b2bScore ? b2bScore.penalty * b2bSensitivity : 0;
+    const garbageHoleScore = this.useGarbageHoleTracking
+      ? scoreGarbageHoleResponse({
+        before: beforeGarbageHole,
+        after: afterGarbageHole,
+        pressure: pressureContext,
+        result,
+      })
+      : null;
+    const garbageHoleSensitivity = Math.max(0, Number(this.garbageHoleSensitivity) || 0);
+    const garbageHolePenalty = garbageHoleScore ? garbageHoleScore.penalty * garbageHoleSensitivity : 0;
 
     const noAttackPressure = result.attackSent <= 0 ? Math.max(0, metrics.totalHeight - 72) : 0;
     const mechanicalSpin = result.spinClassification?.mechanical === "immobile";
@@ -191,6 +206,7 @@ export class HeuristicAI {
     score += terrainPenalty;
     score += garbagePressurePenalty;
     score += b2bPressurePenalty;
+    score += garbageHolePenalty;
     score -= this.spinPotentialBonus * spinPotentialApplied;
 
     let tPreserved = false;
@@ -269,6 +285,38 @@ export class HeuristicAI {
       }
       : zeroGarbagePressureInfo(pressureContext.mode, pressureContext.pendingGarbage);
 
+    const garbageHoleInfo = garbageHoleScore
+      ? {
+        foundBefore: beforeGarbageHole.found,
+        foundAfter: afterGarbageHole.found,
+        column: garbageHoleScore.column,
+        before: beforeGarbageHole,
+        after: afterGarbageHole,
+        penalty: Number(garbageHolePenalty.toFixed(4)),
+        rawPenalty: Number(garbageHoleScore.penalty.toFixed(4)),
+        reward: Number(garbageHoleScore.reward.toFixed(4)),
+        riskPenalty: Number(garbageHoleScore.riskPenalty.toFixed(4)),
+        progress: garbageHoleScore.progress,
+        blockedDelta: garbageHoleScore.blockedDelta,
+        accessDelta: garbageHoleScore.accessDelta,
+        sensitivity: Number(garbageHoleSensitivity.toFixed(3)),
+      }
+      : {
+        foundBefore: beforeGarbageHole.found,
+        foundAfter: afterGarbageHole.found,
+        column: beforeGarbageHole.dominantColumn ?? afterGarbageHole.dominantColumn,
+        before: beforeGarbageHole,
+        after: afterGarbageHole,
+        penalty: 0,
+        rawPenalty: 0,
+        reward: 0,
+        riskPenalty: 0,
+        progress: 0,
+        blockedDelta: 0,
+        accessDelta: 0,
+        sensitivity: 0,
+      };
+
     return {
       score,
       info: {
@@ -294,6 +342,13 @@ export class HeuristicAI {
         nearReadySpinSlotBonus: Number(nearReadySpinSlotBonusApplied.toFixed(4)),
         terrainPenalty: Number(terrainPenalty.toFixed(4)),
         garbagePressure: garbagePressureInfo,
+        garbageHole: garbageHoleInfo,
+        garbageHoleColumn: garbageHoleInfo.column,
+        garbageHoleBeforeBlocks: beforeGarbageHole.blocksAboveTarget,
+        garbageHoleAfterBlocks: afterGarbageHole.blocksAboveTarget,
+        garbageHoleAccessDelta: garbageHoleInfo.accessDelta,
+        garbageHoleProgress: garbageHoleInfo.progress,
+        garbageHolePenalty: Number(garbageHolePenalty.toFixed(4)),
         b2bPressure: b2bPressureInfo,
         b2bBefore: beforeB2B,
         b2bAfter: afterB2B,

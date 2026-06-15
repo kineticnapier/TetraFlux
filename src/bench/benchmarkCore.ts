@@ -68,6 +68,14 @@ export type Aggregate = BenchmarkGarbageAggregateMetrics & {
   b2bBreaks: number;
   b2bReleaseEstimateMax: number;
   b2bReleaseEstimateEnd: number;
+  garbageHoleDetectedTurns: number;
+  garbageHoleProgressTurns: number;
+  garbageHoleWorseTurns: number;
+  garbageHoleProgressTotal: number;
+  garbageHoleAccessDeltaTotal: number;
+  garbageHoleBlocksReduced: number;
+  garbageHoleBlocksAdded: number;
+  garbageHolePenaltyTotal: number;
 };
 
 export type BenchEntry = { name: string; ai: AiLike };
@@ -117,6 +125,8 @@ export function renderSummary(payload: BenchPayload): string {
       `gA ${String(a.benchmarkGarbageLinesApplied ?? 0).padStart(4)}`,
       `gMax ${String(a.benchmarkGarbageMaxPending ?? 0).padStart(3)}`,
       `gTurns ${String(a.benchmarkGarbagePressureTurns ?? 0).padStart(4)}`,
+      `gHole ${String(a.garbageHoleProgressTurns ?? 0).padStart(3)}/${String(a.garbageHoleWorseTurns ?? 0).padStart(3)}`,
+      `gBlk ${String(a.garbageHoleBlocksReduced ?? 0).padStart(3)}`,
       `ms ${fmt(a.avgDecisionTimeMs, 2).padStart(6)}`,
       `routeChk ${String(a.candidateRouteChecks ?? a.spinFinisherAttempts ?? 0).padStart(3)}`,
       `exec ${String(a.executionAttempts ?? 0).padStart(3)}`,
@@ -194,6 +204,14 @@ export async function runOneAi(
   let b2bMaintains = 0;
   let b2bBreaks = 0;
   let b2bReleaseEstimateMax = 0;
+  let garbageHoleDetectedTurns = 0;
+  let garbageHoleProgressTurns = 0;
+  let garbageHoleWorseTurns = 0;
+  let garbageHoleProgressTotal = 0;
+  let garbageHoleAccessDeltaTotal = 0;
+  let garbageHoleBlocksReduced = 0;
+  let garbageHoleBlocksAdded = 0;
+  let garbageHolePenaltyTotal = 0;
   const spinFinisherRejectReasons: Record<string, number> = {};
   const routeFailureReasons: Record<string, number> = {};
 
@@ -237,6 +255,19 @@ export async function runOneAi(
       b2bEnd = afterB2B;
       b2bReleaseEstimateMax = Math.max(b2bReleaseEstimateMax, estimateB2BReleaseAttack(beforeB2B), estimateB2BReleaseAttack(afterB2B));
       updateBenchmarkGarbageAggregate(garbageAggregate, execution.metrics.benchmarkGarbage);
+      if (execution.metrics.garbageHoleFoundBefore || execution.metrics.garbageHoleFoundAfter) garbageHoleDetectedTurns++;
+      const holeProgress = Number(execution.metrics.garbageHoleProgress ?? 0);
+      const holeAccessDelta = Number(execution.metrics.garbageHoleAccessDelta ?? 0);
+      const holePenalty = Number(execution.metrics.garbageHolePenalty ?? 0);
+      const beforeHoleBlocks = Number(execution.metrics.garbageHoleBeforeBlocks ?? 0);
+      const afterHoleBlocks = Number(execution.metrics.garbageHoleAfterBlocks ?? 0);
+      if (holeProgress > 0.05 || afterHoleBlocks < beforeHoleBlocks) garbageHoleProgressTurns++;
+      if (holeProgress < -0.05 || afterHoleBlocks > beforeHoleBlocks) garbageHoleWorseTurns++;
+      garbageHoleProgressTotal += Number.isFinite(holeProgress) ? holeProgress : 0;
+      garbageHoleAccessDeltaTotal += Number.isFinite(holeAccessDelta) ? holeAccessDelta : 0;
+      garbageHolePenaltyTotal += Number.isFinite(holePenalty) ? holePenalty : 0;
+      garbageHoleBlocksReduced += Math.max(0, beforeHoleBlocks - afterHoleBlocks);
+      garbageHoleBlocksAdded += Math.max(0, afterHoleBlocks - beforeHoleBlocks);
       candidateRouteChecks += plannedRouteAttempts;
       if (execution.metrics.spinFinisherAttempt) executionAttempts++;
       if (execution.metrics.spinFinisherSuccess) spinFinisherSuccesses++;
@@ -347,6 +378,14 @@ export async function runOneAi(
     b2bBreaks,
     b2bReleaseEstimateMax,
     b2bReleaseEstimateEnd: estimateB2BReleaseAttack(b2bEnd),
+    garbageHoleDetectedTurns,
+    garbageHoleProgressTurns,
+    garbageHoleWorseTurns,
+    garbageHoleProgressTotal,
+    garbageHoleAccessDeltaTotal,
+    garbageHoleBlocksReduced,
+    garbageHoleBlocksAdded,
+    garbageHolePenaltyTotal,
     ...garbageAggregate,
   };
 }

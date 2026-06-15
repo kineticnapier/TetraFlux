@@ -5,6 +5,7 @@ import { findReadySpinFinisherChoice, hasUsableTForFinisher } from "./spinFinish
 import { executeChoiceWithOptionalRoute, generateTwistChoices, hasRouteInfo } from "./twistMoveGenerator";
 import { adjustForGarbagePressure, getGarbagePressureContext, scoreGarbagePressureResponse, shouldSkipSpeculativeFinisher, type GarbagePressureContext } from "./garbagePressure";
 import { estimateB2BReleaseAttack, scoreB2BPressureResponse } from "./b2bPressure";
+import { analyzeGarbageHole, scoreGarbageHoleResponse } from "./garbageHoleTracker";
 import type { WebValueModel } from "./webValue";
 
 export interface LookaheadOptions {
@@ -24,6 +25,8 @@ export interface LookaheadOptions {
   garbagePressureSensitivity?: number;
   useB2BPressure?: boolean;
   b2bPressureSensitivity?: number;
+  useGarbageHoleTracking?: boolean;
+  garbageHoleSensitivity?: number;
 }
 
 type Node = {
@@ -59,6 +62,8 @@ const DEFAULTS: Required<Omit<LookaheadOptions, "valueModel">> = {
   garbagePressureSensitivity: 1,
   useB2BPressure: true,
   b2bPressureSensitivity: 1,
+  useGarbageHoleTracking: true,
+  garbageHoleSensitivity: 1,
 };
 
 function isRiskyBoard(engine: TetrisEngine): boolean {
@@ -145,6 +150,7 @@ function evaluateChoice(engine: TetrisEngine, action: AiChoice, heuristic: Heuri
   const beforeMetrics = boardMetrics(beforeState.board);
   const beforeB2B = Math.max(0, Math.floor(Number(beforeState.b2b ?? 0)));
   const beforeTerrain = terrainDiagnostics(beforeState.board, beforeMetrics.heights);
+  const beforeGarbageHole = analyzeGarbageHole(beforeState.board);
   const beforeSpin = estimateSpinPotential(beforeState);
 
   const clone = engine.clone();
@@ -156,6 +162,7 @@ function evaluateChoice(engine: TetrisEngine, action: AiChoice, heuristic: Heuri
   const afterB2B = Math.max(0, Math.floor(Number(state.b2b ?? 0)));
   const metrics = boardMetrics(state.board);
   const terrain = terrainDiagnostics(state.board, metrics.heights);
+  const afterGarbageHole = analyzeGarbageHole(state.board);
   const spinPotential = estimateSpinPotential(state);
 
   const spinBiasSafe = Number.isFinite(spinBias) ? Math.max(1, spinBias) : 1;
@@ -189,6 +196,13 @@ function evaluateChoice(engine: TetrisEngine, action: AiChoice, heuristic: Heuri
   const b2bScore = useB2BPressure
     ? scoreB2BPressureResponse({ beforeB2B, afterB2B, result, pressure: garbagePressure, maxHeightDelta, holeDelta })
     : null;
+  const useGarbageHoleTracking = (heuristic as unknown as { useGarbageHoleTracking?: boolean }).useGarbageHoleTracking ?? true;
+  const garbageHoleSensitivityRaw = Number((heuristic as unknown as { garbageHoleSensitivity?: number }).garbageHoleSensitivity ?? 1);
+  const garbageHoleSensitivity = Math.max(0, Number.isFinite(garbageHoleSensitivityRaw) ? garbageHoleSensitivityRaw : 1);
+  const garbageHoleScore = useGarbageHoleTracking
+    ? scoreGarbageHoleResponse({ before: beforeGarbageHole, after: afterGarbageHole, pressure: garbagePressure, result })
+    : null;
+  const garbageHolePenalty = (garbageHoleScore?.penalty ?? 0) * garbageHoleSensitivity;
 
   const noAttackPressure = result.attackSent <= 0 ? Math.max(0, metrics.totalHeight - 72) : 0;
   const mechanicalSpin = result.spinClassification?.mechanical === "immobile";
@@ -268,6 +282,7 @@ function evaluateChoice(engine: TetrisEngine, action: AiChoice, heuristic: Heuri
   score += terrainPenalty;
   score += garbagePressureScore.penalty;
   score += (b2bScore?.penalty ?? 0) * b2bSensitivity;
+  score += garbageHolePenalty;
   score -= heuristic.spinPotentialBonus * spinPotentialApplied;
   score += wastedTPenaltyApplied + slotDestroyedPenaltyApplied;
   score -= tPreservationBonusApplied + nearReadySpinSlotBonusApplied;
@@ -333,6 +348,27 @@ function evaluateChoice(engine: TetrisEngine, action: AiChoice, heuristic: Heuri
       safetyPenalty: Number(garbagePressureScore.safetyPenalty.toFixed(4)),
       estimatedRemainingGarbage: garbagePressureScore.estimatedRemainingGarbage,
     },
+    garbageHole: garbageHoleScore ? {
+      foundBefore: beforeGarbageHole.found,
+      foundAfter: afterGarbageHole.found,
+      column: garbageHoleScore.column,
+      before: beforeGarbageHole,
+      after: afterGarbageHole,
+      sensitivity: Number(garbageHoleSensitivity.toFixed(3)),
+      penalty: Number(garbageHolePenalty.toFixed(4)),
+      rawPenalty: Number(garbageHoleScore.penalty.toFixed(4)),
+      reward: Number(garbageHoleScore.reward.toFixed(4)),
+      riskPenalty: Number(garbageHoleScore.riskPenalty.toFixed(4)),
+      progress: garbageHoleScore.progress,
+      blockedDelta: garbageHoleScore.blockedDelta,
+      accessDelta: garbageHoleScore.accessDelta,
+    } : null,
+    garbageHoleColumn: garbageHoleScore?.column ?? beforeGarbageHole.dominantColumn ?? afterGarbageHole.dominantColumn,
+    garbageHoleBeforeBlocks: beforeGarbageHole.blocksAboveTarget,
+    garbageHoleAfterBlocks: afterGarbageHole.blocksAboveTarget,
+    garbageHoleAccessDelta: garbageHoleScore?.accessDelta ?? 0,
+    garbageHoleProgress: garbageHoleScore?.progress ?? 0,
+    garbageHolePenalty: Number(garbageHolePenalty.toFixed(4)),
     garbagePressureMode: garbagePressure.mode,
     pendingGarbage: garbagePressure.pendingGarbage,
     routeBonus: Number(routeBonus.toFixed(4)),
@@ -477,6 +513,8 @@ export class LookaheadAI extends HeuristicAI {
     if (typeof lookaheadOptions.garbagePressureSensitivity === "number") this.garbagePressureSensitivity = lookaheadOptions.garbagePressureSensitivity;
     if (typeof lookaheadOptions.useB2BPressure === "boolean") this.useB2BPressure = lookaheadOptions.useB2BPressure;
     if (typeof lookaheadOptions.b2bPressureSensitivity === "number") this.b2bPressureSensitivity = lookaheadOptions.b2bPressureSensitivity;
+    if (typeof lookaheadOptions.useGarbageHoleTracking === "boolean") this.useGarbageHoleTracking = lookaheadOptions.useGarbageHoleTracking;
+    if (typeof lookaheadOptions.garbageHoleSensitivity === "number") this.garbageHoleSensitivity = lookaheadOptions.garbageHoleSensitivity;
   }
 
   choose(engine: TetrisEngine): AiChoice | null {
