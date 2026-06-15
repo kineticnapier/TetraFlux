@@ -14,6 +14,7 @@ import {
   type BenchmarkGarbageEnvironmentConfig,
 } from "../ai/benchmarkEnvironment";
 import { boardMetrics, TetrisEngine } from "../engine/tetris";
+import { applyBenchmarkTuningToAi, benchmarkTuningSummary, normalizeBenchmarkTuningConfig, type BenchmarkTuningConfig } from "./benchmarkTuning";
 
 export type AiLike = { choose(engine: TetrisEngine): AiChoice | null };
 
@@ -85,6 +86,7 @@ export type BenchConfig = {
   seedBase: number;
   aiIds?: string[];
   benchmarkGarbage?: Partial<BenchmarkGarbageEnvironmentConfig>;
+  tuning?: Partial<BenchmarkTuningConfig>;
 };
 export type BenchPayload = {
   generatedAt: string;
@@ -94,6 +96,7 @@ export type BenchPayload = {
   seedBase: number;
   aiIds?: string[];
   benchmarkGarbage: BenchmarkGarbageEnvironmentConfig;
+  tuning: BenchmarkTuningConfig;
   aiCount: number;
   results: Record<string, Aggregate>;
   worker?: boolean;
@@ -142,14 +145,19 @@ export function renderSummary(payload: BenchPayload): string {
     `generated: ${payload.generatedAt}`,
     `games=${payload.games} maxPieces=${payload.maxPieces} seed=${payload.seedBase} ai=${payload.aiCount}`,
     benchmarkGarbageConfigSummary(payload.benchmarkGarbage),
+    benchmarkTuningSummary(payload.tuning),
     "",
     rows,
   ].join("\n");
 }
 
-export async function buildBrowserAis(aiIds?: string[]): Promise<BenchEntry[]> {
+export async function buildBrowserAis(aiIds?: string[], tuning?: Partial<BenchmarkTuningConfig>): Promise<BenchEntry[]> {
+  const normalizedTuning = normalizeBenchmarkTuningConfig(tuning);
   const entries = await buildBrowserAiEntries(aiIds);
-  return entries.map(({ name, ai }) => ({ name, ai }));
+  return entries.map(({ name, ai }) => {
+    applyBenchmarkTuningToAi(ai, normalizedTuning);
+    return { name, ai };
+  });
 }
 
 export async function runOneAi(

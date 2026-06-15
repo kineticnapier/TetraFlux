@@ -13,7 +13,8 @@
     "test:garbage-pressure": "node tools/run_garbage_pressure_fixture_test.mjs",
     "test:benchmark-garbage": "node tools/run_benchmark_garbage_fixture_test.mjs",
     "test:b2b-pressure": "node tools/run_b2b_pressure_fixture_test.mjs",
-    "test:garbage-hole": "node tools/run_garbage_hole_fixture_test.mjs"
+    "test:garbage-hole": "node tools/run_garbage_hole_fixture_test.mjs",
+    "test:benchmark-tuning": "node tools/run_benchmark_tuning_fixture_test.mjs"
   },
   "dependencies": {},
   "devDependencies": {

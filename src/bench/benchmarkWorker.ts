@@ -1,5 +1,6 @@
 import { buildBrowserAis, runOneAi, type BenchConfig, type BenchPayload } from "./benchmarkCore";
 import { configureBenchmarkGarbageEnvironment, getBenchmarkGarbageEnvironmentConfig } from "../ai/benchmarkEnvironment";
+import { normalizeBenchmarkTuningConfig } from "./benchmarkTuning";
 
 type Msg = { type: "run"; config: BenchConfig } | { type: "cancel" };
 let canceled = false;
@@ -13,7 +14,8 @@ self.onmessage = async (ev: MessageEvent<Msg>) => {
   try {
     self.postMessage({ type: "started", message: "Worker benchmark started" });
     const benchmarkGarbage = configureBenchmarkGarbageEnvironment(msg.config.benchmarkGarbage ?? getBenchmarkGarbageEnvironmentConfig());
-    const ais = await buildBrowserAis(msg.config.aiIds);
+    const tuning = normalizeBenchmarkTuningConfig(msg.config.tuning);
+    const ais = await buildBrowserAis(msg.config.aiIds, tuning);
     const results: BenchPayload["results"] = {};
     for (const entry of ais) {
       if (canceled) break;
@@ -29,6 +31,7 @@ self.onmessage = async (ev: MessageEvent<Msg>) => {
       seedBase: msg.config.seedBase,
       aiIds: msg.config.aiIds,
       benchmarkGarbage,
+      tuning,
       aiCount: Object.keys(results).length,
       results,
       worker: true,
