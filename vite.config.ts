@@ -16,6 +16,7 @@ export default defineConfig({
         game: resolve(projectRoot, "index.html"),
         benchmark: resolve(projectRoot, "benchmark/index.html"),
         training: resolve(projectRoot, "training/index.html"),
+        allspinTraining: resolve(projectRoot, "training/allspin/index.html"),
       },
     },
   },
