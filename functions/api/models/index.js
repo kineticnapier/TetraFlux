@@ -15,15 +15,20 @@ export async function onRequestGet(context) {
     const requestedFamily = new URL(context.request.url).searchParams.get("family");
     const family = requestedFamily ? parseFamily(requestedFamily) : null;
     if (requestedFamily && !family) return json({ error: "family must be flat or allspin" }, 400);
-    const models = family
-      ? await readIndex(kv, family)
-      : (await Promise.all([readIndex(kv, "flat"), readIndex(kv, "allspin")])).flat?.concat?.([]) ?? [];
-    const combined = family
-      ? models
-      : (await Promise.all([readIndex(kv, "flat"), readIndex(kv, "allspin")]))
-        .flatMap((items) => items)
+
+    let models;
+    if (family) {
+      models = await readIndex(kv, family);
+    } else {
+      const [flat, allspin] = await Promise.all([
+        readIndex(kv, "flat"),
+        readIndex(kv, "allspin"),
+      ]);
+      models = [...flat, ...allspin]
         .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
-    return json({ models: combined, latest: await latestMap(kv) });
+    }
+
+    return json({ models, latest: await latestMap(kv) });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : String(error) }, 503);
   }
