@@ -1,6 +1,7 @@
 import "../style.css";
 import "./toolPage.css";
 import "../training/browserHeuristicProfile";
+import "../training/browserAllSpinProfile";
 
 await import("../browserBenchmark");
 
