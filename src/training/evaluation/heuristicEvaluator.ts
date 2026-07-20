@@ -3,6 +3,7 @@ import type {
   HeuristicEvaluationConfig,
   HeuristicEvaluationResult,
   HeuristicEvaluationRuntime,
+  HeuristicGameResult,
 } from "../core/types";
 import { aggregateHeuristicGames } from "./fitness";
 import { OFF_GARBAGE, simulateHeuristicGame } from "./gameSimulator";
@@ -22,7 +23,7 @@ export async function evaluateHeuristicWeights(
   const games = Math.max(1, Math.floor(config.games));
   const maxPieces = Math.max(1, Math.floor(config.maxPieces));
   const seeds = resolveHeuristicEvaluationSeeds({ ...config, games }).slice(0, games);
-  const perGame = [];
+  const perGame: HeuristicGameResult[] = [];
 
   for (let gameIndex = 0; gameIndex < seeds.length; gameIndex++) {
     if (runtime.isCanceled?.()) throw new Error("Training canceled");
