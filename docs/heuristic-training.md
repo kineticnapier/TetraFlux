@@ -11,7 +11,7 @@ The normal workflow is entirely browser-based.
 
 1. Open **Train AI** and run or resume training.
 2. At the end of every generation, the checkpoint and best profile are saved in the browser.
-3. The best profile immediately appears as **Learned Heuristic** in AI Battle and **Bench AI**.
+3. The best profile immediately becomes **Learned Heuristic** in AI Battle and **Bench AI**.
 4. Start a new match or a new benchmark to create an AI instance using the latest profile.
 5. Use **Download Best Profile** and **Download Checkpoint** for backups or transfer to another browser.
 6. Use **Import Profile** or **Import Checkpoint** to restore those files.
