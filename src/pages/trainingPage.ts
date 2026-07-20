@@ -1,7 +1,8 @@
 import "../style.css";
 import "./toolPage.css";
-import "../training/browserHeuristicProfile";
+import { bootstrapCloudModels } from "../models/bootstrapCloudModels";
 
+await bootstrapCloudModels();
 await import("../browserTraining");
 
 function mountTrainingPage(): void {
@@ -16,7 +17,7 @@ function mountTrainingPage(): void {
   main.appendChild(panel);
 
   const heading = panel.querySelector<HTMLHeadingElement>(".bench-header h2");
-  if (heading) heading.textContent = "Training configuration";
+  if (heading) heading.textContent = "Flat training configuration";
 }
 
 mountTrainingPage();
