@@ -22,6 +22,11 @@ function intInRange(value: unknown, fallback: number, min: number, max: number):
   return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
 }
 
+function uint32(value: unknown, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.floor(n) >>> 0 : fallback >>> 0;
+}
+
 function initialRngState(seed: number): number {
   return (seed ^ 0xA5A5A5A5) >>> 0;
 }
@@ -94,7 +99,7 @@ export function parseHeuristicTrainingCheckpoint(input: unknown): HeuristicTrain
     featureSet: HEURISTIC_FEATURE_SET,
     algorithm: "cem",
     generation: intInRange(raw.generation, 0, 0, 1_000_000),
-    rngState: intInRange(raw.rngState, initialRngState(config.trainingSeedBase), 0, 0xFFFFFFFF) >>> 0,
+    rngState: uint32(raw.rngState, initialRngState(config.trainingSeedBase)),
     config,
     mean,
     deviation,
