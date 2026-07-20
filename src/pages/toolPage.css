@@ -130,6 +130,19 @@
   max-height: 620px;
 }
 
+.tool-page #trainOutput {
+  margin: 14px 0 0;
+  min-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: #050816;
+  color: #dbeafe;
+  padding: 12px;
+  font: 12px/1.5 Consolas, ui-monospace, monospace;
+}
+
 .tool-page .bench-tuning-card details > summary,
 .tool-page details > summary {
   cursor: pointer;
