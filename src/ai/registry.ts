@@ -1,5 +1,9 @@
 import { TetrisEngine } from "../engine/tetris";
 import {
+  parseAllSpinWeightProfile,
+  type AllSpinWeightProfileV1,
+} from "../training/allspinWeights";
+import {
   applyHeuristicWeightProfile,
   parseHeuristicWeightProfile,
   type HeuristicWeightProfileV1,
@@ -27,15 +31,25 @@ export interface AiRegistryEntry {
 }
 
 export type LearnedProfileProvider = () => unknown;
+export type AllSpinProfileProvider = () => unknown;
 
 let defaultLearnedProfileProvider: LearnedProfileProvider = () => undefined;
+let defaultAllSpinProfileProvider: AllSpinProfileProvider = () => undefined;
 
 export function setDefaultLearnedProfileProvider(provider: LearnedProfileProvider): void {
   defaultLearnedProfileProvider = provider;
 }
 
+export function setDefaultAllSpinProfileProvider(provider: AllSpinProfileProvider): void {
+  defaultAllSpinProfileProvider = provider;
+}
+
 function currentLearnedProfile(): unknown {
   return defaultLearnedProfileProvider();
+}
+
+function currentAllSpinProfile(): unknown {
+  return defaultAllSpinProfileProvider();
 }
 
 class WeightedHeuristicAI extends HeuristicAI {
@@ -164,17 +178,19 @@ export function makeSpinAI(): AiLike {
   return ai;
 }
 
-export function makeAllSpinAI(): AiLike {
+export function makeAllSpinAI(profileInput: unknown = currentAllSpinProfile()): AiLike {
+  let profile: AllSpinWeightProfileV1 | null = null;
+  try {
+    profile = profileInput ? parseAllSpinWeightProfile(profileInput) : null;
+  } catch {
+    profile = null;
+  }
   return new AllSpinAI({
-    depth: 2,
-    beamWidth: 42,
+    profile: profile ?? undefined,
     includeHold: true,
     strictLineClears: true,
+    searchBudgetMode: "time",
     timeBudgetMs: 16,
-    maxCandidatesPerNode: 44,
-    maxTwistCandidates: 18,
-    maxTwistStates: 2400,
-    maxTwistPathLength: 52,
     twistTimeBudgetMs: 4.5,
     includeNonClearingMechanical: false,
   });
@@ -186,6 +202,7 @@ export function makeLearnedHeuristicAI(profileInput?: unknown): AiLike {
 
 export function createBuiltinAiFactories(
   learnedProfileProvider: LearnedProfileProvider = currentLearnedProfile,
+  allSpinProfileProvider: AllSpinProfileProvider = currentAllSpinProfile,
 ): AiFactorySpec[] {
   const create = (id: string): AiLike => {
     const spec = factories.find((item) => item.id === id) ?? factories[0];
@@ -196,7 +213,7 @@ export function createBuiltinAiFactories(
     { id: "learned_heuristic", name: "Learned Heuristic", make: () => makeLearnedHeuristicAI(learnedProfileProvider()) },
     { id: "lookahead", name: "LookaheadAI", make: () => new LookaheadAI({ depth: 3, beamWidth: 50, includeHold: true, spinBias: 1, maxCandidatesPerNode: 36, maxNodesPerDepth: 300, timeBudgetMs: 9, useGarbagePressure: true, garbagePressureSensitivity: 1.0, useGarbageHoleTracking: true, garbageHoleSensitivity: 1.1, useB2BPressure: true, b2bPressureSensitivity: 1.05 }) },
     { id: "spin", name: "SpinAI", make: makeSpinAI },
-    { id: "allspin", name: "AllSpinAI (experimental)", make: makeAllSpinAI },
+    { id: "allspin", name: "AllSpinAI", make: () => makeAllSpinAI(allSpinProfileProvider()) },
     { id: "aggressive", name: "Aggressive", make: () => new WeightedHeuristicAI("Aggressive", { garbagePressureSensitivity: 0.95, garbageHoleSensitivity: 1.05, b2bPressureSensitivity: 1.25, attackBonus: 5.2, lineBonus: 4.8, holeWeight: 6.4, heightWeight: 0.62, bumpWeight: 0.28, wellWeight: 0.08, holdPenalty: 0.02 }) },
     { id: "defensive", name: "Defensive", make: () => new WeightedHeuristicAI("Defensive", { garbagePressureSensitivity: 1.25, garbageHoleSensitivity: 1.45, b2bPressureSensitivity: 0.85, holeWeight: 13.0, heightWeight: 1.35, bumpWeight: 0.72, wellWeight: 0.28, lineBonus: 2.8, attackBonus: 0.9, holdPenalty: 0.03 }) },
     { id: "downstacker", name: "Downstacker", make: () => new WeightedHeuristicAI("Downstacker", { garbagePressureSensitivity: 1.35, garbageHoleSensitivity: 1.65, b2bPressureSensitivity: 0.75, holeWeight: 11.2, heightWeight: 1.05, bumpWeight: 0.45, wellWeight: 0.04, lineBonus: 5.0, attackBonus: 1.15, holdPenalty: 0.01 }) },
@@ -211,18 +228,21 @@ export const BUILTIN_AI_FACTORIES: AiFactorySpec[] = createBuiltinAiFactories();
 export function createBuiltinAi(
   id: string,
   learnedProfileProvider: LearnedProfileProvider = currentLearnedProfile,
+  allSpinProfileProvider: AllSpinProfileProvider = currentAllSpinProfile,
 ): AiRegistryEntry {
-  const factories = createBuiltinAiFactories(learnedProfileProvider);
+  const factories = createBuiltinAiFactories(learnedProfileProvider, allSpinProfileProvider);
   const spec = factories.find((item) => item.id === id) ?? factories[0];
   return { id: spec.id, name: spec.name, ai: spec.make() };
 }
 
 export function randomBuiltinAi(
   learnedProfileProvider: LearnedProfileProvider = currentLearnedProfile,
+  allSpinProfileProvider: AllSpinProfileProvider = currentAllSpinProfile,
 ): AiRegistryEntry {
-  const profile = learnedProfileProvider();
-  const factories = createBuiltinAiFactories(() => profile)
-    .filter((spec) => spec.id !== "learned_heuristic" || (profile !== undefined && profile !== null));
+  const learnedProfile = learnedProfileProvider();
+  const allSpinProfile = allSpinProfileProvider();
+  const factories = createBuiltinAiFactories(() => learnedProfile, () => allSpinProfile)
+    .filter((spec) => spec.id !== "learned_heuristic" || (learnedProfile !== undefined && learnedProfile !== null));
   const spec = factories[Math.floor(Math.random() * factories.length)] ?? factories[0];
   return { id: spec.id, name: spec.name, ai: spec.make() };
 }
@@ -245,22 +265,39 @@ export async function buildBrowserAiEntries(
   ids?: string[],
   baseUrl = "/",
   learnedProfile?: unknown,
+  allSpinProfile?: unknown,
 ): Promise<AiRegistryEntry[]> {
   const requested = ids && ids.length > 0 ? new Set(ids) : null;
   let parsedProfile: HeuristicWeightProfileV1 | null = null;
+  let parsedAllSpinProfile: AllSpinWeightProfileV1 | null = null;
   try {
     const profileInput = learnedProfile === undefined ? currentLearnedProfile() : learnedProfile;
     parsedProfile = profileInput ? parseHeuristicWeightProfile(profileInput) : null;
   } catch {
     parsedProfile = null;
   }
-  const factories = createBuiltinAiFactories(() => parsedProfile ?? undefined);
+  try {
+    const profileInput = allSpinProfile === undefined ? currentAllSpinProfile() : allSpinProfile;
+    parsedAllSpinProfile = profileInput ? parseAllSpinWeightProfile(profileInput) : null;
+  } catch {
+    parsedAllSpinProfile = null;
+  }
+  const factories = createBuiltinAiFactories(
+    () => parsedProfile ?? undefined,
+    () => parsedAllSpinProfile ?? undefined,
+  );
   const entries = factories
     .filter((spec) => !requested || requested.has(spec.id))
     .map((spec) => {
-      if (spec.id !== "learned_heuristic") return { id: spec.id, name: spec.name, ai: spec.make() };
-      const suffix = parsedProfile ? ` (${parsedProfile.profileId})` : " (default fallback)";
-      return { id: spec.id, name: `${spec.name}${suffix}`, ai: spec.make() };
+      if (spec.id === "learned_heuristic") {
+        const suffix = parsedProfile ? ` (${parsedProfile.profileId})` : " (default fallback)";
+        return { id: spec.id, name: `${spec.name}${suffix}`, ai: spec.make() };
+      }
+      if (spec.id === "allspin") {
+        const suffix = parsedAllSpinProfile ? ` (${parsedAllSpinProfile.profileId})` : " (experimental default)";
+        return { id: spec.id, name: `${spec.name}${suffix}`, ai: spec.make() };
+      }
+      return { id: spec.id, name: spec.name, ai: spec.make() };
     });
 
   const wantsPolicy = !requested || requested.has("web_policy") || requested.has("hybrid");
@@ -284,7 +321,8 @@ export async function buildBrowserAiEntries(
 export async function listBrowserAiOptions(
   baseUrl = "/",
   learnedProfile?: unknown,
+  allSpinProfile?: unknown,
 ): Promise<Array<{ id: string; name: string }>> {
-  const entries = await buildBrowserAiEntries(undefined, baseUrl, learnedProfile);
+  const entries = await buildBrowserAiEntries(undefined, baseUrl, learnedProfile, allSpinProfile);
   return entries.map(({ id, name }) => ({ id, name }));
 }
