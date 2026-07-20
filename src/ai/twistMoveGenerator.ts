@@ -22,6 +22,7 @@ export interface RoutedChoiceExecution {
 type SearchNode = {
   engine: TetrisEngine;
   path: AiMoveOp[];
+  lastTransitionKey: string;
 };
 
 type Candidate = {
@@ -51,9 +52,17 @@ function routeDeadlineHit(deadlineMs?: number): boolean {
   return deadlineMs !== undefined && performance.now() >= deadlineMs;
 }
 
-function routeKey(engine: TetrisEngine): string {
+function transitionKey(before: TetrisEngine["active"], after: TetrisEngine["active"], op: AiMoveOp): string {
+  if (op !== "cw" && op !== "ccw" && op !== "180") return "move";
+  return `rotate:${op}:${normalizeRot(before.rot)}>${normalizeRot(after.rot)}:${after.x - before.x},${after.y - before.y}`;
+}
+
+function routeKey(engine: TetrisEngine, lastTransitionKey: string): string {
   const a = engine.active;
-  return `${a.kind}:${a.x}:${a.y}:${normalizeRot(a.rot)}:${engine.canHold}:${engine.hold ?? "."}`;
+  // The same geometric state can score differently depending on whether the last
+  // successful action was a rotation and which kick offset reached it. Preserve
+  // that information so BFS does not discard valid all-spin routes.
+  return `${a.kind}:${a.x}:${a.y}:${normalizeRot(a.rot)}:${engine.canHold}:${engine.hold ?? "."}:${lastTransitionKey}`;
 }
 
 function choiceKey(choice: PlacementAction, targetY: number, route: AiMoveOp[]): string {
@@ -175,10 +184,10 @@ function choiceFromNode(root: TetrisEngine, node: SearchNode, afterEngine: Tetri
 }
 
 function seedRoots(engine: TetrisEngine, includeHold: boolean): SearchNode[] {
-  const roots: SearchNode[] = [{ engine: engine.clone(), path: [] }];
+  const roots: SearchNode[] = [{ engine: engine.clone(), path: [], lastTransitionKey: "spawn" }];
   if (includeHold && engine.canHold) {
     const held = engine.clone();
-    if (held.holdPiece() && !held.dead) roots.push({ engine: held, path: ["hold"] });
+    if (held.holdPiece() && !held.dead) roots.push({ engine: held, path: ["hold"], lastTransitionKey: "hold" });
   }
   return roots;
 }
@@ -191,7 +200,7 @@ export function generateTwistChoices(engine: TetrisEngine, options: TwistMoveGen
   const queue: SearchNode[] = [];
   const seenStates = new Set<string>();
   for (const root of seedRoots(engine, opts.includeHold)) {
-    const key = routeKey(root.engine);
+    const key = routeKey(root.engine, root.lastTransitionKey);
     if (seenStates.has(key)) continue;
     seenStates.add(key);
     queue.push(root);
@@ -221,11 +230,13 @@ export function generateTwistChoices(engine: TetrisEngine, options: TwistMoveGen
     for (const op of SEARCH_OPS) {
       if (routeDeadlineHit(options.deadlineMs)) break;
       const next = node.engine.clone();
+      const before = { ...next.active };
       if (!applyMove(next, op)) continue;
-      const key = routeKey(next);
+      const lastTransitionKey = transitionKey(before, next.active, op);
+      const key = routeKey(next, lastTransitionKey);
       if (seenStates.has(key)) continue;
       seenStates.add(key);
-      queue.push({ engine: next, path: [...node.path, op] });
+      queue.push({ engine: next, path: [...node.path, op], lastTransitionKey });
       if (seenStates.size > opts.maxStates) break;
     }
   }
