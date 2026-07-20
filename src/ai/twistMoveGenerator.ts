@@ -1,4 +1,5 @@
 import { boardMetrics, TetrisEngine, type LockResult, type PlacementAction, type PieceKind } from "../engine/tetris";
+import { promoteMechanicalAllSpin } from "./allSpinRules";
 import type { AiChoice } from "./heuristic";
 import { applyMove, moveOpsEndWithRotation, type AiMoveOp } from "./spinFinisher";
 
@@ -10,6 +11,7 @@ export interface TwistMoveGeneratorOptions {
   deadlineMs?: number;
   includeNonClearingMechanical?: boolean;
   allowUnsafe?: boolean;
+  allSpinScoring?: boolean;
 }
 
 export interface RoutedChoiceExecution {
@@ -40,6 +42,7 @@ const DEFAULT_OPTIONS: Required<Omit<TwistMoveGeneratorOptions, "deadlineMs">> =
   maxChoices: 14,
   includeNonClearingMechanical: false,
   allowUnsafe: false,
+  allSpinScoring: false,
 };
 
 const SEARCH_OPS: AiMoveOp[] = ["left", "right", "soft", "cw", "ccw", "180"];
@@ -71,24 +74,42 @@ function choiceKey(choice: PlacementAction, targetY: number, route: AiMoveOp[]):
   return `${choice.hold}:${choice.piece}:${choice.x}:${targetY}:${normalizeRot(choice.rot)}:${suffix}`;
 }
 
-function cloneAndRunRoute(engine: TetrisEngine, route: AiMoveOp[]): RoutedChoiceExecution {
+function cloneAndRunRoute(engine: TetrisEngine, route: AiMoveOp[], allSpinScoring: boolean): RoutedChoiceExecution {
+  const b2bBefore = engine.b2b;
   for (const op of route) {
     if (!applyMove(engine, op)) {
-      return { result: engine.applyAction({ piece: engine.active.kind, x: engine.active.x, rot: normalizeRot(engine.active.rot), hold: false, key: "route_failed_fallback" }), routeUsed: false, routeFailed: true, routeFailureReason: `route_op_failed:${op}` };
+      const fallback = engine.applyAction({ piece: engine.active.kind, x: engine.active.x, rot: normalizeRot(engine.active.rot), hold: false, key: "route_failed_fallback" });
+      return {
+        result: promoteMechanicalAllSpin(engine, fallback, b2bBefore, allSpinScoring),
+        routeUsed: false,
+        routeFailed: true,
+        routeFailureReason: `route_op_failed:${op}`,
+      };
     }
   }
 
   const result = engine.hardDrop();
-  return { result, routeUsed: true, routeFailed: false };
+  return {
+    result: promoteMechanicalAllSpin(engine, result, b2bBefore, allSpinScoring),
+    routeUsed: true,
+    routeFailed: false,
+  };
 }
 
 export function executeChoiceWithOptionalRoute(engine: TetrisEngine, action: PlacementAction): RoutedChoiceExecution {
   const info = ((action as AiChoice).aiInfo ?? {}) as Record<string, unknown>;
   const route = Array.isArray(info.route) ? info.route as AiMoveOp[] : null;
+  const allSpinScoring = info.strictAllSpin === true || info.allSpinScoring === true;
   if (!route || route.length === 0) {
-    return { result: engine.applyAction(action), routeUsed: false, routeFailed: false };
+    const b2bBefore = engine.b2b;
+    const result = engine.applyAction(action);
+    return {
+      result: promoteMechanicalAllSpin(engine, result, b2bBefore, allSpinScoring),
+      routeUsed: false,
+      routeFailed: false,
+    };
   }
-  return cloneAndRunRoute(engine, route);
+  return cloneAndRunRoute(engine, route, allSpinScoring);
 }
 
 function resultIsInterestingTwist(result: LockResult, includeNonClearingMechanical: boolean): boolean {
@@ -212,7 +233,9 @@ export function generateTwistChoices(engine: TetrisEngine, options: TwistMoveGen
 
     if (node.path.length > 0 && moveOpsEndWithRotation(node.path)) {
       const preview = node.engine.clone();
-      const result = preview.hardDrop();
+      const b2bBefore = preview.b2b;
+      const rawResult = preview.hardDrop();
+      const result = promoteMechanicalAllSpin(preview, rawResult, b2bBefore, opts.allSpinScoring);
       if (resultIsInterestingTwist(result, opts.includeNonClearingMechanical) && resultSafeEnough(engine, preview, result, opts.allowUnsafe)) {
         const candidate = choiceFromNode(engine, node, preview, result);
         if (candidate) {
