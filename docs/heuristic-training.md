@@ -39,6 +39,8 @@ The fixture reverses candidate completion order and verifies that the resulting 
 
 This is CPU parallelism, not GPU training. The current simulator contains branching, piece movement, board cloning, and variable-length games, which do not map efficiently to a small WebGPU kernel. The scheduler interface allows a future WASM or WebGPU evaluator without changing CEM or the UI.
 
+Vite bundles the coordinator and candidate workers from `new Worker(new URL(..., import.meta.url), { type: "module" })`. No Cloudflare Pages header or function change is required for this Worker Pool.
+
 ## Architecture
 
 ```text
