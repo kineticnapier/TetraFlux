@@ -1,4 +1,4 @@
-import "../training/browserHeuristicProfile";
-import "../training/browserAllSpinProfile";
+import { bootstrapCloudModels } from "../models/bootstrapCloudModels";
 
+await bootstrapCloudModels();
 await import("../main");
