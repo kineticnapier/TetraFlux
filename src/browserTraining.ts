@@ -1,9 +1,23 @@
-import type { HeuristicTrainingConfig } from "./training/heuristicTrainer";
+import {
+  fetchCloudModel,
+  fetchLatestCloudModel,
+  listCloudModels,
+  readCloudModelWriteToken,
+  storeActiveCloudModelId,
+  storeCloudModelWriteToken,
+  uploadCloudModel,
+  wrapModelPayload,
+} from "./models/cloudModelClient";
 import { describeStoredHeuristicProfile } from "./training/browserHeuristicProfile";
 import {
   BrowserTrainingController,
   type BrowserTrainingRunRequest,
 } from "./training/browser/trainingController";
+import {
+  HEURISTIC_PROFILE_FORMAT,
+  parseHeuristicWeightProfile,
+} from "./training/heuristicWeights";
+import type { HeuristicTrainingConfig } from "./training/heuristicTrainer";
 
 function downloadJson(filename: string, data: unknown): void {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });
@@ -46,10 +60,10 @@ function ensureTrainingUi(): void {
   panel.innerHTML = `
     <div class="bench-card" data-training-panel="true">
       <div class="bench-header">
-        <h2>Heuristic Weight Training</h2>
+        <h2>Flat Heuristic Training</h2>
         <button id="trainClose" class="small-button">×</button>
       </div>
-      <p class="hint">Candidate games run in a CPU Web Worker pool. Completed generations are stored locally and exposed as <b>Learned Heuristic</b>.</p>
+      <p class="hint">Candidate games run in a browser CPU Web Worker pool. Completed generations are stored locally and exposed as <b>Learned Heuristic</b>. Cloudflare stores model JSON only.</p>
 
       <section class="tool-section">
         <h3>Training size</h3>
@@ -83,8 +97,21 @@ function ensureTrainingUi(): void {
         <div id="trainProfileSummary" class="hint">Learned profile: none</div>
       </section>
 
+      <details class="tool-details" open>
+        <summary>Cloudflare model registry</summary>
+        <div class="bench-controls">
+          <label>write token <input id="flatCloudToken" type="password" autocomplete="off" placeholder="MODEL_WRITE_TOKEN" /></label>
+          <button id="flatCloudUpload" disabled>Upload Current Model</button>
+          <button id="flatCloudLatest">Load Latest Cloud Model</button>
+          <button id="flatCloudRefresh">Refresh List</button>
+          <select id="flatCloudModels"><option value="">Cloud models...</option></select>
+          <button id="flatCloudLoadSelected" disabled>Load Selected</button>
+        </div>
+        <div id="flatCloudStatus" class="hint">Cloud registry not checked.</div>
+      </details>
+
       <details class="tool-details">
-        <summary>Profile and checkpoint files</summary>
+        <summary>Local profile and checkpoint files</summary>
         <div class="bench-controls">
           <button id="trainDownloadProfile" disabled>Download Best Profile</button>
           <button id="trainDownloadCheckpoint" disabled>Download Checkpoint</button>
@@ -119,6 +146,15 @@ function ensureTrainingUi(): void {
   const seedInput = panel.querySelector<HTMLInputElement>("#trainSeed")!;
   const sigmaInput = panel.querySelector<HTMLInputElement>("#trainSigma")!;
   const parallelWorkersInput = panel.querySelector<HTMLInputElement>("#trainParallelWorkers")!;
+  const cloudToken = panel.querySelector<HTMLInputElement>("#flatCloudToken")!;
+  const cloudUpload = panel.querySelector<HTMLButtonElement>("#flatCloudUpload")!;
+  const cloudLatest = panel.querySelector<HTMLButtonElement>("#flatCloudLatest")!;
+  const cloudRefresh = panel.querySelector<HTMLButtonElement>("#flatCloudRefresh")!;
+  const cloudModels = panel.querySelector<HTMLSelectElement>("#flatCloudModels")!;
+  const cloudLoadSelected = panel.querySelector<HTMLButtonElement>("#flatCloudLoadSelected")!;
+  const cloudStatus = panel.querySelector<HTMLElement>("#flatCloudStatus")!;
+
+  cloudToken.value = readCloudModelWriteToken();
 
   const effectiveWorkerCount = (): number => {
     const requested = Math.floor(numberValue(parallelWorkersInput, 0, 0, 16));
@@ -161,6 +197,7 @@ function ensureTrainingUi(): void {
       downloadProfile.disabled = !state.profile;
       downloadCheckpoint.disabled = !state.checkpoint;
       clearSaved.disabled = state.running;
+      cloudUpload.disabled = state.running || !state.profile;
       profileSummary.textContent = describeStoredHeuristicProfile(state.profile);
     },
     onStarted: (message) => {
@@ -182,6 +219,40 @@ function ensureTrainingUi(): void {
       output.textContent = `Training failed: ${message}\nSet parallel workers to 1 to test the sequential fallback.`;
     },
   });
+
+  async function refreshCloudList(): Promise<void> {
+    cloudStatus.textContent = "Loading Cloudflare model list...";
+    try {
+      const response = await listCloudModels("flat");
+      cloudModels.textContent = "";
+      const empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent = response.models.length ? "Select a Flat model..." : "No Flat models uploaded";
+      cloudModels.appendChild(empty);
+      for (const model of response.models) {
+        const option = document.createElement("option");
+        option.value = model.modelId;
+        option.textContent = `${model.displayName} · ${model.modelId}`;
+        cloudModels.appendChild(option);
+      }
+      cloudStatus.textContent = `Cloudflare: ${response.models.length} Flat model(s). latest=${response.latest.flat ?? "none"}`;
+    } catch (error) {
+      cloudStatus.textContent = `Cloud registry unavailable: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  async function loadCloudModel(modelId?: string): Promise<void> {
+    cloudStatus.textContent = "Loading model from Cloudflare...";
+    const envelope = modelId ? await fetchCloudModel(modelId) : await fetchLatestCloudModel("flat");
+    if (!envelope) throw new Error("No Flat model is stored in Cloudflare");
+    if (envelope.family !== "flat" || envelope.payloadFormat !== HEURISTIC_PROFILE_FORMAT) {
+      throw new Error(`Cloud model ${envelope.modelId} is not a Flat Heuristic v1 profile`);
+    }
+    const profile = parseHeuristicWeightProfile(envelope.payload);
+    await controller.importProfile(profile);
+    storeActiveCloudModelId("flat", envelope.modelId);
+    cloudStatus.textContent = `Loaded ${envelope.displayName} (${envelope.modelId})`;
+  }
 
   refreshWorkerHint();
   parallelWorkersInput.addEventListener("input", refreshWorkerHint);
@@ -212,11 +283,11 @@ function ensureTrainingUi(): void {
   });
   downloadProfile.addEventListener("click", () => {
     const profile = controller.state.profile;
-    if (profile) downloadJson("heuristic-flat-v1.json", profile);
+    if (profile) downloadJson(`${profile.profileId}.json`, profile);
   });
   downloadCheckpoint.addEventListener("click", () => {
     const checkpoint = controller.state.checkpoint;
-    if (checkpoint) downloadJson("heuristic-flat-v1-checkpoint.json", checkpoint);
+    if (checkpoint) downloadJson("flat-heuristic-checkpoint-v1.json", checkpoint);
   });
   importProfile.addEventListener("change", async () => {
     const file = importProfile.files?.[0];
@@ -245,12 +316,44 @@ function ensureTrainingUi(): void {
   clearSaved.addEventListener("click", async () => {
     try {
       await controller.clearSaved();
+      storeActiveCloudModelId("flat", null);
       output.textContent = "Saved checkpoint and Learned Heuristic profile cleared.";
     } catch (error) {
       output.textContent = error instanceof Error ? error.message : String(error);
     }
   });
+  cloudToken.addEventListener("change", () => storeCloudModelWriteToken(cloudToken.value));
+  cloudUpload.addEventListener("click", async () => {
+    const profile = controller.state.profile;
+    if (!profile) return;
+    try {
+      cloudStatus.textContent = "Uploading model to Cloudflare...";
+      const generation = profile.training?.generation ?? 0;
+      const envelope = wrapModelPayload({
+        family: "flat",
+        generation,
+        payloadFormat: profile.format,
+        payload: profile,
+        displayName: `Flat Heuristic G${generation}`,
+      });
+      const saved = await uploadCloudModel(envelope, cloudToken.value);
+      cloudStatus.textContent = `Uploaded ${saved.displayName} as ${saved.modelId}`;
+      await refreshCloudList();
+    } catch (error) {
+      cloudStatus.textContent = `Upload failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  });
+  cloudLatest.addEventListener("click", async () => {
+    try { await loadCloudModel(); } catch (error) { cloudStatus.textContent = error instanceof Error ? error.message : String(error); }
+  });
+  cloudRefresh.addEventListener("click", () => void refreshCloudList());
+  cloudModels.addEventListener("change", () => { cloudLoadSelected.disabled = !cloudModels.value; });
+  cloudLoadSelected.addEventListener("click", async () => {
+    if (!cloudModels.value) return;
+    try { await loadCloudModel(cloudModels.value); } catch (error) { cloudStatus.textContent = error instanceof Error ? error.message : String(error); }
+  });
   window.addEventListener("beforeunload", () => controller.dispose());
+  void refreshCloudList();
 }
 
 ensureTrainingUi();
