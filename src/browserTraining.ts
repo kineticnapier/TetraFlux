@@ -1,21 +1,9 @@
+import type { HeuristicTrainingConfig } from "./training/heuristicTrainer";
+import { describeStoredHeuristicProfile } from "./training/browserHeuristicProfile";
 import {
-  checkpointBestProfile,
-  createInitialHeuristicCheckpoint,
-  parseHeuristicTrainingCheckpoint,
-  type HeuristicTrainingCheckpoint,
-  type HeuristicTrainingConfig,
-} from "./training/heuristicTrainer";
-import {
-  parseHeuristicWeightProfile,
-  type HeuristicWeightProfileV1,
-} from "./training/heuristicWeights";
-import {
-  HEURISTIC_CHECKPOINT_STORAGE_KEY,
-  clearStoredHeuristicProfile,
-  describeStoredHeuristicProfile,
-  readStoredHeuristicProfileSync,
-  writeStoredHeuristicProfile,
-} from "./training/browserHeuristicProfile";
+  BrowserTrainingController,
+  type BrowserTrainingRunRequest,
+} from "./training/browser/trainingController";
 
 function downloadJson(filename: string, data: unknown): void {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });
@@ -38,18 +26,15 @@ function numberValue(input: HTMLInputElement, fallback: number, min: number, max
   return Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
 }
 
-function readStoredCheckpoint(): HeuristicTrainingCheckpoint | null {
-  try {
-    const raw = localStorage.getItem(HEURISTIC_CHECKPOINT_STORAGE_KEY);
-    return raw ? parseHeuristicTrainingCheckpoint(JSON.parse(raw)) : null;
-  } catch {
-    return null;
-  }
+function automaticWorkerCount(): number {
+  const cores = Math.max(1, Math.floor(navigator.hardwareConcurrency || 2));
+  return Math.min(8, Math.max(1, cores - 1));
 }
 
 function ensureTrainingUi(): void {
   const toolbar = document.querySelector<HTMLDivElement>("#toolbar");
   if (!toolbar || document.querySelector("#trainHeuristicBrowser")) return;
+
   const button = document.createElement("button");
   button.id = "trainHeuristicBrowser";
   button.textContent = "Train AI";
@@ -64,16 +49,18 @@ function ensureTrainingUi(): void {
         <h2>Heuristic Weight Training</h2>
         <button id="trainClose" class="small-button">×</button>
       </div>
-      <p class="hint">Training is separate from AI Benchmark. The best profile is stored in this browser and becomes <b>Learned Heuristic</b> in AI Battle and Bench AI immediately.</p>
+      <p class="hint">Candidate games run in a CPU Web Worker pool. The best profile is stored locally and becomes <b>Learned Heuristic</b> in AI Battle and Bench AI.</p>
       <div class="bench-controls">
         <label>generations <input id="trainGenerations" type="number" min="1" max="10000" step="1" value="10" /></label>
-        <label>population <input id="trainPopulation" type="number" min="2" max="128" step="1" value="12" /></label>
-        <label>elite <input id="trainElite" type="number" min="1" max="64" step="1" value="3" /></label>
-        <label>games/candidate <input id="trainGames" type="number" min="1" max="256" step="1" value="4" /></label>
-        <label>max pieces <input id="trainMaxPieces" type="number" min="20" max="5000" step="10" value="200" /></label>
+        <label>population <input id="trainPopulation" type="number" min="2" max="128" step="1" value="16" /></label>
+        <label>elite <input id="trainElite" type="number" min="1" max="64" step="1" value="4" /></label>
+        <label>games/candidate <input id="trainGames" type="number" min="1" max="256" step="1" value="8" /></label>
+        <label>max pieces <input id="trainMaxPieces" type="number" min="20" max="5000" step="10" value="300" /></label>
         <label>seed <input id="trainSeed" type="number" step="1" placeholder="random" /></label>
         <label>sigma <input id="trainSigma" type="number" min="0.001" max="2" step="0.01" value="0.18" /></label>
+        <label>parallel workers <input id="trainParallelWorkers" type="number" min="0" max="16" step="1" value="0" title="0 = Auto" /></label>
       </div>
+      <div class="hint" id="trainWorkerHint">parallel workers: Auto</div>
       <div class="bench-controls">
         <button id="trainStart">Start New</button>
         <button id="trainResume">Resume Saved</button>
@@ -85,7 +72,7 @@ function ensureTrainingUi(): void {
         <button id="trainClearSaved">Clear Saved</button>
       </div>
       <div id="trainProfileSummary" class="hint">Learned profile: none</div>
-      <pre id="trainOutput">Ready. The browser trainer runs in its own Web Worker.</pre>
+      <pre id="trainOutput">Ready. Training runs in a dedicated coordinator worker.</pre>
     </div>`;
   document.body.appendChild(panel);
 
@@ -100,6 +87,7 @@ function ensureTrainingUi(): void {
   const clearSaved = panel.querySelector<HTMLButtonElement>("#trainClearSaved")!;
   const profileSummary = panel.querySelector<HTMLElement>("#trainProfileSummary")!;
   const output = panel.querySelector<HTMLPreElement>("#trainOutput")!;
+  const workerHint = panel.querySelector<HTMLElement>("#trainWorkerHint")!;
   const generationsInput = panel.querySelector<HTMLInputElement>("#trainGenerations")!;
   const populationInput = panel.querySelector<HTMLInputElement>("#trainPopulation")!;
   const eliteInput = panel.querySelector<HTMLInputElement>("#trainElite")!;
@@ -107,102 +95,103 @@ function ensureTrainingUi(): void {
   const maxPiecesInput = panel.querySelector<HTMLInputElement>("#trainMaxPieces")!;
   const seedInput = panel.querySelector<HTMLInputElement>("#trainSeed")!;
   const sigmaInput = panel.querySelector<HTMLInputElement>("#trainSigma")!;
+  const parallelWorkersInput = panel.querySelector<HTMLInputElement>("#trainParallelWorkers")!;
 
-  let worker: Worker | null = null;
-  let latestCheckpoint: HeuristicTrainingCheckpoint | null = readStoredCheckpoint();
-  let latestProfile: HeuristicWeightProfileV1 | null = readStoredHeuristicProfileSync()
-    ?? (latestCheckpoint ? checkpointBestProfile(latestCheckpoint) : null);
-
-  const refreshButtons = () => {
-    resume.disabled = !latestCheckpoint || !!worker;
-    downloadProfile.disabled = !latestProfile;
-    downloadCheckpoint.disabled = !latestCheckpoint;
-    profileSummary.textContent = describeStoredHeuristicProfile(latestProfile);
+  const effectiveWorkerCount = (): number => {
+    const requested = Math.floor(numberValue(parallelWorkersInput, 0, 0, 16));
+    return requested === 0 ? automaticWorkerCount() : Math.max(1, requested);
   };
 
-  const stop = () => {
-    worker?.terminate();
-    worker = null;
-    start.disabled = false;
-    cancel.disabled = true;
-    refreshButtons();
+  const refreshWorkerHint = () => {
+    const requested = Math.floor(numberValue(parallelWorkersInput, 0, 0, 16));
+    workerHint.textContent = requested === 0
+      ? `parallel workers: Auto → ${effectiveWorkerCount()} (logical CPU cores=${navigator.hardwareConcurrency || "unknown"})`
+      : `parallel workers: ${effectiveWorkerCount()}`;
   };
 
-  const saveProfile = async (profileInput: unknown): Promise<HeuristicWeightProfileV1> => {
-    latestProfile = await writeStoredHeuristicProfile(profileInput);
-    refreshButtons();
-    return latestProfile;
-  };
-
-  const saveCheckpoint = async (checkpoint: HeuristicTrainingCheckpoint): Promise<void> => {
-    latestCheckpoint = checkpoint;
-    localStorage.setItem(HEURISTIC_CHECKPOINT_STORAGE_KEY, JSON.stringify(checkpoint));
-    await saveProfile(checkpointBestProfile(checkpoint));
-  };
-
-  if (latestProfile) void saveProfile(latestProfile);
-
-  const run = (checkpoint: HeuristicTrainingCheckpoint | null) => {
-    const generations = Math.floor(numberValue(generationsInput, 10, 1, 10_000));
+  const readRunRequest = (): BrowserTrainingRunRequest => {
+    const population = Math.floor(numberValue(populationInput, 16, 2, 128));
     const seedText = seedInput.value.trim();
     const seedRaw = Number(seedText);
-    const seed = seedText.length > 0 && Number.isFinite(seedRaw) ? Math.floor(seedRaw) >>> 0 : randomSeed();
-    const population = Math.floor(numberValue(populationInput, 12, 2, 128));
     const config: Partial<HeuristicTrainingConfig> = {
       population,
-      eliteCount: Math.floor(numberValue(eliteInput, 3, 1, Math.max(1, population - 1))),
-      gamesPerCandidate: Math.floor(numberValue(gamesInput, 4, 1, 256)),
-      maxPieces: Math.floor(numberValue(maxPiecesInput, 200, 20, 5000)),
-      trainingSeedBase: seed,
+      eliteCount: Math.floor(numberValue(eliteInput, 4, 1, Math.max(1, population - 1))),
+      gamesPerCandidate: Math.floor(numberValue(gamesInput, 8, 1, 256)),
+      maxPieces: Math.floor(numberValue(maxPiecesInput, 300, 20, 5000)),
+      trainingSeedBase: seedText.length > 0 && Number.isFinite(seedRaw) ? Math.floor(seedRaw) >>> 0 : randomSeed(),
       initialSigma: numberValue(sigmaInput, 0.18, 0.001, 2),
       fixedKeys: ["holeWeight"],
     };
-    const initial = checkpoint ?? createInitialHeuristicCheckpoint(config);
-    worker = new Worker(new URL("./training/heuristicTrainingWorker.ts", import.meta.url), { type: "module" });
-    start.disabled = true;
-    resume.disabled = true;
-    cancel.disabled = false;
-    output.textContent = `Starting training...\ngenerations=${generations} population=${initial.config.population} games=${initial.config.gamesPerCandidate} maxPieces=${initial.config.maxPieces} seed=${initial.config.trainingSeedBase}`;
-    worker.onmessage = async (event: MessageEvent<any>) => {
-      const message = event.data;
-      if (message.type === "candidate") {
-        output.textContent = `Generation ${message.generation}: candidate ${message.completed}/${message.total}\nfitness=${Number(message.fitness).toFixed(2)} survival=${(Number(message.survivalRate) * 100).toFixed(1)}%`;
-      } else if (message.type === "generation") {
-        const result = message.result;
-        await saveCheckpoint(result.checkpoint);
-        output.textContent = `Generation ${result.generation} complete\nbest fitness=${Number(result.best.fitness).toFixed(2)}\nsurvival=${(Number(result.best.aggregate.survivalRate) * 100).toFixed(1)}% topouts=${result.best.aggregate.topouts}/${result.best.aggregate.games}\nSaved as Learned Heuristic for AI Battle and Bench AI.`;
-      } else if (message.type === "finished") {
-        await saveCheckpoint(message.checkpoint);
-        output.textContent += "\nTraining finished. Learned Heuristic is ready to use.";
-        stop();
-      } else if (message.type === "error" || message.type === "canceled") {
-        output.textContent += `\n${message.message ?? message.type}`;
-        stop();
-      }
+    return {
+      generations: Math.floor(numberValue(generationsInput, 10, 1, 10_000)),
+      parallelWorkers: effectiveWorkerCount(),
+      config,
     };
-    worker.onerror = (event) => {
-      output.textContent = `Training worker crashed: ${event.message}`;
-      stop();
-    };
-    worker.postMessage({ type: "run", generations, config, checkpoint: initial });
   };
 
-  button.addEventListener("click", () => { panel.hidden = false; refreshButtons(); });
-  close.addEventListener("click", () => { if (!worker) panel.hidden = true; });
-  start.addEventListener("click", () => run(null));
-  resume.addEventListener("click", () => { if (latestCheckpoint) run(latestCheckpoint); });
-  cancel.addEventListener("click", () => {
-    worker?.postMessage({ type: "cancel" });
-    output.textContent += "\nCanceling...";
+  const controller = new BrowserTrainingController({
+    onState: (state) => {
+      start.disabled = state.running;
+      resume.disabled = state.running || !state.checkpoint;
+      cancel.disabled = !state.running;
+      downloadProfile.disabled = !state.profile;
+      downloadCheckpoint.disabled = !state.checkpoint;
+      clearSaved.disabled = state.running;
+      profileSummary.textContent = describeStoredHeuristicProfile(state.profile);
+    },
+    onStarted: (message) => {
+      output.textContent = `Training started\nscheduler=${message.scheduler} workers=${message.parallelWorkers}`;
+    },
+    onCandidate: (message) => {
+      output.textContent = `Generation ${message.generation}: candidate ${message.completed}/${message.total}\nworker result candidate=${message.candidateIndex}\nfitness=${Number(message.fitness).toFixed(2)} survival=${(Number(message.survivalRate) * 100).toFixed(1)}%\nscheduler=${message.scheduler} workers=${message.parallelWorkers}`;
+    },
+    onGeneration: (message) => {
+      const result = message.result;
+      output.textContent = `Generation ${result.generation} complete\nbest fitness=${Number(result.best.fitness).toFixed(2)}\nsurvival=${(Number(result.best.aggregate.survivalRate) * 100).toFixed(1)}% topouts=${result.best.aggregate.topouts}/${result.best.aggregate.games}\nscheduler=${message.scheduler} workers=${message.parallelWorkers}\nSaved as Learned Heuristic.`;
+    },
+    onFinished: (message) => {
+      output.textContent += message.type === "canceled"
+        ? "\nTraining canceled. Last completed generation remains saved."
+        : "\nTraining finished. Learned Heuristic is ready to use.";
+    },
+    onError: (message) => {
+      output.textContent = `Training failed: ${message}\nSet parallel workers to 1 to test the sequential fallback.`;
+    },
   });
-  downloadProfile.addEventListener("click", () => { if (latestProfile) downloadJson("heuristic-flat-v1.json", latestProfile); });
-  downloadCheckpoint.addEventListener("click", () => { if (latestCheckpoint) downloadJson("heuristic-flat-v1-checkpoint.json", latestCheckpoint); });
+
+  refreshWorkerHint();
+  parallelWorkersInput.addEventListener("input", refreshWorkerHint);
+  parallelWorkersInput.addEventListener("change", refreshWorkerHint);
+
+  button.addEventListener("click", () => { panel.hidden = false; });
+  close.addEventListener("click", () => { if (!controller.state.running) panel.hidden = true; });
+  start.addEventListener("click", () => {
+    const request = readRunRequest();
+    output.textContent = `Starting new training...\nworkers=${request.parallelWorkers}`;
+    controller.start(request);
+  });
+  resume.addEventListener("click", () => {
+    const request = readRunRequest();
+    output.textContent = `Resuming saved checkpoint...\nworkers=${request.parallelWorkers}`;
+    controller.resume(request);
+  });
+  cancel.addEventListener("click", () => {
+    controller.cancel();
+    output.textContent += "\nCanceling active workers...";
+  });
+  downloadProfile.addEventListener("click", () => {
+    const profile = controller.state.profile;
+    if (profile) downloadJson("heuristic-flat-v1.json", profile);
+  });
+  downloadCheckpoint.addEventListener("click", () => {
+    const checkpoint = controller.state.checkpoint;
+    if (checkpoint) downloadJson("heuristic-flat-v1-checkpoint.json", checkpoint);
+  });
   importProfile.addEventListener("change", async () => {
     const file = importProfile.files?.[0];
     if (!file) return;
     try {
-      const profile = parseHeuristicWeightProfile(JSON.parse(await file.text()));
-      await saveProfile(profile);
+      const profile = await controller.importProfile(JSON.parse(await file.text()));
       output.textContent = `Imported ${profile.profileId}. It is now available as Learned Heuristic.`;
     } catch (error) {
       output.textContent = `Profile import failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -214,8 +203,7 @@ function ensureTrainingUi(): void {
     const file = importCheckpoint.files?.[0];
     if (!file) return;
     try {
-      const checkpoint = parseHeuristicTrainingCheckpoint(JSON.parse(await file.text()));
-      await saveCheckpoint(checkpoint);
+      const checkpoint = await controller.importCheckpoint(JSON.parse(await file.text()));
       output.textContent = `Imported checkpoint at generation ${checkpoint.generation}.`;
     } catch (error) {
       output.textContent = `Checkpoint import failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -224,14 +212,14 @@ function ensureTrainingUi(): void {
     }
   });
   clearSaved.addEventListener("click", async () => {
-    localStorage.removeItem(HEURISTIC_CHECKPOINT_STORAGE_KEY);
-    await clearStoredHeuristicProfile();
-    latestCheckpoint = null;
-    latestProfile = null;
-    output.textContent = "Saved training checkpoint and Learned Heuristic profile cleared.";
-    refreshButtons();
+    try {
+      await controller.clearSaved();
+      output.textContent = "Saved checkpoint and Learned Heuristic profile cleared.";
+    } catch (error) {
+      output.textContent = error instanceof Error ? error.message : String(error);
+    }
   });
-  refreshButtons();
+  window.addEventListener("beforeunload", () => controller.dispose());
 }
 
 ensureTrainingUi();
