@@ -26,7 +26,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
       message.task.evaluationConfig,
       {
         isCanceled: () => canceled,
-        yieldEveryGame: true,
+        yieldEveryGame: false,
       },
     );
     self.postMessage({
