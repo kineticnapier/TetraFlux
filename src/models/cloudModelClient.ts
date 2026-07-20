@@ -7,6 +7,7 @@ import {
 } from "./modelEnvelope";
 
 const CLOUD_TOKEN_SESSION_KEY = "tetraflux:cloudModelWriteToken:v1";
+const ACTIVE_MODEL_STORAGE_PREFIX = "tetraflux:activeCloudModel:v1:";
 
 export interface CloudModelListResponse {
   models: CloudModelSummary[];
@@ -51,6 +52,24 @@ export function storeCloudModelWriteToken(token: string): void {
   }
 }
 
+export function readActiveCloudModelId(family: ModelFamily): string | null {
+  try {
+    return localStorage.getItem(`${ACTIVE_MODEL_STORAGE_PREFIX}${family}`);
+  } catch {
+    return null;
+  }
+}
+
+export function storeActiveCloudModelId(family: ModelFamily, modelId: string | null): void {
+  try {
+    const key = `${ACTIVE_MODEL_STORAGE_PREFIX}${family}`;
+    if (modelId) localStorage.setItem(key, modelId);
+    else localStorage.removeItem(key);
+  } catch {
+    // Local browser storage is optional.
+  }
+}
+
 export async function listCloudModels(family?: ModelFamily): Promise<CloudModelListResponse> {
   const query = family ? `?family=${encodeURIComponent(family)}` : "";
   const response = await fetch(`/api/models/${query}`, { cache: "no-store" });
@@ -90,7 +109,9 @@ export async function uploadCloudModel(
     },
     body: JSON.stringify(model),
   });
-  return parseModelEnvelope(await requireOk(response));
+  const saved = parseModelEnvelope(await requireOk(response));
+  storeActiveCloudModelId(saved.family, saved.modelId);
+  return saved;
 }
 
 export function wrapModelPayload<T>(input: {
