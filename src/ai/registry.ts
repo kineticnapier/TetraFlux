@@ -1,4 +1,5 @@
 import { TetrisEngine } from "../engine/tetris";
+import { AllSpinAI } from "./allSpinAI";
 import { HeuristicAI, type AiChoice } from "./heuristic";
 import { LookaheadAI } from "./lookahead";
 import { WebPolicyAI, type WebPolicyJson } from "./webPolicy";
@@ -119,10 +120,27 @@ export function makeSpinAI(): AiLike {
   return ai;
 }
 
+export function makeAllSpinAI(): AiLike {
+  return new AllSpinAI({
+    depth: 2,
+    beamWidth: 42,
+    includeHold: true,
+    strictLineClears: true,
+    timeBudgetMs: 16,
+    maxCandidatesPerNode: 44,
+    maxTwistCandidates: 18,
+    maxTwistStates: 2400,
+    maxTwistPathLength: 52,
+    twistTimeBudgetMs: 4.5,
+    includeNonClearingMechanical: false,
+  });
+}
+
 export const BUILTIN_AI_FACTORIES: AiFactorySpec[] = [
   { id: "heuristic", name: "HeuristicAI", make: () => new WeightedHeuristicAI("HeuristicAI", { garbagePressureSensitivity: 1.0, garbageHoleSensitivity: 1.0, b2bPressureSensitivity: 1.0 }) },
   { id: "lookahead", name: "LookaheadAI", make: () => new LookaheadAI({ depth: 3, beamWidth: 50, includeHold: true, spinBias: 1, maxCandidatesPerNode: 36, maxNodesPerDepth: 300, timeBudgetMs: 9, useGarbagePressure: true, garbagePressureSensitivity: 1.0, useGarbageHoleTracking: true, garbageHoleSensitivity: 1.1, useB2BPressure: true, b2bPressureSensitivity: 1.05 }) },
   { id: "spin", name: "SpinAI", make: makeSpinAI },
+  { id: "allspin", name: "AllSpinAI (experimental)", make: makeAllSpinAI },
   { id: "aggressive", name: "Aggressive", make: () => new WeightedHeuristicAI("Aggressive", { garbagePressureSensitivity: 0.95, garbageHoleSensitivity: 1.05, b2bPressureSensitivity: 1.25, attackBonus: 5.2, lineBonus: 4.8, holeWeight: 6.4, heightWeight: 0.62, bumpWeight: 0.28, wellWeight: 0.08, holdPenalty: 0.02 }) },
   { id: "defensive", name: "Defensive", make: () => new WeightedHeuristicAI("Defensive", { garbagePressureSensitivity: 1.25, garbageHoleSensitivity: 1.45, b2bPressureSensitivity: 0.85, holeWeight: 13.0, heightWeight: 1.35, bumpWeight: 0.72, wellWeight: 0.28, lineBonus: 2.8, attackBonus: 0.9, holdPenalty: 0.03 }) },
   { id: "downstacker", name: "Downstacker", make: () => new WeightedHeuristicAI("Downstacker", { garbagePressureSensitivity: 1.35, garbageHoleSensitivity: 1.65, b2bPressureSensitivity: 0.75, holeWeight: 11.2, heightWeight: 1.05, bumpWeight: 0.45, wellWeight: 0.04, lineBonus: 5.0, attackBonus: 1.15, holdPenalty: 0.01 }) },
