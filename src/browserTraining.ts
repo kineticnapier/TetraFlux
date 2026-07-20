@@ -49,35 +49,58 @@ function ensureTrainingUi(): void {
         <h2>Heuristic Weight Training</h2>
         <button id="trainClose" class="small-button">×</button>
       </div>
-      <p class="hint">Candidate games run in a CPU Web Worker pool. The best profile is stored locally and becomes <b>Learned Heuristic</b> in AI Battle and Bench AI.</p>
-      <div class="bench-controls">
-        <label>generations <input id="trainGenerations" type="number" min="1" max="10000" step="1" value="10" /></label>
-        <label>population <input id="trainPopulation" type="number" min="2" max="128" step="1" value="16" /></label>
-        <label>elite <input id="trainElite" type="number" min="1" max="64" step="1" value="4" /></label>
-        <label>games/candidate <input id="trainGames" type="number" min="1" max="256" step="1" value="8" /></label>
-        <label>max pieces <input id="trainMaxPieces" type="number" min="20" max="5000" step="10" value="300" /></label>
-        <label>seed <input id="trainSeed" type="number" step="1" placeholder="random" /></label>
-        <label>sigma <input id="trainSigma" type="number" min="0.001" max="2" step="0.01" value="0.18" /></label>
-        <label>parallel workers <input id="trainParallelWorkers" type="number" min="0" max="16" step="1" value="0" title="0 = Auto" /></label>
-      </div>
-      <div class="hint" id="trainWorkerHint">parallel workers: Auto</div>
-      <div class="bench-controls">
-        <button id="trainStart">Start New</button>
-        <button id="trainResume">Resume Saved</button>
-        <button id="trainCancel" disabled>Cancel</button>
-        <button id="trainDownloadProfile" disabled>Download Best Profile</button>
-        <button id="trainDownloadCheckpoint" disabled>Download Checkpoint</button>
-        <label class="small-button">Import Profile<input id="trainImportProfile" type="file" accept="application/json,.json" hidden /></label>
-        <label class="small-button">Import Checkpoint<input id="trainImportCheckpoint" type="file" accept="application/json,.json" hidden /></label>
-        <button id="trainClearSaved">Clear Saved</button>
-      </div>
-      <div id="trainProfileSummary" class="hint">Learned profile: none</div>
+      <p class="hint">Candidate games run in a CPU Web Worker pool. Completed generations are stored locally and exposed as <b>Learned Heuristic</b>.</p>
+
+      <section class="tool-section">
+        <h3>Training size</h3>
+        <div class="bench-controls">
+          <label>generations <input id="trainGenerations" type="number" min="1" max="10000" step="1" value="10" /></label>
+          <label>population <input id="trainPopulation" type="number" min="2" max="128" step="1" value="16" /></label>
+          <label>games/candidate <input id="trainGames" type="number" min="1" max="256" step="1" value="8" /></label>
+          <label>max pieces <input id="trainMaxPieces" type="number" min="20" max="5000" step="10" value="300" /></label>
+          <label>parallel workers <input id="trainParallelWorkers" type="number" min="0" max="16" step="1" value="0" title="0 = Auto" /></label>
+        </div>
+        <div class="hint" id="trainWorkerHint">parallel workers: Auto</div>
+      </section>
+
+      <details class="tool-details">
+        <summary>Advanced optimizer settings</summary>
+        <div class="bench-controls">
+          <label>elite <input id="trainElite" type="number" min="1" max="64" step="1" value="4" /></label>
+          <label>seed <input id="trainSeed" type="number" step="1" placeholder="random" /></label>
+          <label>sigma <input id="trainSigma" type="number" min="0.001" max="2" step="0.01" value="0.18" /></label>
+        </div>
+      </details>
+
+      <section class="tool-section">
+        <h3>Start mode</h3>
+        <div class="bench-controls">
+          <button id="trainStart">Start New Defaults</button>
+          <button id="trainStartFromProfile" disabled>Start From Learned Profile</button>
+          <button id="trainResume">Resume Checkpoint</button>
+          <button id="trainCancel" disabled>Cancel</button>
+        </div>
+        <div id="trainProfileSummary" class="hint">Learned profile: none</div>
+      </section>
+
+      <details class="tool-details">
+        <summary>Profile and checkpoint files</summary>
+        <div class="bench-controls">
+          <button id="trainDownloadProfile" disabled>Download Best Profile</button>
+          <button id="trainDownloadCheckpoint" disabled>Download Checkpoint</button>
+          <label class="small-button">Import Profile<input id="trainImportProfile" type="file" accept="application/json,.json" hidden /></label>
+          <label class="small-button">Import Checkpoint<input id="trainImportCheckpoint" type="file" accept="application/json,.json" hidden /></label>
+          <button id="trainClearSaved">Clear Saved</button>
+        </div>
+      </details>
+
       <pre id="trainOutput">Ready. Training runs in a dedicated coordinator worker.</pre>
     </div>`;
   document.body.appendChild(panel);
 
   const close = panel.querySelector<HTMLButtonElement>("#trainClose")!;
   const start = panel.querySelector<HTMLButtonElement>("#trainStart")!;
+  const startFromProfile = panel.querySelector<HTMLButtonElement>("#trainStartFromProfile")!;
   const resume = panel.querySelector<HTMLButtonElement>("#trainResume")!;
   const cancel = panel.querySelector<HTMLButtonElement>("#trainCancel")!;
   const downloadProfile = panel.querySelector<HTMLButtonElement>("#trainDownloadProfile")!;
@@ -132,6 +155,7 @@ function ensureTrainingUi(): void {
   const controller = new BrowserTrainingController({
     onState: (state) => {
       start.disabled = state.running;
+      startFromProfile.disabled = state.running || !state.profile;
       resume.disabled = state.running || !state.checkpoint;
       cancel.disabled = !state.running;
       downloadProfile.disabled = !state.profile;
@@ -167,12 +191,19 @@ function ensureTrainingUi(): void {
   close.addEventListener("click", () => { if (!controller.state.running) panel.hidden = true; });
   start.addEventListener("click", () => {
     const request = readRunRequest();
-    output.textContent = `Starting new training...\nworkers=${request.parallelWorkers}`;
+    output.textContent = `Starting from built-in default weights...\nworkers=${request.parallelWorkers}`;
     controller.start(request);
+  });
+  startFromProfile.addEventListener("click", () => {
+    const profile = controller.state.profile;
+    if (!profile) return;
+    const request = readRunRequest();
+    output.textContent = `Starting a new optimizer from ${profile.profileId}...\nworkers=${request.parallelWorkers}`;
+    controller.start({ ...request, initialProfile: profile });
   });
   resume.addEventListener("click", () => {
     const request = readRunRequest();
-    output.textContent = `Resuming saved checkpoint...\nworkers=${request.parallelWorkers}`;
+    output.textContent = `Resuming the saved optimizer checkpoint...\nworkers=${request.parallelWorkers}`;
     controller.resume(request);
   });
   cancel.addEventListener("click", () => {
