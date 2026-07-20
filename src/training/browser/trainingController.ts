@@ -21,6 +21,7 @@ export interface BrowserTrainingRunRequest {
   parallelWorkers: number;
   config: Partial<HeuristicTrainingConfig>;
   checkpoint?: HeuristicTrainingCheckpoint | null;
+  initialProfile?: HeuristicWeightProfileV1 | null;
 }
 
 export interface BrowserTrainingControllerState {
@@ -70,7 +71,9 @@ export class BrowserTrainingController {
   start(request: BrowserTrainingRunRequest): void {
     if (this.worker) throw new Error("Training is already running");
     const checkpoint = request.checkpoint === undefined
-      ? createInitialHeuristicCheckpoint(request.config)
+      ? request.initialProfile
+        ? createInitialHeuristicCheckpoint(request.config, request.initialProfile.weights)
+        : createInitialHeuristicCheckpoint(request.config)
       : request.checkpoint;
     const worker = new Worker(new URL("../heuristicTrainingWorker.ts", import.meta.url), { type: "module" });
     this.worker = worker;
@@ -91,7 +94,7 @@ export class BrowserTrainingController {
     });
   }
 
-  resume(request: Omit<BrowserTrainingRunRequest, "checkpoint">): void {
+  resume(request: Omit<BrowserTrainingRunRequest, "checkpoint" | "initialProfile">): void {
     if (!this.checkpoint) throw new Error("No saved checkpoint");
     this.start({ ...request, checkpoint: this.checkpoint });
   }
