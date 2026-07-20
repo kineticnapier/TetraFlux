@@ -1,5 +1,6 @@
 import type { AiChoice } from "./heuristic";
 import { boardMetrics, TetrisEngine, type LockResult } from "../engine/tetris";
+import { promoteMechanicalAllSpin } from "./allSpinRules";
 import { applyMove, type AiMoveOp, findMoveRoute } from "./spinFinisher";
 import { applyBenchmarkGarbageEnvironmentAfterLock, flattenBenchmarkGarbageMetrics, type BenchmarkGarbageStepMetrics } from "./benchmarkEnvironment";
 
@@ -51,7 +52,6 @@ export interface BenchmarkPlacementResult {
   result: LockResult;
   metrics: BenchmarkPlacementMetrics;
 }
-
 
 function numberOrUndefined(value: unknown): number | undefined {
   if (value === null || value === undefined || value === "") return undefined;
@@ -123,6 +123,9 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
   const spinFinisherAttempt = isSpinFinisherChoice(action);
   const explicitRoute = Array.isArray(info.route) ? (info.route as AiMoveOp[]) : null;
   const garbageHoleMetrics = garbageHoleBenchmarkMetricsFromInfo(info);
+  const b2bBefore = engine.b2b;
+  const allSpinScoring = info.strictAllSpin === true || info.allSpinScoring === true;
+  const finalize = (result: LockResult): LockResult => promoteMechanicalAllSpin(engine, result, b2bBefore, allSpinScoring);
 
   if (!spinFinisherAttempt) {
     if (explicitRoute && explicitRoute.length > 0) {
@@ -130,11 +133,11 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
       for (const op of explicitRoute) {
         attemptedRoute = true;
         if (!applyMove(engine, op)) {
-          const fallback = engine.applyAction(action);
+          const fallback = finalize(engine.applyAction(action));
           const inferredWasted = action.piece === "T" && fallback.ok && fallback.spin === "none" && fallback.linesCleared === 0;
           return withBenchmarkGarbage(engine, fallback, {
-      ...garbageHoleMetrics,
-    routeUsed: false,
+            ...garbageHoleMetrics,
+            routeUsed: false,
             routeFailed: true,
             spinFinisherAttempt: false,
             spinFinisherSuccess: false,
@@ -149,13 +152,13 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
         }
       }
 
-      const result = engine.hardDrop();
+      const result = finalize(engine.hardDrop());
       const routedNoSpin = result.ok && result.spin === "none";
       const routedNoClear = result.ok && result.linesCleared <= 0;
       const inferredWasted = action.piece === "T" && result.ok && result.spin === "none" && result.linesCleared === 0;
       return withBenchmarkGarbage(engine, result, {
-      ...garbageHoleMetrics,
-    routeUsed: true,
+        ...garbageHoleMetrics,
+        routeUsed: true,
         routeFailed: false,
         spinFinisherAttempt: false,
         spinFinisherSuccess: false,
@@ -171,11 +174,11 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
       });
     }
 
-    const result = engine.applyAction(action);
+    const result = finalize(engine.applyAction(action));
     const inferredWasted = action.piece === "T" && result.ok && result.spin === "none" && result.linesCleared === 0;
     return withBenchmarkGarbage(engine, result, {
       ...garbageHoleMetrics,
-    routeUsed: false,
+      routeUsed: false,
       routeFailed: false,
       spinFinisherAttempt: false,
       spinFinisherSuccess: false,
@@ -188,13 +191,13 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
 
   const route = explicitRoute ?? findMoveRoute(engine, action, true);
   if (!route) {
-    const direct = engine.applyAction(action);
+    const direct = finalize(engine.applyAction(action));
     const synthetic = info.syntheticSpinFinisher === true && syntheticResultSafe(direct);
     const result = synthetic ? withSyntheticSpinResult(direct, info) : direct;
     const routeFailureReason = String((info.routeDiagnostics as Record<string, unknown> | undefined)?.failureReason ?? (synthetic ? "synthetic_direct_finisher" : "no_path_to_target"));
     return withBenchmarkGarbage(engine, result, {
       ...garbageHoleMetrics,
-    routeUsed: false,
+      routeUsed: false,
       routeFailed: !synthetic,
       spinFinisherAttempt: true,
       spinFinisherSuccess: synthetic && result.spin === "tspin" && result.linesCleared > 0,
@@ -212,10 +215,10 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
   for (const op of route) {
     attemptedRoute = true;
     if (!applyMove(engine, op)) {
-      const fallback = engine.applyAction(action);
+      const fallback = finalize(engine.applyAction(action));
       return withBenchmarkGarbage(engine, fallback, {
-      ...garbageHoleMetrics,
-    routeUsed: false,
+        ...garbageHoleMetrics,
+        routeUsed: false,
         routeFailed: true,
         spinFinisherAttempt: attemptedRoute,
         spinFinisherSuccess: false,
@@ -230,12 +233,12 @@ export function executeBenchmarkAction(engine: TetrisEngine, action: AiChoice): 
     }
   }
 
-  const result = engine.hardDrop();
+  const result = finalize(engine.hardDrop());
   const routedNoSpin = result.ok && result.spin === "none";
   const routedNoClear = result.ok && result.linesCleared <= 0;
   const spinFinisherSuccess = result.ok && result.spin === "tspin" && result.linesCleared > 0 && result.lockEvent?.lastSuccessfulAction === "rotate";
   return withBenchmarkGarbage(engine, result, {
-      ...garbageHoleMetrics,
+    ...garbageHoleMetrics,
     routeUsed: true,
     routeFailed: false,
     spinFinisherAttempt: true,
