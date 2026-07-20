@@ -37,7 +37,8 @@ type CandidateWorkerError = {
 };
 
 let canceled = false;
-let activeWorkers = new Set<Worker>();
+const activeWorkers = new Set<Worker>();
+let rejectActivePopulation: ((reason?: unknown) => void) | null = null;
 
 function workerCount(value: unknown): number {
   const n = Math.floor(Number(value));
@@ -93,8 +94,10 @@ async function evaluatePopulation(
   const actualConcurrency = Math.min(concurrency, sampled.length);
 
   return await new Promise<AllSpinCandidate[]>((resolve, reject) => {
+    rejectActivePopulation = reject;
     const cleanup = () => {
       terminateWorkers();
+      rejectActivePopulation = null;
     };
     const fail = (reason: unknown) => {
       if (settled) return;
@@ -169,6 +172,9 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
       try { worker.postMessage({ type: "cancel" }); } catch { /* no-op */ }
     }
     terminateWorkers();
+    const reject = rejectActivePopulation;
+    rejectActivePopulation = null;
+    reject?.(new Error("Training canceled"));
     return;
   }
 
@@ -226,6 +232,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
       message: error instanceof Error ? error.message : String(error),
     });
   } finally {
+    rejectActivePopulation = null;
     terminateWorkers();
   }
 };
