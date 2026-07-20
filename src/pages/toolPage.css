@@ -73,7 +73,8 @@
 }
 
 .tool-page #benchPanel,
-.tool-page #trainHeuristicPanel {
+.tool-page #trainHeuristicPanel,
+.tool-page #trainAllSpinPanel {
   position: static;
   inset: auto;
   z-index: auto;
@@ -84,7 +85,8 @@
 }
 
 .tool-page #benchPanel[hidden],
-.tool-page #trainHeuristicPanel[hidden] {
+.tool-page #trainHeuristicPanel[hidden],
+.tool-page #trainAllSpinPanel[hidden] {
   display: none;
 }
 
@@ -125,12 +127,26 @@
   margin-bottom: 12px;
 }
 
+.tool-page #flatCloudToken,
+.tool-page #allspinCloudToken {
+  width: min(320px, 58vw);
+  min-width: 180px;
+}
+
+.tool-page #flatCloudModels,
+.tool-page #allspinCloudModels {
+  width: min(460px, 78vw);
+  max-width: 100%;
+}
+
 .tool-page #benchOutput,
-.tool-page #trainOutput {
+.tool-page #trainOutput,
+.tool-page #allspinOutput {
   max-height: 620px;
 }
 
-.tool-page #trainOutput {
+.tool-page #trainOutput,
+.tool-page #allspinOutput {
   margin: 14px 0 0;
   min-height: 180px;
   overflow: auto;
