@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TetraFlux All-Spin Training</title>
+    <meta name="description" content="Train All-Spin scoring weights from a learned flat heuristic in the browser." />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  </head>
+  <body class="tool-page">
+    <div class="tool-page-shell">
+      <header class="tool-nav">
+        <a href="/">Game</a>
+        <a href="/benchmark/">Benchmark</a>
+        <a href="/training/">Flat Training</a>
+        <a class="active" href="/training/allspin/">All-Spin Training</a>
+      </header>
+      <section class="tool-page-intro">
+        <div>
+          <p class="tool-eyebrow">Derived optimization workspace</p>
+          <h1>All-Spin Training</h1>
+          <p>Learned Heuristicを親モデルとして固定し、All-Spin固有の評価重みだけをブラウザCPUで学習します。</p>
+        </div>
+      </section>
+      <main id="toolPageMain"></main>
+      <div id="toolbar" hidden></div>
+    </div>
+    <script type="module" src="/src/pages/allSpinTrainingPage.ts"></script>
+  </body>
+</html>
