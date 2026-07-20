@@ -31,7 +31,7 @@ Clearing site data removes these copies, so keep downloaded backups for importan
 ## File formats
 
 - runtime profile format: `tetraflux_heuristic_weights_v1`
-- optimizer checkpoint format: `tetraflux_heuristic_cem_checkpoint_v1`
+- optimizer checkpoint format: `tetraflux_heuristic_training_checkpoint_v1`
 
 The profile and checkpoint use different formats so runtime loading never needs to trust optimizer internals.
 
