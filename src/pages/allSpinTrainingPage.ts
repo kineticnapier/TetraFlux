@@ -2,9 +2,6 @@ import "../style.css";
 import "./toolPage.css";
 import { bootstrapCloudModels } from "../models/bootstrapCloudModels";
 
-await bootstrapCloudModels();
-await import("../browserAllSpinTraining");
-
 function mountAllSpinTrainingPage(): void {
   const main = document.querySelector<HTMLElement>("#toolPageMain");
   const trigger = document.querySelector<HTMLButtonElement>("#trainAllSpinBrowser");
@@ -20,4 +17,10 @@ function mountAllSpinTrainingPage(): void {
   if (heading) heading.textContent = "All-Spin training configuration";
 }
 
-mountAllSpinTrainingPage();
+async function startAllSpinTrainingPage(): Promise<void> {
+  await bootstrapCloudModels();
+  await import("../browserAllSpinTraining");
+  mountAllSpinTrainingPage();
+}
+
+void startAllSpinTrainingPage();
