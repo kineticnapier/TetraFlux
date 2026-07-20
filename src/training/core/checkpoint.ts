@@ -22,6 +22,10 @@ function intInRange(value: unknown, fallback: number, min: number, max: number):
   return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
 }
 
+function initialRngState(seed: number): number {
+  return (seed ^ 0xA5A5A5A5) >>> 0;
+}
+
 export function initialHeuristicDeviation(
   mean: HeuristicWeightVector,
   config: HeuristicTrainingConfig,
@@ -45,7 +49,7 @@ export function createInitialHeuristicCheckpoint(
     featureSet: HEURISTIC_FEATURE_SET,
     algorithm: "cem",
     generation: 0,
-    rngState: config.trainingSeedBase ^ 0xA5A5A5A5,
+    rngState: initialRngState(config.trainingSeedBase),
     config,
     mean,
     deviation: initialHeuristicDeviation(mean, config),
@@ -90,7 +94,7 @@ export function parseHeuristicTrainingCheckpoint(input: unknown): HeuristicTrain
     featureSet: HEURISTIC_FEATURE_SET,
     algorithm: "cem",
     generation: intInRange(raw.generation, 0, 0, 1_000_000),
-    rngState: intInRange(raw.rngState, config.trainingSeedBase ^ 0xA5A5A5A5, 0, 0xFFFFFFFF),
+    rngState: intInRange(raw.rngState, initialRngState(config.trainingSeedBase), 0, 0xFFFFFFFF) >>> 0,
     config,
     mean,
     deviation,
