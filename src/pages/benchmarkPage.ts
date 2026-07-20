@@ -1,8 +1,8 @@
 import "../style.css";
 import "./toolPage.css";
-import "../training/browserHeuristicProfile";
-import "../training/browserAllSpinProfile";
+import { bootstrapCloudModels } from "../models/bootstrapCloudModels";
 
+await bootstrapCloudModels();
 await import("../browserBenchmark");
 
 function mountBenchmarkPage(): void {
