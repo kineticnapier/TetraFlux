@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
@@ -12,9 +13,9 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
-        game: `${projectRoot}index.html`,
-        benchmark: `${projectRoot}benchmark/index.html`,
-        training: `${projectRoot}training/index.html`,
+        game: resolve(projectRoot, "index.html"),
+        benchmark: resolve(projectRoot, "benchmark/index.html"),
+        training: resolve(projectRoot, "training/index.html"),
       },
     },
   },
