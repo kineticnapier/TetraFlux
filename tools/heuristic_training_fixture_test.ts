@@ -9,6 +9,7 @@ import {
   checkpointBestProfile,
   createInitialHeuristicCheckpoint,
   finalizeHeuristicGeneration,
+  parseHeuristicTrainingCheckpoint,
   runHeuristicTrainingGeneration,
   sampleHeuristicPopulation,
 } from "../src/training/heuristicTrainer";
@@ -43,6 +44,13 @@ const initial = createInitialHeuristicCheckpoint({
   trainingSeedBase: 1234,
   initialSigma: 0.05,
 });
+assert.ok(initial.rngState >= 0 && initial.rngState <= 0xFFFFFFFF);
+const legacySigned = parseHeuristicTrainingCheckpoint({
+  ...initial,
+  rngState: initial.rngState | 0,
+});
+assert.equal(legacySigned.rngState, initial.rngState, "legacy signed RNG states should preserve their uint32 bit pattern");
+
 const sampledA = sampleHeuristicPopulation(initial);
 const sampledB = sampleHeuristicPopulation(initial);
 assert.deepEqual(sampledA, sampledB, "candidate sampling must be deterministic");
