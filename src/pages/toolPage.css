@@ -101,6 +101,30 @@
   display: none;
 }
 
+.tool-section,
+.tool-details {
+  margin: 14px 0;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.17);
+  border-radius: 12px;
+  background: rgba(5, 8, 22, 0.45);
+}
+
+.tool-section h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: #dbeafe;
+}
+
+.tool-details > summary {
+  color: #dbeafe;
+  font-weight: 750;
+}
+
+.tool-details[open] > summary {
+  margin-bottom: 12px;
+}
+
 .tool-page #benchOutput,
 .tool-page #trainOutput {
   max-height: 620px;
