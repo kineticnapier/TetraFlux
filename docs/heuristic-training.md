@@ -1,22 +1,28 @@
 # Heuristic weight training
 
-Benchmarking and training are intentionally separate.
+Benchmarking and training are intentionally separate pages.
 
-- **Bench AI** compares fixed AI/profile behavior and exports measurements.
-- **Train AI** changes the 14 `flat-14-v1` heuristic weights with a deterministic cross-entropy method (CEM) loop.
+- `/` contains the game and AI Battle UI.
+- `/benchmark/` compares fixed AI/profile behavior and exports measurements.
+- `/training/` changes the 14 `flat-14-v1` heuristic weights with a deterministic cross-entropy method (CEM) loop.
+
+Vite builds all three HTML entry points. Cloudflare Pages serves the nested `benchmark/index.html` and `training/index.html` files as directory pages, so no Function or routing rule is required.
 
 ## Web workflow
 
 The normal workflow is entirely browser-based.
 
-1. Open **Train AI** and run or resume training.
-2. At the end of every generation, the checkpoint and best profile are saved in the browser.
-3. The best profile immediately becomes **Learned Heuristic** in AI Battle and **Bench AI**.
-4. Start a new match or benchmark to create an AI instance using the latest profile.
-5. Use **Download Best Profile** and **Download Checkpoint** for backups or transfer.
-6. Use **Import Profile** or **Import Checkpoint** to restore those files.
+1. Open `/training/`.
+2. Choose a start mode:
+   - **Start New Defaults** creates a new optimizer around the built-in weights.
+   - **Start From Learned Profile** creates a new optimizer around the currently saved best profile and resets its exploration deviation from the selected sigma.
+   - **Resume Checkpoint** continues the exact saved generation, mean, deviation, RNG state, and optimizer settings.
+3. At the end of every generation, the checkpoint and best profile are saved in the browser.
+4. Open `/benchmark/` to compare the resulting **Learned Heuristic** against fixed AIs.
+5. Start a new game or benchmark to create an AI instance using the latest profile.
+6. Use profile/checkpoint Import and Download controls for backups or transfer.
 
-The profile is stored in both `localStorage` and IndexedDB. AI Battle reads the synchronous local copy, while benchmark workers read IndexedDB. No server upload or repository file is required.
+The profile is stored in both `localStorage` and IndexedDB. AI Battle reads the synchronous local copy, while benchmark workers read IndexedDB. All three pages share the same origin and therefore the same saved data.
 
 ## Parallel workers
 
@@ -37,13 +43,20 @@ Candidate weights are sampled in the coordinator before any evaluation begins. T
 
 The fixture reverses candidate completion order and verifies that the resulting checkpoint is identical. Initial and legacy signed RNG states are normalized to unsigned 32-bit values before sampling.
 
-This is CPU parallelism, not GPU training. The current simulator contains branching, piece movement, board cloning, and variable-length games, which do not map efficiently to a small WebGPU kernel. The scheduler interface allows a future WASM or WebGPU evaluator without changing CEM or the UI.
+This is CPU parallelism, not GPU training. The current simulator contains branching, piece movement, board cloning, and variable-length games, which do not map efficiently to a small WebGPU kernel. The scheduler interface allows a future WASM or WebGPU evaluator without changing CEM or the page UI.
 
 Vite bundles the coordinator and candidate workers from `new Worker(new URL(..., import.meta.url), { type: "module" })`. No Cloudflare Pages header or function change is required for this Worker Pool.
 
 ## Architecture
 
 ```text
+benchmark/index.html
+training/index.html
+src/pages/
+├─ benchmarkPage.ts
+├─ trainingPage.ts
+└─ toolPage.css
+
 src/training/
 ├─ core/
 │  ├─ types.ts
@@ -72,13 +85,15 @@ src/training/
 
 `heuristicTrainer.ts` remains a compatibility facade for Node tools and fixtures. Browser code supplies a scheduler explicitly. The AI registry receives the learned-profile provider through dependency injection and does not directly own browser storage.
 
+The old benchmark/training scripts still contain their control logic, but they are mounted only by their dedicated page entry points. The game page no longer loads either tool UI or their Workers.
+
 ## Browser storage
 
 - profile: `tetraflux:heuristicWeightProfile:v1`
 - checkpoint: `tetraflux:heuristicTrainingCheckpoint:v1`
 - IndexedDB database: `tetraflux-ai`
 
-Clearing site data removes these copies, so keep downloaded backups for important runs.
+Moving between `/`, `/benchmark/`, and `/training/` does not copy or reset these values. Clearing site data removes them, so keep downloaded backups for important runs.
 
 ## File formats
 
