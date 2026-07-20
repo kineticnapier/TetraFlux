@@ -1,3 +1,4 @@
+import { storeActiveCloudModelId } from "../../models/cloudModelClient";
 import {
   ALLSPIN_CHECKPOINT_STORAGE_KEY,
   clearStoredAllSpinProfile,
@@ -137,6 +138,7 @@ export class AllSpinTrainingController {
 
   async importProfile(input: unknown): Promise<AllSpinWeightProfileV1> {
     const profile = parseAllSpinWeightProfile(input);
+    storeActiveCloudModelId("allspin", null);
     this.profile = await writeStoredAllSpinProfile(profile);
     this.baseProfile = profile.baseHeuristic;
     this.emitState();
@@ -152,6 +154,7 @@ export class AllSpinTrainingController {
   async clearSaved(): Promise<void> {
     if (this.worker) throw new Error("Stop training before clearing All-Spin data");
     localStorage.removeItem(ALLSPIN_CHECKPOINT_STORAGE_KEY);
+    storeActiveCloudModelId("allspin", null);
     await clearStoredAllSpinProfile();
     this.checkpoint = null;
     this.profile = null;
@@ -195,6 +198,7 @@ export class AllSpinTrainingController {
     const checkpoint = parseAllSpinTrainingCheckpoint(input);
     this.checkpoint = checkpoint;
     this.baseProfile = checkpoint.baseHeuristic;
+    storeActiveCloudModelId("allspin", null);
     localStorage.setItem(ALLSPIN_CHECKPOINT_STORAGE_KEY, JSON.stringify(checkpoint));
     this.profile = await writeStoredAllSpinProfile(checkpointBestAllSpinProfile(checkpoint));
     this.emitState();
