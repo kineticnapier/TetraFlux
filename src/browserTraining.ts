@@ -5,10 +5,17 @@ import {
   type HeuristicTrainingCheckpoint,
   type HeuristicTrainingConfig,
 } from "./training/heuristicTrainer";
-import type { HeuristicWeightProfileV1 } from "./training/heuristicWeights";
-
-const CHECKPOINT_STORAGE_KEY = "tetraflux:heuristicTrainingCheckpoint:v1";
-const PROFILE_STORAGE_KEY = "tetraflux:heuristicWeightProfile:v1";
+import {
+  parseHeuristicWeightProfile,
+  type HeuristicWeightProfileV1,
+} from "./training/heuristicWeights";
+import {
+  HEURISTIC_CHECKPOINT_STORAGE_KEY,
+  clearStoredHeuristicProfile,
+  describeStoredHeuristicProfile,
+  readStoredHeuristicProfileSync,
+  writeStoredHeuristicProfile,
+} from "./training/browserHeuristicProfile";
 
 function downloadJson(filename: string, data: unknown): void {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });
@@ -33,7 +40,7 @@ function numberValue(input: HTMLInputElement, fallback: number, min: number, max
 
 function readStoredCheckpoint(): HeuristicTrainingCheckpoint | null {
   try {
-    const raw = localStorage.getItem(CHECKPOINT_STORAGE_KEY);
+    const raw = localStorage.getItem(HEURISTIC_CHECKPOINT_STORAGE_KEY);
     return raw ? parseHeuristicTrainingCheckpoint(JSON.parse(raw)) : null;
   } catch {
     return null;
@@ -57,7 +64,7 @@ function ensureTrainingUi(): void {
         <h2>Heuristic Weight Training</h2>
         <button id="trainClose" class="small-button">×</button>
       </div>
-      <p class="hint">Training is separate from AI Benchmark. This panel evolves the 14 flat heuristic weights and stores a resumable checkpoint locally.</p>
+      <p class="hint">Training is separate from AI Benchmark. The best profile is stored in this browser and becomes <b>Learned Heuristic</b> in AI Battle and Bench AI immediately.</p>
       <div class="bench-controls">
         <label>generations <input id="trainGenerations" type="number" min="1" max="10000" step="1" value="10" /></label>
         <label>population <input id="trainPopulation" type="number" min="2" max="128" step="1" value="12" /></label>
@@ -73,9 +80,11 @@ function ensureTrainingUi(): void {
         <button id="trainCancel" disabled>Cancel</button>
         <button id="trainDownloadProfile" disabled>Download Best Profile</button>
         <button id="trainDownloadCheckpoint" disabled>Download Checkpoint</button>
+        <label class="small-button">Import Profile<input id="trainImportProfile" type="file" accept="application/json,.json" hidden /></label>
         <label class="small-button">Import Checkpoint<input id="trainImportCheckpoint" type="file" accept="application/json,.json" hidden /></label>
         <button id="trainClearSaved">Clear Saved</button>
       </div>
+      <div id="trainProfileSummary" class="hint">Learned profile: none</div>
       <pre id="trainOutput">Ready. The browser trainer runs in its own Web Worker.</pre>
     </div>`;
   document.body.appendChild(panel);
@@ -86,8 +95,10 @@ function ensureTrainingUi(): void {
   const cancel = panel.querySelector<HTMLButtonElement>("#trainCancel")!;
   const downloadProfile = panel.querySelector<HTMLButtonElement>("#trainDownloadProfile")!;
   const downloadCheckpoint = panel.querySelector<HTMLButtonElement>("#trainDownloadCheckpoint")!;
+  const importProfile = panel.querySelector<HTMLInputElement>("#trainImportProfile")!;
   const importCheckpoint = panel.querySelector<HTMLInputElement>("#trainImportCheckpoint")!;
   const clearSaved = panel.querySelector<HTMLButtonElement>("#trainClearSaved")!;
+  const profileSummary = panel.querySelector<HTMLElement>("#trainProfileSummary")!;
   const output = panel.querySelector<HTMLPreElement>("#trainOutput")!;
   const generationsInput = panel.querySelector<HTMLInputElement>("#trainGenerations")!;
   const populationInput = panel.querySelector<HTMLInputElement>("#trainPopulation")!;
@@ -99,12 +110,14 @@ function ensureTrainingUi(): void {
 
   let worker: Worker | null = null;
   let latestCheckpoint: HeuristicTrainingCheckpoint | null = readStoredCheckpoint();
-  let latestProfile: HeuristicWeightProfileV1 | null = latestCheckpoint ? checkpointBestProfile(latestCheckpoint) : null;
+  let latestProfile: HeuristicWeightProfileV1 | null = readStoredHeuristicProfileSync()
+    ?? (latestCheckpoint ? checkpointBestProfile(latestCheckpoint) : null);
 
   const refreshButtons = () => {
     resume.disabled = !latestCheckpoint || !!worker;
     downloadProfile.disabled = !latestProfile;
     downloadCheckpoint.disabled = !latestCheckpoint;
+    profileSummary.textContent = describeStoredHeuristicProfile(latestProfile);
   };
 
   const stop = () => {
@@ -115,13 +128,19 @@ function ensureTrainingUi(): void {
     refreshButtons();
   };
 
-  const saveCheckpoint = (checkpoint: HeuristicTrainingCheckpoint) => {
-    latestCheckpoint = checkpoint;
-    latestProfile = checkpointBestProfile(checkpoint);
-    localStorage.setItem(CHECKPOINT_STORAGE_KEY, JSON.stringify(checkpoint));
-    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(latestProfile));
+  const saveProfile = async (profileInput: unknown): Promise<HeuristicWeightProfileV1> => {
+    latestProfile = await writeStoredHeuristicProfile(profileInput);
     refreshButtons();
+    return latestProfile;
   };
+
+  const saveCheckpoint = async (checkpoint: HeuristicTrainingCheckpoint): Promise<void> => {
+    latestCheckpoint = checkpoint;
+    localStorage.setItem(HEURISTIC_CHECKPOINT_STORAGE_KEY, JSON.stringify(checkpoint));
+    await saveProfile(checkpointBestProfile(checkpoint));
+  };
+
+  if (latestProfile) void saveProfile(latestProfile);
 
   const run = (checkpoint: HeuristicTrainingCheckpoint | null) => {
     const generations = Math.floor(numberValue(generationsInput, 10, 1, 10_000));
@@ -144,17 +163,17 @@ function ensureTrainingUi(): void {
     resume.disabled = true;
     cancel.disabled = false;
     output.textContent = `Starting training...\ngenerations=${generations} population=${initial.config.population} games=${initial.config.gamesPerCandidate} maxPieces=${initial.config.maxPieces} seed=${initial.config.trainingSeedBase}`;
-    worker.onmessage = (event: MessageEvent<any>) => {
+    worker.onmessage = async (event: MessageEvent<any>) => {
       const message = event.data;
       if (message.type === "candidate") {
         output.textContent = `Generation ${message.generation}: candidate ${message.completed}/${message.total}\nfitness=${Number(message.fitness).toFixed(2)} survival=${(Number(message.survivalRate) * 100).toFixed(1)}%`;
       } else if (message.type === "generation") {
         const result = message.result;
-        saveCheckpoint(result.checkpoint);
-        output.textContent = `Generation ${result.generation} complete\nbest fitness=${Number(result.best.fitness).toFixed(2)}\nsurvival=${(Number(result.best.aggregate.survivalRate) * 100).toFixed(1)}% topouts=${result.best.aggregate.topouts}/${result.best.aggregate.games}\nSaved checkpoint and best profile to localStorage.`;
+        await saveCheckpoint(result.checkpoint);
+        output.textContent = `Generation ${result.generation} complete\nbest fitness=${Number(result.best.fitness).toFixed(2)}\nsurvival=${(Number(result.best.aggregate.survivalRate) * 100).toFixed(1)}% topouts=${result.best.aggregate.topouts}/${result.best.aggregate.games}\nSaved as Learned Heuristic for AI Battle and Bench AI.`;
       } else if (message.type === "finished") {
-        saveCheckpoint(message.checkpoint);
-        output.textContent += "\nTraining finished.";
+        await saveCheckpoint(message.checkpoint);
+        output.textContent += "\nTraining finished. Learned Heuristic is ready to use.";
         stop();
       } else if (message.type === "error" || message.type === "canceled") {
         output.textContent += `\n${message.message ?? message.type}`;
@@ -178,25 +197,38 @@ function ensureTrainingUi(): void {
   });
   downloadProfile.addEventListener("click", () => { if (latestProfile) downloadJson("heuristic-flat-v1.json", latestProfile); });
   downloadCheckpoint.addEventListener("click", () => { if (latestCheckpoint) downloadJson("heuristic-flat-v1-checkpoint.json", latestCheckpoint); });
+  importProfile.addEventListener("change", async () => {
+    const file = importProfile.files?.[0];
+    if (!file) return;
+    try {
+      const profile = parseHeuristicWeightProfile(JSON.parse(await file.text()));
+      await saveProfile(profile);
+      output.textContent = `Imported ${profile.profileId}. It is now available as Learned Heuristic.`;
+    } catch (error) {
+      output.textContent = `Profile import failed: ${error instanceof Error ? error.message : String(error)}`;
+    } finally {
+      importProfile.value = "";
+    }
+  });
   importCheckpoint.addEventListener("change", async () => {
     const file = importCheckpoint.files?.[0];
     if (!file) return;
     try {
       const checkpoint = parseHeuristicTrainingCheckpoint(JSON.parse(await file.text()));
-      saveCheckpoint(checkpoint);
+      await saveCheckpoint(checkpoint);
       output.textContent = `Imported checkpoint at generation ${checkpoint.generation}.`;
     } catch (error) {
-      output.textContent = `Import failed: ${error instanceof Error ? error.message : String(error)}`;
+      output.textContent = `Checkpoint import failed: ${error instanceof Error ? error.message : String(error)}`;
     } finally {
       importCheckpoint.value = "";
     }
   });
-  clearSaved.addEventListener("click", () => {
-    localStorage.removeItem(CHECKPOINT_STORAGE_KEY);
-    localStorage.removeItem(PROFILE_STORAGE_KEY);
+  clearSaved.addEventListener("click", async () => {
+    localStorage.removeItem(HEURISTIC_CHECKPOINT_STORAGE_KEY);
+    await clearStoredHeuristicProfile();
     latestCheckpoint = null;
     latestProfile = null;
-    output.textContent = "Saved training checkpoint cleared.";
+    output.textContent = "Saved training checkpoint and Learned Heuristic profile cleared.";
     refreshButtons();
   });
   refreshButtons();
