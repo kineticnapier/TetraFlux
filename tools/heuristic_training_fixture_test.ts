@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
 import { HeuristicAI } from "../src/ai/heuristic";
 import { makeLearnedHeuristicAI } from "../src/ai/registry";
-import { createInitialHeuristicCheckpoint, checkpointBestProfile, runHeuristicTrainingGeneration } from "../src/training/heuristicTrainer";
-import { applyHeuristicWeightProfile, createHeuristicWeightProfile, parseHeuristicWeightProfile } from "../src/training/heuristicWeights";
+import {
+  checkpointBestProfile,
+  createInitialHeuristicCheckpoint,
+  finalizeHeuristicGeneration,
+  runHeuristicTrainingGeneration,
+  sampleHeuristicPopulation,
+} from "../src/training/heuristicTrainer";
+import {
+  applyHeuristicWeightProfile,
+  createHeuristicWeightProfile,
+  parseHeuristicWeightProfile,
+} from "../src/training/heuristicWeights";
 
 const profile = createHeuristicWeightProfile({ holeWeight: 9.5, attackBonus: 3.1 });
 const parsed = parseHeuristicWeightProfile(JSON.parse(JSON.stringify(profile)));
@@ -23,10 +33,31 @@ const initial = createInitialHeuristicCheckpoint({
   trainingSeedBase: 1234,
   initialSigma: 0.05,
 });
+const sampledA = sampleHeuristicPopulation(initial);
+const sampledB = sampleHeuristicPopulation(initial);
+assert.deepEqual(sampledA, sampledB, "candidate sampling must be deterministic");
+
 const generation = await runHeuristicTrainingGeneration(initial, { yieldEveryGame: false });
 assert.equal(generation.generation, 1);
 assert.equal(generation.candidates.length, 2);
 assert.ok(Number.isFinite(generation.best.fitness));
 assert.ok(generation.checkpoint.best);
+assert.equal(generation.checkpoint.rngState, sampledA.nextRngState);
+assert.deepEqual(
+  generation.candidates.map((candidate) => ({ index: candidate.index, weights: candidate.weights })).sort((a, b) => a.index - b.index),
+  sampledA.candidates,
+  "evaluated candidates must match the pre-sampled population",
+);
+
+const reordered = finalizeHeuristicGeneration(
+  initial,
+  [...generation.candidates].reverse(),
+  1,
+  initial.config.trainingSeedBase,
+  sampledA.nextRngState,
+);
+assert.deepEqual(reordered.checkpoint.mean, generation.checkpoint.mean, "evaluation completion order must not change CEM mean");
+assert.deepEqual(reordered.checkpoint.deviation, generation.checkpoint.deviation, "evaluation completion order must not change CEM deviation");
+assert.deepEqual(reordered.checkpoint.best, generation.checkpoint.best, "evaluation completion order must not change the best candidate");
 assert.equal(checkpointBestProfile(generation.checkpoint).featureSet, "flat-14-v1");
 console.log("heuristic training fixture passed");
