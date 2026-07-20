@@ -1,4 +1,8 @@
 import { bootstrapCloudModels } from "../models/bootstrapCloudModels";
 
-await bootstrapCloudModels();
-await import("../main");
+async function startGamePage(): Promise<void> {
+  await bootstrapCloudModels();
+  await import("../main");
+}
+
+void startGamePage();
