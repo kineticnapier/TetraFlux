@@ -92,11 +92,15 @@ function buildCandidates(engine: TetrisEngine, options: ResolvedOptions, deadlin
       deadlineMs: performance.now() + twistBudget,
       includeNonClearingMechanical: options.includeNonClearingMechanical,
       allowUnsafe: false,
-    })
+      allSpinScoring: options.strictLineClears,
+    }).map((action) => asChoice(action, { strictAllSpin: options.strictLineClears }))
     : [];
 
   const direct = engine.legalPlacements(options.includeHold)
-    .map((action) => asChoice(action, { source: "allspin_direct" }));
+    .map((action) => asChoice(action, {
+      source: "allspin_direct",
+      strictAllSpin: options.strictLineClears,
+    }));
 
   const output: AiChoice[] = [];
   const seen = new Set<string>();
