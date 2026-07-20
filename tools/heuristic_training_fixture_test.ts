@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { HeuristicAI } from "../src/ai/heuristic";
-import { makeLearnedHeuristicAI } from "../src/ai/registry";
+import {
+  createBuiltinAi,
+  makeLearnedHeuristicAI,
+  setDefaultLearnedProfileProvider,
+} from "../src/ai/registry";
 import {
   checkpointBestProfile,
   createInitialHeuristicCheckpoint,
@@ -24,6 +28,12 @@ assert.equal(ai.attackBonus, 3.1);
 const learned = makeLearnedHeuristicAI(parsed) as HeuristicAI;
 assert.equal(learned.holeWeight, 9.5, "Learned Heuristic should apply the supplied browser profile");
 assert.equal(learned.attackBonus, 3.1);
+
+setDefaultLearnedProfileProvider(() => parsed);
+const injected = createBuiltinAi("learned_heuristic").ai as HeuristicAI;
+assert.equal(injected.holeWeight, 9.5, "browser profile provider should reach the game registry");
+assert.equal(injected.attackBonus, 3.1);
+setDefaultLearnedProfileProvider(() => undefined);
 
 const initial = createInitialHeuristicCheckpoint({
   population: 2,
