@@ -1,3 +1,4 @@
+import "../training/browserHeuristicProfile";
 import { buildBrowserAis, runOneAi, type BenchConfig, type BenchPayload } from "./benchmarkCore";
 import { configureBenchmarkGarbageEnvironment, getBenchmarkGarbageEnvironmentConfig } from "../ai/benchmarkEnvironment";
 import { normalizeBenchmarkTuningConfig } from "./benchmarkTuning";
