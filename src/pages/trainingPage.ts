@@ -2,9 +2,6 @@ import "../style.css";
 import "./toolPage.css";
 import { bootstrapCloudModels } from "../models/bootstrapCloudModels";
 
-await bootstrapCloudModels();
-await import("../browserTraining");
-
 function mountTrainingPage(): void {
   const main = document.querySelector<HTMLElement>("#toolPageMain");
   const trigger = document.querySelector<HTMLButtonElement>("#trainHeuristicBrowser");
@@ -20,4 +17,10 @@ function mountTrainingPage(): void {
   if (heading) heading.textContent = "Flat training configuration";
 }
 
-mountTrainingPage();
+async function startTrainingPage(): Promise<void> {
+  await bootstrapCloudModels();
+  await import("../browserTraining");
+  mountTrainingPage();
+}
+
+void startTrainingPage();
