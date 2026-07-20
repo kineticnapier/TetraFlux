@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TetraFlux AI Benchmark</title>
+    <meta name="description" content="Run deterministic browser benchmarks for TetraFlux AIs." />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  </head>
+  <body class="tool-page">
+    <div class="tool-page-shell">
+      <header class="tool-nav">
+        <a href="/">Game</a>
+        <a class="active" href="/benchmark/">Benchmark</a>
+        <a href="/training/">Training</a>
+      </header>
+      <section class="tool-page-intro">
+        <div>
+          <p class="tool-eyebrow">Evaluation workspace</p>
+          <h1>AI Benchmark</h1>
+          <p>固定したAI・profileを同じseedで比較します。学習処理はこのページでは実行しません。</p>
+        </div>
+      </section>
+      <main id="toolPageMain"></main>
+      <div id="toolbar" hidden></div>
+    </div>
+    <script type="module" src="/src/pages/benchmarkPage.ts"></script>
+  </body>
+</html>
