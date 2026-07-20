@@ -1,7 +1,8 @@
 import "../style.css";
 import "./toolPage.css";
 import "../training/browserHeuristicProfile";
-import "../browserBenchmark";
+
+await import("../browserBenchmark");
 
 function mountBenchmarkPage(): void {
   const main = document.querySelector<HTMLElement>("#toolPageMain");
