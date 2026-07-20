@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { HeuristicAI } from "../src/ai/heuristic";
+import { makeLearnedHeuristicAI } from "../src/ai/registry";
 import { createInitialHeuristicCheckpoint, checkpointBestProfile, runHeuristicTrainingGeneration } from "../src/training/heuristicTrainer";
 import { applyHeuristicWeightProfile, createHeuristicWeightProfile, parseHeuristicWeightProfile } from "../src/training/heuristicWeights";
 
@@ -9,6 +10,10 @@ const ai = new HeuristicAI();
 applyHeuristicWeightProfile(ai, parsed);
 assert.equal(ai.holeWeight, 9.5);
 assert.equal(ai.attackBonus, 3.1);
+
+const learned = makeLearnedHeuristicAI(parsed) as HeuristicAI;
+assert.equal(learned.holeWeight, 9.5, "Learned Heuristic should apply the supplied browser profile");
+assert.equal(learned.attackBonus, 3.1);
 
 const initial = createInitialHeuristicCheckpoint({
   population: 2,
