@@ -35,7 +35,7 @@ Candidate weights are sampled in the coordinator before any evaluation begins. T
 - next-generation mean/deviation,
 - saved best profile.
 
-The fixture reverses candidate completion order and verifies that the resulting checkpoint is identical.
+The fixture reverses candidate completion order and verifies that the resulting checkpoint is identical. Initial and legacy signed RNG states are normalized to unsigned 32-bit values before sampling.
 
 This is CPU parallelism, not GPU training. The current simulator contains branching, piece movement, board cloning, and variable-length games, which do not map efficiently to a small WebGPU kernel. The scheduler interface allows a future WASM or WebGPU evaluator without changing CEM or the UI.
 
@@ -68,7 +68,7 @@ src/training/
 └─ browserHeuristicProfile.ts
 ```
 
-`heuristicTrainer.ts` remains a compatibility facade for Node tools and fixtures. Browser code supplies a scheduler explicitly.
+`heuristicTrainer.ts` remains a compatibility facade for Node tools and fixtures. Browser code supplies a scheduler explicitly. The AI registry receives the learned-profile provider through dependency injection and does not directly own browser storage.
 
 ## Browser storage
 
