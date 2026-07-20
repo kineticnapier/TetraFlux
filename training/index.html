@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TetraFlux Heuristic Training</title>
-    <meta name="description" content="Train and manage TetraFlux heuristic profiles in the browser." />
+    <title>TetraFlux Flat Heuristic Training</title>
+    <meta name="description" content="Train and manage TetraFlux flat heuristic profiles in the browser." />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   </head>
   <body class="tool-page">
@@ -12,13 +12,14 @@
       <header class="tool-nav">
         <a href="/">Game</a>
         <a href="/benchmark/">Benchmark</a>
-        <a class="active" href="/training/">Training</a>
+        <a class="active" href="/training/">Flat Training</a>
+        <a href="/training/allspin/">All-Spin Training</a>
       </header>
       <section class="tool-page-intro">
         <div>
-          <p class="tool-eyebrow">Optimization workspace</p>
-          <h1>Heuristic Training</h1>
-          <p>重み探索、checkpoint再開、profileのImport/Exportをこのページに集約します。</p>
+          <p class="tool-eyebrow">Base optimization workspace</p>
+          <h1>Flat Heuristic Training</h1>
+          <p>盤面の安全性と火力を担う基礎profileを学習します。このモデルをAll-Spin学習の親モデルとして利用できます。</p>
         </div>
       </section>
       <main id="toolPageMain"></main>
