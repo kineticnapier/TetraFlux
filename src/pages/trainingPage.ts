@@ -1,7 +1,8 @@
 import "../style.css";
 import "./toolPage.css";
 import "../training/browserHeuristicProfile";
-import "../browserTraining";
+
+await import("../browserTraining");
 
 function mountTrainingPage(): void {
   const main = document.querySelector<HTMLElement>("#toolPageMain");
