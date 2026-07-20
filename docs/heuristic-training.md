@@ -1,135 +1,189 @@
-# Heuristic weight training
+# Browser AI training
 
-Benchmarking and training are intentionally separate pages.
+Benchmarking and optimization use separate pages.
 
 - `/` contains the game and AI Battle UI.
-- `/benchmark/` compares fixed AI/profile behavior and exports measurements.
-- `/training/` changes the 14 `flat-14-v1` heuristic weights with a deterministic cross-entropy method (CEM) loop.
+- `/benchmark/` compares fixed AI/model behavior.
+- `/training/` trains the base Flat Heuristic.
+- `/training/allspin/` trains All-Spin scoring derived from the active Flat model.
 
-Vite builds all three HTML entry points. Cloudflare Pages serves the nested `benchmark/index.html` and `training/index.html` files as directory pages, so no Function or routing rule is required.
+Vite builds all four HTML entry points. Cloudflare Pages serves the nested directory pages directly.
 
-## Web workflow
+## Model hierarchy
 
-The normal workflow is entirely browser-based.
+```text
+Flat Heuristic
+  format: tetraflux_heuristic_weights_v1
+  feature set: flat-14-v1
+  learns: board safety, lines, attack and terrain weights
+          │
+          └── frozen parent evaluator
+                    │
+                    ▼
+Derived All-Spin
+  format: tetraflux_allspin_weights_v1
+  feature set: allspin-derived-flat14-10-v1
+  learns: spin clear, lines, attack, B2B, chain, setup and route weights
+```
+
+An All-Spin profile embeds the complete Flat profile used during training. It may also record the immutable Cloudflare `parentModelId`. The derived model therefore remains self-contained even if the parent is later replaced by a newer Flat model.
+
+## Flat training workflow
 
 1. Open `/training/`.
 2. Choose a start mode:
-   - **Start New Defaults** creates a new optimizer around the built-in weights.
-   - **Start From Learned Profile** creates a new optimizer around the currently saved best profile and resets its exploration deviation from the selected sigma.
-   - **Resume Checkpoint** continues the exact saved generation, mean, deviation, RNG state, and optimizer settings.
-3. At the end of every generation, the checkpoint and best profile are saved in the browser.
-4. Open `/benchmark/` to compare the resulting **Learned Heuristic** against fixed AIs.
-5. Start a new game or benchmark to create an AI instance using the latest profile.
-6. Use profile/checkpoint Import and Download controls for backups or transfer.
+   - **Start New Defaults** starts from built-in weights.
+   - **Start From Learned Profile** starts a fresh optimizer around the active profile with reset sigma.
+   - **Resume Checkpoint** continues the exact optimizer state.
+3. Every completed generation saves the checkpoint and global-best profile locally.
+4. Use `/benchmark/` for fixed-seed validation.
+5. Upload accepted models to Cloudflare from the model registry section.
 
-The profile is stored in both `localStorage` and IndexedDB. AI Battle reads the synchronous local copy, while benchmark workers read IndexedDB. All three pages share the same origin and therefore the same saved data.
+Flat training changes the 14 `flat-14-v1` weights. `holeWeight` is fixed by default to remove the global score-scale degree of freedom; the other 13 are learned.
 
-## Parallel workers
+## All-Spin training workflow
 
-Training uses one coordinator worker plus a pool of candidate workers. Each candidate receives the same generation seed set and evaluates independently.
+1. Train, import, or load a Flat model first.
+2. Open `/training/allspin/`.
+3. The active Learned Heuristic is frozen as the parent board evaluator.
+4. Choose:
+   - **Start From Learned Heuristic** for the first derived run.
+   - **Restart From Learned All-Spin** to reset sigma around the current best All-Spin profile.
+   - **Resume Checkpoint** to continue the exact All-Spin optimizer state.
+5. Validate the resulting `AllSpinAI (<profileId>)` on `/benchmark/`.
+6. Upload accepted All-Spin models to Cloudflare.
 
-- `parallel workers = 0` selects **Auto**.
+Only the following 10 All-Spin-specific weights are optimized:
+
+- `baseHeuristicScale`
+- `spinClearBonus`
+- `spinLineBonus`
+- `spinAttackBonus`
+- `mechanicalSetupBonus`
+- `b2bBonus`
+- `spinChainBonus`
+- `routeLengthPenalty`
+- `highStackPenalty`
+- `heightRisePenalty`
+
+Strict All-Spin legality and the topout penalty are fixed rules, not trainable weights.
+
+## Deterministic All-Spin search
+
+Gameplay uses a millisecond time budget. Training uses a fixed node budget:
+
+```text
+searchBudgetMode = nodes
+maxExpandedNodes = selected UI value
+```
+
+Twist generation is bounded by state, path and candidate counts instead of a deadline. With the same parent profile, weights and seeds, changing CPU load or Worker completion order does not change the evaluated search tree.
+
+The Stage 1 defaults are intentionally small:
+
+```text
+population: 8
+elite: 2
+games/candidate: 2
+max pieces: 100
+expanded nodes: 160
+depth: 2
+```
+
+After basic survival and spin frequency improve, increase games, pieces and node budget gradually. All-Spin search is substantially more expensive than Flat evaluation.
+
+## Worker Pool
+
+Both optimizers execute in browser Web Workers.
+
+- `parallel workers = 0` selects Auto.
 - Auto uses `min(8, logical CPU cores - 1)` with a minimum of one.
-- Values from 1 to 16 can be selected manually.
-- `1` uses the sequential scheduler and is useful as a compatibility fallback.
+- Values 1–16 can be selected manually.
+- `1` is the sequential diagnostic fallback.
 
-Candidate weights are sampled in the coordinator before any evaluation begins. Therefore worker completion order cannot change:
+The coordinator samples the complete population before evaluation. Candidate completion order therefore cannot change sampled weights, RNG state, elite selection or the next CEM distribution.
 
-- sampled weights,
-- RNG state,
-- elite ordering,
-- next-generation mean/deviation,
-- saved best profile.
+The expensive game simulations run on the visitor's CPU, not Cloudflare CPU.
 
-The fixture reverses candidate completion order and verifies that the resulting checkpoint is identical. Initial and legacy signed RNG states are normalized to unsigned 32-bit values before sampling.
+## Local browser storage
 
-This is CPU parallelism, not GPU training. The current simulator contains branching, piece movement, board cloning, and variable-length games, which do not map efficiently to a small WebGPU kernel. The scheduler interface allows a future WASM or WebGPU evaluator without changing CEM or the page UI.
+Flat:
 
-Vite bundles the coordinator and candidate workers from `new Worker(new URL(..., import.meta.url), { type: "module" })`. No Cloudflare Pages header or function change is required for this Worker Pool.
+- profile: `tetraflux:heuristicWeightProfile:v1`
+- checkpoint: `tetraflux:heuristicTrainingCheckpoint:v1`
+
+All-Spin:
+
+- profile: `tetraflux:allSpinWeightProfile:v1`
+- checkpoint: `tetraflux:allSpinTrainingCheckpoint:v1`
+
+Both profile families are mirrored to IndexedDB database `tetraflux-ai` so benchmark Workers can read them. All pages use the same origin and share the data.
+
+## Cloudflare model registry
+
+Cloudflare stores immutable model envelopes in Workers KV. The envelope format is:
+
+```text
+tetraflux_model_envelope_v1
+```
+
+Readable IDs follow:
+
+```text
+flat-g0008-20260721T143012Z-a1b2
+allspin-g0003-20260721T151500Z-c3d4
+```
+
+The browser generates the model, then uploads only the final JSON. When no local profile exists, game, benchmark and training pages attempt to cache the latest Cloudflare model for each family.
+
+See [`cloud-model-registry.md`](./cloud-model-registry.md) for the required `MODELS` KV binding and `MODEL_WRITE_TOKEN` secret.
 
 ## Architecture
 
 ```text
-benchmark/index.html
-training/index.html
-src/pages/
-├─ benchmarkPage.ts
-├─ trainingPage.ts
-└─ toolPage.css
+src/models/
+├─ modelEnvelope.ts
+├─ cloudModelClient.ts
+└─ bootstrapCloudModels.ts
 
 src/training/
-├─ core/
-│  ├─ types.ts
-│  ├─ config.ts
-│  ├─ random.ts
-│  ├─ candidateSampler.ts
-│  ├─ checkpoint.ts
-│  ├─ cemOptimizer.ts
-│  └─ generation.ts
-├─ evaluation/
-│  ├─ gameSimulator.ts
-│  ├─ fitness.ts
-│  └─ heuristicEvaluator.ts
-├─ scheduler/
-│  ├─ types.ts
-│  ├─ sequentialScheduler.ts
-│  └─ workerPoolScheduler.ts
+├─ core/                         Flat CEM core
+├─ evaluation/                   Flat simulator and fitness
+├─ scheduler/                    Flat sequential / Worker Pool
 ├─ browser/
 │  ├─ candidateWorker.ts
-│  └─ trainingController.ts
-├─ heuristicTrainer.ts
-├─ heuristicTrainingWorker.ts
+│  ├─ trainingController.ts
+│  ├─ allSpinCandidateWorker.ts
+│  └─ allSpinTrainingController.ts
 ├─ heuristicWeights.ts
-└─ browserHeuristicProfile.ts
+├─ heuristicTrainingWorker.ts
+├─ browserHeuristicProfile.ts
+├─ allspinWeights.ts
+├─ allspinTrainer.ts
+├─ allspinTrainingWorker.ts
+└─ browserAllSpinProfile.ts
+
+functions/api/models/                Cloudflare Pages Functions
+functions/_lib/modelStore.js         Workers KV helper
 ```
 
-`heuristicTrainer.ts` remains a compatibility facade for Node tools and fixtures. Browser code supplies a scheduler explicitly. The AI registry receives the learned-profile provider through dependency injection and does not directly own browser storage.
+## Fixtures
 
-The old benchmark/training scripts still contain their control logic, but they are mounted only by their dedicated page entry points. The game page no longer loads either tool UI or their Workers.
+```bash
+npm run test:heuristic-training
+npm run test:allspin-ai
+npm run test:allspin-training
+```
 
-## Browser storage
+The All-Spin training fixture verifies deterministic candidate sampling, deterministic node-budget evaluation, strict-clear behavior, derived profile parsing and cloud envelope lineage.
 
-- profile: `tetraflux:heuristicWeightProfile:v1`
-- checkpoint: `tetraflux:heuristicTrainingCheckpoint:v1`
-- IndexedDB database: `tetraflux-ai`
+## Optional Node Flat workflow
 
-Moving between `/`, `/benchmark/`, and `/training/` does not copy or reset these values. Clearing site data removes them, so keep downloaded backups for important runs.
-
-## File formats
-
-- runtime profile format: `tetraflux_heuristic_weights_v1`
-- optimizer checkpoint format: `tetraflux_heuristic_training_checkpoint_v1`
-
-The profile and checkpoint use different formats so runtime loading never needs optimizer internals.
-
-## Optional Node workflow
-
-Node training remains available for unattended runs:
+The previous unattended Flat CLI remains available:
 
 ```bash
 npm run train:heuristic -- --generations 25 --population 16 --games 8 --max-pieces 300 --seed 123456789
-```
-
-Resume:
-
-```bash
-npm run train:heuristic -- --resume --generations 25
-```
-
-Validate the saved profile:
-
-```bash
 npm run bench:heuristic-profile -- --games 64 --max-pieces 1000 --seed 987654321
 ```
 
-Only this optional Node path writes:
-
-- `models/heuristic-flat-v1.json`
-- `data/training/heuristic-flat-v1/checkpoint.json`
-- `data/training/heuristic-flat-v1/history.jsonl`
-
-## Fitness
-
-Fitness strongly prioritizes survival, especially the worst 10% of seeds, then uses line/attack efficiency and terrain quality as tie-breakers. Every candidate in a generation receives the same seed set. The generation seed set changes deterministically to reduce overfitting.
-
-`holeWeight` is fixed by default to remove the meaningless global scale degree of freedom. The remaining 13 weights are learned.
+The normal Flat and All-Spin workflow is browser-based.
