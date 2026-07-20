@@ -42,7 +42,8 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
 
   canceled = false;
   const workerCount = normalizeWorkerCount(message.parallelWorkers);
-  activeScheduler = createScheduler(workerCount);
+  const scheduler = createScheduler(workerCount);
+  activeScheduler = scheduler;
 
   try {
     let checkpoint = message.checkpoint
@@ -52,13 +53,13 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
     self.postMessage({
       type: "started",
       checkpoint,
-      scheduler: activeScheduler.mode,
+      scheduler: scheduler.mode,
       parallelWorkers: workerCount,
     });
 
     for (let i = 0; i < targetGenerations; i++) {
       if (canceled) throw new Error("Training canceled");
-      const generation = await runHeuristicGeneration(checkpoint, activeScheduler, {
+      const generation = await runHeuristicGeneration(checkpoint, scheduler, {
         isCanceled: () => canceled,
         onCandidate: (completed, total, candidate) => {
           self.postMessage({
@@ -69,7 +70,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
             candidateIndex: candidate.index,
             fitness: candidate.fitness,
             survivalRate: candidate.aggregate.survivalRate,
-            scheduler: activeScheduler?.mode,
+            scheduler: scheduler.mode,
             parallelWorkers: workerCount,
           });
         },
@@ -78,7 +79,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
       self.postMessage({
         type: "generation",
         result: generation,
-        scheduler: activeScheduler.mode,
+        scheduler: scheduler.mode,
         parallelWorkers: workerCount,
       });
     }
@@ -86,7 +87,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
     self.postMessage({
       type: "finished",
       checkpoint,
-      scheduler: activeScheduler.mode,
+      scheduler: scheduler.mode,
       parallelWorkers: workerCount,
     });
   } catch (error) {
@@ -95,7 +96,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
       message: error instanceof Error ? error.message : String(error),
     });
   } finally {
-    activeScheduler?.dispose?.();
-    activeScheduler = null;
+    scheduler.dispose?.();
+    if (activeScheduler === scheduler) activeScheduler = null;
   }
 };
