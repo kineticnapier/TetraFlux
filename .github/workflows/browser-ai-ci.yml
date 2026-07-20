@@ -1,0 +1,36 @@
+name: Browser AI CI
+
+on:
+  push:
+    branches:
+      - agent/allspin-ai-foundation
+  pull_request:
+
+jobs:
+  build-and-fixtures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Type-check and build Vite pages
+        run: npm run build
+
+      - name: Flat heuristic training fixture
+        run: npm run test:heuristic-training
+
+      - name: Strict All-Spin fixture
+        run: npm run test:allspin-ai
+
+      - name: All-Spin training fixture
+        run: npm run test:allspin-training
