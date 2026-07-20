@@ -1,4 +1,5 @@
-import "../training/browserHeuristicProfile";
+import { setDefaultLearnedProfileProvider } from "../ai/registry";
+import { readStoredHeuristicProfile } from "../training/browserHeuristicProfile";
 import { buildBrowserAis, runOneAi, type BenchConfig, type BenchPayload } from "./benchmarkCore";
 import { configureBenchmarkGarbageEnvironment, getBenchmarkGarbageEnvironmentConfig } from "../ai/benchmarkEnvironment";
 import { normalizeBenchmarkTuningConfig } from "./benchmarkTuning";
@@ -14,6 +15,8 @@ self.onmessage = async (ev: MessageEvent<Msg>) => {
   const started = performance.now();
   try {
     self.postMessage({ type: "started", message: "Worker benchmark started" });
+    const learnedProfile = await readStoredHeuristicProfile();
+    setDefaultLearnedProfileProvider(() => learnedProfile ?? undefined);
     const benchmarkGarbage = configureBenchmarkGarbageEnvironment(msg.config.benchmarkGarbage ?? getBenchmarkGarbageEnvironmentConfig());
     const tuning = normalizeBenchmarkTuningConfig(msg.config.tuning);
     const ais = await buildBrowserAis(msg.config.aiIds, tuning);
