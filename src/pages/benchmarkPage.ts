@@ -2,9 +2,6 @@ import "../style.css";
 import "./toolPage.css";
 import { bootstrapCloudModels } from "../models/bootstrapCloudModels";
 
-await bootstrapCloudModels();
-await import("../browserBenchmark");
-
 function mountBenchmarkPage(): void {
   const main = document.querySelector<HTMLElement>("#toolPageMain");
   const trigger = document.querySelector<HTMLButtonElement>("#benchAiBrowser");
@@ -20,4 +17,10 @@ function mountBenchmarkPage(): void {
   if (heading) heading.textContent = "Benchmark configuration";
 }
 
-mountBenchmarkPage();
+async function startBenchmarkPage(): Promise<void> {
+  await bootstrapCloudModels();
+  await import("../browserBenchmark");
+  mountBenchmarkPage();
+}
+
+void startBenchmarkPage();
