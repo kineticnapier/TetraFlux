@@ -1,4 +1,13 @@
 import { TetrisEngine } from "../engine/tetris";
+import {
+  applyHeuristicWeightProfile,
+  parseHeuristicWeightProfile,
+  type HeuristicWeightProfileV1,
+} from "../training/heuristicWeights";
+import {
+  readStoredHeuristicProfile,
+  readStoredHeuristicProfileSync,
+} from "../training/browserHeuristicProfile";
 import { AllSpinAI } from "./allSpinAI";
 import { HeuristicAI, type AiChoice } from "./heuristic";
 import { LookaheadAI } from "./lookahead";
@@ -28,6 +37,36 @@ class WeightedHeuristicAI extends HeuristicAI {
     super();
     this.variantName = name;
     Object.assign(this, weights);
+  }
+}
+
+class LearnedHeuristicAI extends HeuristicAI {
+  readonly profileId: string | null;
+
+  constructor(profileInput?: unknown) {
+    super();
+    let profile: HeuristicWeightProfileV1 | null = null;
+    try {
+      profile = profileInput ? parseHeuristicWeightProfile(profileInput) : readStoredHeuristicProfileSync();
+    } catch {
+      profile = null;
+    }
+    if (profile) applyHeuristicWeightProfile(this, profile);
+    this.profileId = profile?.profileId ?? null;
+  }
+
+  choose(engine: TetrisEngine): AiChoice | null {
+    const choice = super.choose(engine);
+    if (!choice) return null;
+    return {
+      ...choice,
+      aiInfo: {
+        ...choice.aiInfo,
+        learnedHeuristic: true,
+        learnedProfileLoaded: this.profileId !== null,
+        learnedProfileId: this.profileId ?? "default-fallback",
+      },
+    };
   }
 }
 
@@ -136,8 +175,13 @@ export function makeAllSpinAI(): AiLike {
   });
 }
 
+export function makeLearnedHeuristicAI(profileInput?: unknown): AiLike {
+  return new LearnedHeuristicAI(profileInput);
+}
+
 export const BUILTIN_AI_FACTORIES: AiFactorySpec[] = [
   { id: "heuristic", name: "HeuristicAI", make: () => new WeightedHeuristicAI("HeuristicAI", { garbagePressureSensitivity: 1.0, garbageHoleSensitivity: 1.0, b2bPressureSensitivity: 1.0 }) },
+  { id: "learned_heuristic", name: "Learned Heuristic", make: () => makeLearnedHeuristicAI() },
   { id: "lookahead", name: "LookaheadAI", make: () => new LookaheadAI({ depth: 3, beamWidth: 50, includeHold: true, spinBias: 1, maxCandidatesPerNode: 36, maxNodesPerDepth: 300, timeBudgetMs: 9, useGarbagePressure: true, garbagePressureSensitivity: 1.0, useGarbageHoleTracking: true, garbageHoleSensitivity: 1.1, useB2BPressure: true, b2bPressureSensitivity: 1.05 }) },
   { id: "spin", name: "SpinAI", make: makeSpinAI },
   { id: "allspin", name: "AllSpinAI (experimental)", make: makeAllSpinAI },
@@ -154,7 +198,9 @@ export function createBuiltinAi(id: string): AiRegistryEntry {
 }
 
 export function randomBuiltinAi(): AiRegistryEntry {
-  const spec = BUILTIN_AI_FACTORIES[Math.floor(Math.random() * BUILTIN_AI_FACTORIES.length)] ?? BUILTIN_AI_FACTORIES[0];
+  const hasLearnedProfile = readStoredHeuristicProfileSync() !== null;
+  const available = BUILTIN_AI_FACTORIES.filter((spec) => spec.id !== "learned_heuristic" || hasLearnedProfile);
+  const spec = available[Math.floor(Math.random() * available.length)] ?? available[0] ?? BUILTIN_AI_FACTORIES[0];
   return { id: spec.id, name: spec.name, ai: spec.make() };
 }
 
@@ -174,9 +220,14 @@ function modelUrl(baseUrl: string, path: string): string {
 
 export async function buildBrowserAiEntries(ids?: string[], baseUrl = "/"): Promise<AiRegistryEntry[]> {
   const requested = ids && ids.length > 0 ? new Set(ids) : null;
+  const learnedProfile = await readStoredHeuristicProfile();
   const entries = BUILTIN_AI_FACTORIES
     .filter((spec) => !requested || requested.has(spec.id))
-    .map((spec) => ({ id: spec.id, name: spec.name, ai: spec.make() }));
+    .map((spec) => {
+      if (spec.id !== "learned_heuristic") return { id: spec.id, name: spec.name, ai: spec.make() };
+      const suffix = learnedProfile ? ` (${learnedProfile.profileId})` : " (default fallback)";
+      return { id: spec.id, name: `${spec.name}${suffix}`, ai: makeLearnedHeuristicAI(learnedProfile ?? undefined) };
+    });
 
   const wantsPolicy = !requested || requested.has("web_policy") || requested.has("hybrid");
   if (!wantsPolicy) return entries;
