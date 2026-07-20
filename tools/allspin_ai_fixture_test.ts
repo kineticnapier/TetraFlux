@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { AllSpinAI } from "../src/ai/allSpinAI";
-import { isAllSpinLineClear, violatesStrictAllSpin } from "../src/ai/allSpinRules";
+import { isAllSpinLineClear, promoteMechanicalAllSpin, violatesStrictAllSpin } from "../src/ai/allSpinRules";
 import { executeChoiceWithOptionalRoute } from "../src/ai/twistMoveGenerator";
 import { TetrisEngine, type LockResult } from "../src/engine/tetris";
 
@@ -10,16 +10,34 @@ const mechanicalJDouble = {
   linesCleared: 2,
   spin: "none",
   topout: false,
-  attackSent: 0,
-  lockEvent: { lastSuccessfulAction: "rotate" },
-  spinClassification: { mechanical: "immobile" },
+  attackSent: 1,
+  rawAttack: 1,
+  combo: -1,
+  b2b: 0,
+  usedHold: false,
+  reason: "",
+  lockEvent: { lastSuccessfulAction: "rotate", lastRotation: null },
+  spinClassification: { scoring: "none", mechanical: "immobile", lastRotation: null },
 } as LockResult;
 assert.equal(isAllSpinLineClear(mechanicalJDouble), true);
+
+const scoringEngine = new TetrisEngine(3, 4);
+scoringEngine.combo = 0;
+scoringEngine.b2b = 0;
+const promoted = promoteMechanicalAllSpin(scoringEngine, mechanicalJDouble, 0, true);
+assert.equal(promoted.spin, "spin", "non-T immobile clear should be promoted to generic spin scoring");
+assert.equal(promoted.attackSent, 2, "All-Spin double should use spin-double base attack");
+assert.equal(promoted.spinClassification?.scoring, "spin");
+assert.equal(scoringEngine.b2b, 1, "promoted All-Spin clear should start or continue B2B");
+
+const disabledEngine = new TetrisEngine(5, 6);
+const notPromoted = promoteMechanicalAllSpin(disabledEngine, mechanicalJDouble, 0, false);
+assert.equal(notPromoted.spin, "none", "normal rules must retain ordinary non-T clear scoring");
 
 const ordinaryDouble = {
   ...mechanicalJDouble,
   lockEvent: { lastSuccessfulAction: "direct" },
-  spinClassification: { mechanical: "none" },
+  spinClassification: { scoring: "none", mechanical: "none", lastRotation: null },
 } as LockResult;
 assert.equal(violatesStrictAllSpin(ordinaryDouble), true);
 
@@ -51,6 +69,7 @@ const ai = new AllSpinAI({
 });
 const choice = ai.choose(engine);
 assert.ok(choice, "AllSpinAI should find a legal setup move");
+assert.equal(choice.aiInfo.strictAllSpin, true, "chosen action must carry strict All-Spin execution metadata");
 const preview = engine.clone();
 const result = executeChoiceWithOptionalRoute(preview, choice).result;
 assert.equal(violatesStrictAllSpin(result), false, "strict AllSpinAI must not choose an ordinary line clear");
