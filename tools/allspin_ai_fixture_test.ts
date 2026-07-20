@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { AllSpinAI } from "../src/ai/allSpinAI";
-import { isAllSpinLineClear, promoteMechanicalAllSpin, violatesStrictAllSpin } from "../src/ai/allSpinRules";
+import { isAllSpinLineClear, violatesStrictAllSpin } from "../src/ai/allSpinRules";
 import { executeChoiceWithOptionalRoute } from "../src/ai/twistMoveGenerator";
+import { setAllSpinScoring } from "../src/engine/allSpinScoring";
 import { TetrisEngine, type LockResult } from "../src/engine/tetris";
 
 const mechanicalJDouble = {
@@ -21,19 +22,6 @@ const mechanicalJDouble = {
 } as LockResult;
 assert.equal(isAllSpinLineClear(mechanicalJDouble), true);
 
-const scoringEngine = new TetrisEngine(3, 4);
-scoringEngine.combo = 0;
-scoringEngine.b2b = 0;
-const promoted = promoteMechanicalAllSpin(scoringEngine, mechanicalJDouble, 0, true);
-assert.equal(promoted.spin, "spin", "non-T immobile clear should be promoted to generic spin scoring");
-assert.equal(promoted.attackSent, 2, "All-Spin double should use spin-double base attack");
-assert.equal(promoted.spinClassification?.scoring, "spin");
-assert.equal(scoringEngine.b2b, 1, "promoted All-Spin clear should start or continue B2B");
-
-const disabledEngine = new TetrisEngine(5, 6);
-const notPromoted = promoteMechanicalAllSpin(disabledEngine, mechanicalJDouble, 0, false);
-assert.equal(notPromoted.spin, "none", "normal rules must retain ordinary non-T clear scoring");
-
 const ordinaryDouble = {
   ...mechanicalJDouble,
   lockEvent: { lastSuccessfulAction: "direct" },
@@ -43,6 +31,45 @@ assert.equal(violatesStrictAllSpin(ordinaryDouble), true);
 
 const oTwist = { ...mechanicalJDouble, piece: "O" } as LockResult;
 assert.equal(isAllSpinLineClear(oTwist), false);
+
+function makeISpinSingleEngine(enabled: boolean): TetrisEngine {
+  const engine = new TetrisEngine(3, 4);
+  for (let y = 0; y < engine.board.length; y++) {
+    for (let x = 0; x < engine.board[y].length; x++) engine.board[y][x] = null;
+  }
+
+  const bottom = engine.board.length - 1;
+  for (let x = 0; x < 10; x++) {
+    if (x < 3 || x > 6) engine.board[bottom][x] = "G";
+  }
+
+  engine.active = { kind: "I", x: 3, y: 18, rot: 1 };
+  engine.hold = null;
+  engine.queue = ["T", "J", "L", "S", "Z", "O", "I"];
+  engine.canHold = true;
+  engine.dead = false;
+  engine.combo = -1;
+  engine.b2b = 0;
+  setAllSpinScoring(engine, enabled);
+  return engine;
+}
+
+const scoringEngine = makeISpinSingleEngine(true);
+assert.equal(scoringEngine.rotateCcw(), true, "fixture rotation should succeed");
+const scoringResult = scoringEngine.hardDrop();
+assert.equal(scoringResult.linesCleared, 1);
+assert.equal(scoringResult.spin, "spin", "I immobile clear should be classified before attack calculation");
+assert.equal(scoringResult.spinClassification?.scoring, "spin");
+assert.equal(scoringResult.attackBase, 1, "generic spin single should use the engine spin table");
+assert.equal(scoringEngine.b2b, 1, "All-Spin clear should enter B2B through the normal lock path");
+
+const normalEngine = makeISpinSingleEngine(false);
+assert.equal(normalEngine.rotateCcw(), true, "normal fixture rotation should succeed");
+const normalResult = normalEngine.hardDrop();
+assert.equal(normalResult.linesCleared, 1);
+assert.equal(normalResult.spin, "none", "normal rules must retain ordinary non-T scoring");
+assert.equal(normalResult.attackBase, 0);
+assert.equal(normalEngine.b2b, 0);
 
 const engine = new TetrisEngine(11, 12);
 for (let y = 0; y < engine.board.length; y++) {
