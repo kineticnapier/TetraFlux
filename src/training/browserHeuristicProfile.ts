@@ -1,3 +1,4 @@
+import { setDefaultLearnedProfileProvider } from "../ai/registry";
 import {
   parseHeuristicWeightProfile,
   type HeuristicWeightProfileV1,
@@ -187,3 +188,5 @@ export function describeStoredHeuristicProfile(profile: HeuristicWeightProfileV1
   ].filter(Boolean).join(" ");
   return `Learned profile: ${profile.profileId}${suffix ? ` (${suffix})` : ""}`;
 }
+
+setDefaultLearnedProfileProvider(() => readStoredHeuristicProfileSync() ?? undefined);
