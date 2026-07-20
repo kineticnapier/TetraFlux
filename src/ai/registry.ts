@@ -28,6 +28,16 @@ export interface AiRegistryEntry {
 
 export type LearnedProfileProvider = () => unknown;
 
+let defaultLearnedProfileProvider: LearnedProfileProvider = () => undefined;
+
+export function setDefaultLearnedProfileProvider(provider: LearnedProfileProvider): void {
+  defaultLearnedProfileProvider = provider;
+}
+
+function currentLearnedProfile(): unknown {
+  return defaultLearnedProfileProvider();
+}
+
 class WeightedHeuristicAI extends HeuristicAI {
   variantName: string;
 
@@ -175,7 +185,7 @@ export function makeLearnedHeuristicAI(profileInput?: unknown): AiLike {
 }
 
 export function createBuiltinAiFactories(
-  learnedProfileProvider: LearnedProfileProvider = () => undefined,
+  learnedProfileProvider: LearnedProfileProvider = currentLearnedProfile,
 ): AiFactorySpec[] {
   const create = (id: string): AiLike => {
     const spec = factories.find((item) => item.id === id) ?? factories[0];
@@ -200,7 +210,7 @@ export const BUILTIN_AI_FACTORIES: AiFactorySpec[] = createBuiltinAiFactories();
 
 export function createBuiltinAi(
   id: string,
-  learnedProfileProvider: LearnedProfileProvider = () => undefined,
+  learnedProfileProvider: LearnedProfileProvider = currentLearnedProfile,
 ): AiRegistryEntry {
   const factories = createBuiltinAiFactories(learnedProfileProvider);
   const spec = factories.find((item) => item.id === id) ?? factories[0];
@@ -208,11 +218,11 @@ export function createBuiltinAi(
 }
 
 export function randomBuiltinAi(
-  learnedProfileProvider: LearnedProfileProvider = () => undefined,
+  learnedProfileProvider: LearnedProfileProvider = currentLearnedProfile,
 ): AiRegistryEntry {
   const profile = learnedProfileProvider();
   const factories = createBuiltinAiFactories(() => profile)
-    .filter((spec) => spec.id !== "learned_heuristic" || profile !== undefined && profile !== null);
+    .filter((spec) => spec.id !== "learned_heuristic" || (profile !== undefined && profile !== null));
   const spec = factories[Math.floor(Math.random() * factories.length)] ?? factories[0];
   return { id: spec.id, name: spec.name, ai: spec.make() };
 }
@@ -239,7 +249,8 @@ export async function buildBrowserAiEntries(
   const requested = ids && ids.length > 0 ? new Set(ids) : null;
   let parsedProfile: HeuristicWeightProfileV1 | null = null;
   try {
-    parsedProfile = learnedProfile ? parseHeuristicWeightProfile(learnedProfile) : null;
+    const profileInput = learnedProfile === undefined ? currentLearnedProfile() : learnedProfile;
+    parsedProfile = profileInput ? parseHeuristicWeightProfile(profileInput) : null;
   } catch {
     parsedProfile = null;
   }
