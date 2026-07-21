@@ -40,13 +40,6 @@ jobs:
         if: steps.build.outcome != 'success'
         run: cat build.log && exit 1
 
-      - name: Check Cloudflare Function syntax
-        run: |
-          node --check functions/_lib/modelStore.js
-          node --check functions/api/models/index.js
-          node --check 'functions/api/models/[modelId].js'
-          node --check 'functions/api/models/latest/[family].js'
-
       - name: Flat heuristic training fixture
         run: npm run test:heuristic-training
 
@@ -56,5 +49,5 @@ jobs:
       - name: All-Spin training fixture
         run: npm run test:allspin-training
 
-      - name: Cloud model store fixture
-        run: npm run test:cloud-model-store
+      - name: Local model library fixture
+        run: npm run test:local-model-library
