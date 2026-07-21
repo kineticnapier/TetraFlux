@@ -16,6 +16,8 @@ function mountTrainingPage(): void {
 
   const heading = panel.querySelector<HTMLHeadingElement>(".bench-header h2");
   if (heading) heading.textContent = "Flat training configuration";
+  const intro = panel.querySelector<HTMLElement>(".bench-card > p.hint");
+  if (intro) intro.innerHTML = "Candidate games run entirely on this computer in a browser CPU Web Worker pool. Profiles, checkpoints and model history stay in <b>local browser storage</b>.";
   mountLocalModelLibraryPanel({
     family: "flat",
     panelSelector: "#trainHeuristicPanel",
