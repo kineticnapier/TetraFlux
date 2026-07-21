@@ -1,6 +1,7 @@
 import "../style.css";
 import "./toolPage.css";
-import { bootstrapCloudModels } from "../models/bootstrapCloudModels";
+import { bootstrapLocalModels } from "../models/bootstrapLocalModels";
+import { mountLocalModelLibraryPanel } from "../models/localModelLibraryPanel";
 
 function mountAllSpinTrainingPage(): void {
   const main = document.querySelector<HTMLElement>("#toolPageMain");
@@ -15,10 +16,21 @@ function mountAllSpinTrainingPage(): void {
 
   const heading = panel.querySelector<HTMLHeadingElement>(".bench-header h2");
   if (heading) heading.textContent = "All-Spin training configuration";
+  mountLocalModelLibraryPanel({
+    family: "allspin",
+    panelSelector: "#trainAllSpinPanel",
+    tokenSelector: "#allspinCloudToken",
+    saveSelector: "#allspinCloudUpload",
+    latestSelector: "#allspinCloudLatest",
+    refreshSelector: "#allspinCloudRefresh",
+    selectSelector: "#allspinCloudModels",
+    loadSelector: "#allspinCloudLoadSelected",
+    statusSelector: "#allspinCloudStatus",
+  });
 }
 
 async function startAllSpinTrainingPage(): Promise<void> {
-  await bootstrapCloudModels();
+  await bootstrapLocalModels();
   await import("../browserAllSpinTraining");
   mountAllSpinTrainingPage();
 }
