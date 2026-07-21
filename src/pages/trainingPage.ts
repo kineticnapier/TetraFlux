@@ -3,6 +3,17 @@ import "./toolPage.css";
 import { bootstrapLocalModels } from "../models/bootstrapLocalModels";
 import { mountLocalModelLibraryPanel } from "../models/localModelLibraryPanel";
 
+function localizeStatus(element: HTMLElement | null): void {
+  if (!element) return;
+  const update = () => {
+    const current = element.textContent ?? "";
+    const next = current.replaceAll("Cloudflare", "Local library").replaceAll("Cloud registry", "Local library");
+    if (next !== current) element.textContent = next;
+  };
+  update();
+  new MutationObserver(update).observe(element, { childList: true, characterData: true, subtree: true });
+}
+
 function mountTrainingPage(): void {
   const main = document.querySelector<HTMLElement>("#toolPageMain");
   const trigger = document.querySelector<HTMLButtonElement>("#trainHeuristicBrowser");
@@ -29,6 +40,7 @@ function mountTrainingPage(): void {
     loadSelector: "#flatCloudLoadSelected",
     statusSelector: "#flatCloudStatus",
   });
+  localizeStatus(panel.querySelector<HTMLElement>("#flatCloudStatus"));
 }
 
 async function startTrainingPage(): Promise<void> {
