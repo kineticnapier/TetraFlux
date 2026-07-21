@@ -5,9 +5,7 @@ import { defineConfig } from "vite";
 const projectRoot = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
-  // Cloudflare Pages is deployed at the domain root.
-  // Do not infer /TetraFlux/ from GITHUB_REPOSITORY in GitHub Actions,
-  // because that breaks asset URLs on https://tetraflux.pages.dev/.
+  // Local Vite and preview servers expose the app at the origin root.
   base: process.env.VITE_BASE ?? "/",
   server: { port: 5173 },
   build: {
