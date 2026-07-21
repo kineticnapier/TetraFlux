@@ -3,6 +3,20 @@ import "./toolPage.css";
 import { bootstrapLocalModels } from "../models/bootstrapLocalModels";
 import { mountLocalModelLibraryPanel } from "../models/localModelLibraryPanel";
 
+function localizeElement(element: HTMLElement | null): void {
+  if (!element) return;
+  const update = () => {
+    const current = element.textContent ?? "";
+    const next = current
+      .replaceAll("Cloudflare", "Local library")
+      .replaceAll("Cloud registry", "Local library")
+      .replaceAll("cloud=", "model=");
+    if (next !== current) element.textContent = next;
+  };
+  update();
+  new MutationObserver(update).observe(element, { childList: true, characterData: true, subtree: true });
+}
+
 function mountAllSpinTrainingPage(): void {
   const main = document.querySelector<HTMLElement>("#toolPageMain");
   const trigger = document.querySelector<HTMLButtonElement>("#trainAllSpinBrowser");
@@ -16,15 +30,6 @@ function mountAllSpinTrainingPage(): void {
 
   const heading = panel.querySelector<HTMLHeadingElement>(".bench-header h2");
   if (heading) heading.textContent = "All-Spin training configuration";
-  const baseSummary = panel.querySelector<HTMLElement>("#allspinBaseSummary");
-  if (baseSummary) {
-    const localize = () => {
-      const current = baseSummary.textContent ?? "";
-      if (current.includes("cloud=")) baseSummary.textContent = current.replaceAll("cloud=", "model=");
-    };
-    localize();
-    new MutationObserver(localize).observe(baseSummary, { childList: true, characterData: true, subtree: true });
-  }
   mountLocalModelLibraryPanel({
     family: "allspin",
     panelSelector: "#trainAllSpinPanel",
@@ -36,6 +41,8 @@ function mountAllSpinTrainingPage(): void {
     loadSelector: "#allspinCloudLoadSelected",
     statusSelector: "#allspinCloudStatus",
   });
+  localizeElement(panel.querySelector<HTMLElement>("#allspinBaseSummary"));
+  localizeElement(panel.querySelector<HTMLElement>("#allspinCloudStatus"));
 }
 
 async function startAllSpinTrainingPage(): Promise<void> {
