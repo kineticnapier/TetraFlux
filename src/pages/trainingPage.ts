@@ -1,6 +1,7 @@
 import "../style.css";
 import "./toolPage.css";
-import { bootstrapCloudModels } from "../models/bootstrapCloudModels";
+import { bootstrapLocalModels } from "../models/bootstrapLocalModels";
+import { mountLocalModelLibraryPanel } from "../models/localModelLibraryPanel";
 
 function mountTrainingPage(): void {
   const main = document.querySelector<HTMLElement>("#toolPageMain");
@@ -15,10 +16,21 @@ function mountTrainingPage(): void {
 
   const heading = panel.querySelector<HTMLHeadingElement>(".bench-header h2");
   if (heading) heading.textContent = "Flat training configuration";
+  mountLocalModelLibraryPanel({
+    family: "flat",
+    panelSelector: "#trainHeuristicPanel",
+    tokenSelector: "#flatCloudToken",
+    saveSelector: "#flatCloudUpload",
+    latestSelector: "#flatCloudLatest",
+    refreshSelector: "#flatCloudRefresh",
+    selectSelector: "#flatCloudModels",
+    loadSelector: "#flatCloudLoadSelected",
+    statusSelector: "#flatCloudStatus",
+  });
 }
 
 async function startTrainingPage(): Promise<void> {
-  await bootstrapCloudModels();
+  await bootstrapLocalModels();
   await import("../browserTraining");
   mountTrainingPage();
 }
