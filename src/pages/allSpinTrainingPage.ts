@@ -16,6 +16,15 @@ function mountAllSpinTrainingPage(): void {
 
   const heading = panel.querySelector<HTMLHeadingElement>(".bench-header h2");
   if (heading) heading.textContent = "All-Spin training configuration";
+  const baseSummary = panel.querySelector<HTMLElement>("#allspinBaseSummary");
+  if (baseSummary) {
+    const localize = () => {
+      const current = baseSummary.textContent ?? "";
+      if (current.includes("cloud=")) baseSummary.textContent = current.replaceAll("cloud=", "model=");
+    };
+    localize();
+    new MutationObserver(localize).observe(baseSummary, { childList: true, characterData: true, subtree: true });
+  }
   mountLocalModelLibraryPanel({
     family: "allspin",
     panelSelector: "#trainAllSpinPanel",
