@@ -30,6 +30,7 @@
          Correct Vite deploys use hashed /assets/*.css from dist/index.html.
          This protects against accidentally serving repository root. -->
     <link rel="stylesheet" href="/src/style.css" />
+    <link rel="stylesheet" href="/src/pages/toolPage.css" />
   </head>
   <body>
     <div id="app">
@@ -40,6 +41,9 @@
         <button id="nextRound">Next Round</button>
         <button id="toggleMode">Mode: Human vs AI</button>
         <button id="settingsBtn">Settings</button>
+        <a class="toolbar-link" href="/benchmark/">Bench AI</a>
+        <a class="toolbar-link" href="/training/">Flat Training</a>
+        <a class="toolbar-link" href="/training/allspin/">All-Spin Training</a>
 
         <button id="downloadLogs">Download Logs</button>
         <button id="uploadLogs">Upload Logs</button>
@@ -144,7 +148,6 @@
       </div>
     </div>
 
-    <script type="module" src="/src/main.ts"></script>
-    <script type="module" src="/src/browserBenchmark.ts"></script>
+    <script type="module" src="/src/pages/gamePage.ts"></script>
   </body>
 </html>

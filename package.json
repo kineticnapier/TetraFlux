@@ -5,16 +5,23 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "start:local": "vite --host 127.0.0.1 --open",
     "build": "tsc && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "bench:ai": "node tools/run_bench_ai.mjs",
+    "bench:heuristic-profile": "node tools/run_benchmark_heuristic_profile.mjs",
+    "train:heuristic": "node tools/run_train_heuristic.mjs",
     "test:spin-finisher": "node tools/run_spin_finisher_fixture_test.mjs",
     "test:twist-generator": "node tools/run_twist_move_fixture_test.mjs",
+    "test:allspin-ai": "node tools/run_allspin_ai_fixture_test.mjs",
+    "test:allspin-training": "node tools/run_allspin_training_fixture_test.mjs",
+    "test:local-model-library": "node tools/run_local_model_library_fixture_test.mjs",
     "test:garbage-pressure": "node tools/run_garbage_pressure_fixture_test.mjs",
     "test:benchmark-garbage": "node tools/run_benchmark_garbage_fixture_test.mjs",
     "test:b2b-pressure": "node tools/run_b2b_pressure_fixture_test.mjs",
     "test:garbage-hole": "node tools/run_garbage_hole_fixture_test.mjs",
-    "test:benchmark-tuning": "node tools/run_benchmark_tuning_fixture_test.mjs"
+    "test:benchmark-tuning": "node tools/run_benchmark_tuning_fixture_test.mjs",
+    "test:heuristic-training": "node tools/run_heuristic_training_fixture_test.mjs"
   },
   "dependencies": {},
   "devDependencies": {

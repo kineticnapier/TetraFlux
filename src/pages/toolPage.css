@@ -1,0 +1,187 @@
+.tool-page {
+  min-width: 320px;
+}
+
+.tool-page-shell {
+  width: min(1240px, calc(100% - 28px));
+  margin: 0 auto;
+  padding: 18px 0 42px;
+}
+
+.tool-nav {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 18px;
+}
+
+.tool-nav a,
+.toolbar-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 10px;
+  padding: 8px 12px;
+  background: #111827;
+  color: #e5e7eb;
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.tool-nav a:hover,
+.toolbar-link:hover {
+  background: #1f2937;
+}
+
+.tool-nav a.active {
+  border-color: rgba(56, 189, 248, 0.65);
+  background: rgba(14, 116, 144, 0.28);
+  color: #e0f2fe;
+}
+
+.tool-page-intro {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 16px;
+  background: rgba(11, 18, 32, 0.82);
+}
+
+.tool-page-intro h1 {
+  margin: 2px 0 6px;
+  font-size: clamp(24px, 4vw, 38px);
+}
+
+.tool-page-intro p {
+  margin: 0;
+  color: #94a3b8;
+  line-height: 1.6;
+}
+
+.tool-eyebrow {
+  color: #7dd3fc !important;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.tool-page #benchPanel,
+.tool-page #trainHeuristicPanel,
+.tool-page #trainAllSpinPanel {
+  position: static;
+  inset: auto;
+  z-index: auto;
+  display: block;
+  padding: 0;
+  background: transparent;
+  backdrop-filter: none;
+}
+
+.tool-page #benchPanel[hidden],
+.tool-page #trainHeuristicPanel[hidden],
+.tool-page #trainAllSpinPanel[hidden] {
+  display: none;
+}
+
+.tool-page .bench-card {
+  width: 100%;
+  max-height: none;
+  min-height: 0;
+  overflow: visible;
+  box-shadow: 0 18px 70px rgba(0, 0, 0, 0.3);
+  padding: 18px;
+}
+
+.tool-page .bench-header .small-button {
+  display: none;
+}
+
+.tool-section,
+.tool-details {
+  margin: 14px 0;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.17);
+  border-radius: 12px;
+  background: rgba(5, 8, 22, 0.45);
+}
+
+.tool-section h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: #dbeafe;
+}
+
+.tool-details > summary {
+  color: #dbeafe;
+  font-weight: 750;
+}
+
+.tool-details[open] > summary {
+  margin-bottom: 12px;
+}
+
+.tool-page #flatCloudToken,
+.tool-page #allspinCloudToken {
+  width: min(320px, 58vw);
+  min-width: 180px;
+}
+
+.tool-page #flatCloudModels,
+.tool-page #allspinCloudModels {
+  width: min(460px, 78vw);
+  max-width: 100%;
+}
+
+.tool-page #benchOutput,
+.tool-page #trainOutput,
+.tool-page #allspinOutput {
+  max-height: 620px;
+}
+
+.tool-page #trainOutput,
+.tool-page #allspinOutput {
+  margin: 14px 0 0;
+  min-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: #050816;
+  color: #dbeafe;
+  padding: 12px;
+  font: 12px/1.5 Consolas, ui-monospace, monospace;
+}
+
+.tool-page .bench-tuning-card details > summary,
+.tool-page details > summary {
+  cursor: pointer;
+}
+
+@media (max-width: 720px) {
+  .tool-page-shell {
+    width: min(100% - 12px, 1240px);
+    padding-top: 8px;
+  }
+
+  .tool-nav {
+    overflow-x: auto;
+    padding-bottom: 3px;
+  }
+
+  .tool-nav a {
+    flex: 0 0 auto;
+  }
+
+  .tool-page-intro,
+  .tool-page .bench-card {
+    padding: 13px;
+    border-radius: 12px;
+  }
+}

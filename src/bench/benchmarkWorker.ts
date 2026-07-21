@@ -1,5 +1,11 @@
-import { buildBrowserAis, runOneAi, type BenchConfig, type BenchPayload } from "./benchmarkCore";
+import {
+  setDefaultAllSpinProfileProvider,
+  setDefaultLearnedProfileProvider,
+} from "../ai/registry";
 import { configureBenchmarkGarbageEnvironment, getBenchmarkGarbageEnvironmentConfig } from "../ai/benchmarkEnvironment";
+import { readStoredAllSpinProfile } from "../training/browserAllSpinProfile";
+import { readStoredHeuristicProfile } from "../training/browserHeuristicProfile";
+import { buildBrowserAis, runOneAi, type BenchConfig, type BenchPayload } from "./benchmarkCore";
 import { normalizeBenchmarkTuningConfig } from "./benchmarkTuning";
 
 type Msg = { type: "run"; config: BenchConfig } | { type: "cancel" };
@@ -13,6 +19,12 @@ self.onmessage = async (ev: MessageEvent<Msg>) => {
   const started = performance.now();
   try {
     self.postMessage({ type: "started", message: "Worker benchmark started" });
+    const [learnedProfile, allSpinProfile] = await Promise.all([
+      readStoredHeuristicProfile(),
+      readStoredAllSpinProfile(),
+    ]);
+    setDefaultLearnedProfileProvider(() => learnedProfile ?? undefined);
+    setDefaultAllSpinProfileProvider(() => allSpinProfile ?? undefined);
     const benchmarkGarbage = configureBenchmarkGarbageEnvironment(msg.config.benchmarkGarbage ?? getBenchmarkGarbageEnvironmentConfig());
     const tuning = normalizeBenchmarkTuningConfig(msg.config.tuning);
     const ais = await buildBrowserAis(msg.config.aiIds, tuning);

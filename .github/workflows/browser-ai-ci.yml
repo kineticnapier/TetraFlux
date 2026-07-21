@@ -1,0 +1,53 @@
+name: Browser AI CI
+
+on:
+  push:
+    branches:
+      - agent/allspin-ai-foundation
+  pull_request:
+
+jobs:
+  build-and-fixtures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Type-check and build Vite pages
+        id: build
+        continue-on-error: true
+        run: npm run build > build.log 2>&1
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-ai-build-log
+          path: build.log
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Fail on build error
+        if: steps.build.outcome != 'success'
+        run: cat build.log && exit 1
+
+      - name: Flat heuristic training fixture
+        run: npm run test:heuristic-training
+
+      - name: Strict All-Spin fixture
+        run: npm run test:allspin-ai
+
+      - name: All-Spin training fixture
+        run: npm run test:allspin-training
+
+      - name: Local model library fixture
+        run: npm run test:local-model-library
