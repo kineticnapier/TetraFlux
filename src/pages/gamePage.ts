@@ -1,7 +1,7 @@
-import { bootstrapCloudModels } from "../models/bootstrapCloudModels";
+import { bootstrapLocalModels } from "../models/bootstrapLocalModels";
 
 async function startGamePage(): Promise<void> {
-  await bootstrapCloudModels();
+  await bootstrapLocalModels();
   await import("../main");
 }
 
