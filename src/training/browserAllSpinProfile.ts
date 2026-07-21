@@ -1,5 +1,11 @@
 import { setDefaultAllSpinProfileProvider } from "../ai/registry";
 import {
+  PROFILE_STORE_NAME,
+  deleteDbRecord,
+  readDbRecord,
+  writeDbRecord,
+} from "../storage/browserDatabase";
+import {
   parseAllSpinWeightProfile,
   type AllSpinWeightProfileV1,
 } from "./allspinWeights";
@@ -8,9 +14,6 @@ export const ALLSPIN_CHECKPOINT_STORAGE_KEY = "tetraflux:allSpinTrainingCheckpoi
 export const ALLSPIN_PROFILE_STORAGE_KEY = "tetraflux:allSpinWeightProfile:v1";
 export const ALLSPIN_PROFILE_CHANGED_EVENT = "tetraflux:allspin-profile-change";
 
-const DB_NAME = "tetraflux-ai";
-const DB_VERSION = 1;
-const STORE_NAME = "profiles";
 const PROFILE_RECORD_KEY = "allspin-derived-flat14-10-v1";
 
 type StoredProfileRecord = {
@@ -27,91 +30,26 @@ function browserStorage(): Storage | null {
   }
 }
 
-function indexedDbApi(): IDBFactory | null {
+async function readIndexedProfile(): Promise<AllSpinWeightProfileV1 | null> {
+  const record = await readDbRecord<StoredProfileRecord>(PROFILE_STORE_NAME, PROFILE_RECORD_KEY);
+  if (!record?.profile) return null;
   try {
-    return (globalThis as unknown as { indexedDB?: IDBFactory }).indexedDB ?? null;
+    return parseAllSpinWeightProfile(record.profile);
   } catch {
     return null;
   }
 }
 
-function openProfileDb(): Promise<IDBDatabase | null> {
-  const api = indexedDbApi();
-  if (!api) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    let request: IDBOpenDBRequest;
-    try {
-      request = api.open(DB_NAME, DB_VERSION);
-    } catch {
-      resolve(null);
-      return;
-    }
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME, { keyPath: "key" });
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => resolve(null);
-    request.onblocked = () => resolve(null);
-  });
-}
-
-async function readIndexedProfile(): Promise<AllSpinWeightProfileV1 | null> {
-  const db = await openProfileDb();
-  if (!db) return null;
-  try {
-    return await new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, "readonly");
-      const request = tx.objectStore(STORE_NAME).get(PROFILE_RECORD_KEY);
-      request.onsuccess = () => {
-        try {
-          const record = request.result as StoredProfileRecord | undefined;
-          resolve(record?.profile ? parseAllSpinWeightProfile(record.profile) : null);
-        } catch {
-          resolve(null);
-        }
-      };
-      request.onerror = () => resolve(null);
-    });
-  } finally {
-    db.close();
-  }
-}
-
 async function writeIndexedProfile(profile: AllSpinWeightProfileV1): Promise<void> {
-  const db = await openProfileDb();
-  if (!db) return;
-  try {
-    await new Promise<void>((resolve) => {
-      const tx = db.transaction(STORE_NAME, "readwrite");
-      tx.objectStore(STORE_NAME).put({
-        key: PROFILE_RECORD_KEY,
-        profile,
-        savedAt: new Date().toISOString(),
-      } satisfies StoredProfileRecord);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
-      tx.onabort = () => resolve();
-    });
-  } finally {
-    db.close();
-  }
+  await writeDbRecord(PROFILE_STORE_NAME, {
+    key: PROFILE_RECORD_KEY,
+    profile,
+    savedAt: new Date().toISOString(),
+  } satisfies StoredProfileRecord);
 }
 
 async function deleteIndexedProfile(): Promise<void> {
-  const db = await openProfileDb();
-  if (!db) return;
-  try {
-    await new Promise<void>((resolve) => {
-      const tx = db.transaction(STORE_NAME, "readwrite");
-      tx.objectStore(STORE_NAME).delete(PROFILE_RECORD_KEY);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
-      tx.onabort = () => resolve();
-    });
-  } finally {
-    db.close();
-  }
+  await deleteDbRecord(PROFILE_STORE_NAME, PROFILE_RECORD_KEY);
 }
 
 function dispatchChanged(profile: AllSpinWeightProfileV1 | null): void {
