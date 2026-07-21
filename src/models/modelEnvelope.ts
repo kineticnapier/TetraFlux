@@ -16,7 +16,7 @@ export interface ModelEnvelopeV1<T = unknown> {
   notes?: string;
 }
 
-export interface CloudModelSummary {
+export interface ModelSummary {
   modelId: string;
   family: ModelFamily;
   displayName: string;
@@ -25,6 +25,9 @@ export interface CloudModelSummary {
   parentModelId?: string;
   payloadFormat: string;
 }
+
+/** Compatibility alias for pre-local-library callers. */
+export type CloudModelSummary = ModelSummary;
 
 function compactTimestamp(date: Date): string {
   return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
@@ -84,17 +87,17 @@ export function createModelEnvelope<T>(input: {
 }
 
 export function parseModelEnvelope<T = unknown>(input: unknown): ModelEnvelopeV1<T> {
-  if (!input || typeof input !== "object") throw new Error("Cloud model must be an object");
+  if (!input || typeof input !== "object") throw new Error("Model envelope must be an object");
   const raw = input as Record<string, unknown>;
   if (raw.format !== MODEL_ENVELOPE_FORMAT) {
-    throw new Error(`Unsupported cloud model envelope: ${String(raw.format ?? "missing")}`);
+    throw new Error(`Unsupported model envelope: ${String(raw.format ?? "missing")}`);
   }
   if (raw.family !== "flat" && raw.family !== "allspin") {
     throw new Error(`Unsupported model family: ${String(raw.family ?? "missing")}`);
   }
-  if (!raw.payload || typeof raw.payload !== "object") throw new Error("Cloud model payload is missing");
+  if (!raw.payload || typeof raw.payload !== "object") throw new Error("Model payload is missing");
   const modelId = String(raw.modelId ?? "").trim();
-  if (!/^[a-z0-9][a-z0-9-]{2,95}$/.test(modelId)) throw new Error("Invalid cloud model ID");
+  if (!/^[a-z0-9][a-z0-9-]{2,95}$/.test(modelId)) throw new Error("Invalid model ID");
   return {
     format: MODEL_ENVELOPE_FORMAT,
     schemaVersion: 1,
@@ -110,7 +113,7 @@ export function parseModelEnvelope<T = unknown>(input: unknown): ModelEnvelopeV1
   };
 }
 
-export function modelSummary(model: ModelEnvelopeV1): CloudModelSummary {
+export function modelSummary(model: ModelEnvelopeV1): ModelSummary {
   return {
     modelId: model.modelId,
     family: model.family,
