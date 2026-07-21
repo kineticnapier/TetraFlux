@@ -1,4 +1,4 @@
-import { storeActiveCloudModelId } from "../../models/cloudModelClient";
+import { setActiveLocalModelId } from "../../models/localModelLibrary";
 import {
   checkpointBestProfile,
   createInitialHeuristicCheckpoint,
@@ -106,7 +106,7 @@ export class BrowserTrainingController {
 
   async importProfile(input: unknown): Promise<HeuristicWeightProfileV1> {
     const profile = parseHeuristicWeightProfile(input);
-    storeActiveCloudModelId("flat", null);
+    await setActiveLocalModelId("flat", null);
     await this.saveProfile(profile);
     return profile;
   }
@@ -120,7 +120,7 @@ export class BrowserTrainingController {
   async clearSaved(): Promise<void> {
     if (this.worker) throw new Error("Stop training before clearing saved data");
     localStorage.removeItem(HEURISTIC_CHECKPOINT_STORAGE_KEY);
-    storeActiveCloudModelId("flat", null);
+    await setActiveLocalModelId("flat", null);
     await clearStoredHeuristicProfile();
     this.checkpoint = null;
     this.profile = null;
@@ -168,7 +168,7 @@ export class BrowserTrainingController {
   private async saveCheckpoint(checkpointInput: unknown): Promise<void> {
     const checkpoint = parseHeuristicTrainingCheckpoint(checkpointInput);
     this.checkpoint = checkpoint;
-    storeActiveCloudModelId("flat", null);
+    await setActiveLocalModelId("flat", null);
     localStorage.setItem(HEURISTIC_CHECKPOINT_STORAGE_KEY, JSON.stringify(checkpoint));
     await this.saveProfile(checkpointBestProfile(checkpoint));
   }
