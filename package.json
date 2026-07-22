@@ -8,6 +8,7 @@
     "start:local": "vite --host 127.0.0.1 --open",
     "build": "tsc && vite build",
     "preview": "vite preview --host 0.0.0.0",
+    "trainer:server": "node tools/run_headless_training_server.mjs",
     "bench:ai": "node tools/run_bench_ai.mjs",
     "bench:heuristic-profile": "node tools/run_benchmark_heuristic_profile.mjs",
     "train:heuristic": "node tools/run_train_heuristic.mjs",
