@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from argparse import ArgumentParser
-from pathlib import Path
 from typing import Any
 import json
 
-from .node_client import NodeTrainerClient
-from .protocol import EvaluationConfig, extract_flat_weights, read_json_file
+from .app import engine_description
+from .game import main as game_main
+from .simulation import run_random_batch
 
 
 def _print_json(value: Any) -> None:
@@ -14,40 +14,35 @@ def _print_json(value: Any) -> None:
 
 
 def build_parser() -> ArgumentParser:
-    parser = ArgumentParser(description="TetraFlux Python trainer protocol client")
+    parser = ArgumentParser(description="Pure-Python TetraFlux tools")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("ping", help="Start the Node simulator and check the protocol")
-    subparsers.add_parser("describe", help="Print simulator capabilities")
+    subparsers.add_parser("info", help="Print engine capabilities")
 
-    evaluate = subparsers.add_parser("evaluate-flat", help="Evaluate one Flat profile")
-    evaluate.add_argument("profile", type=Path)
-    evaluate.add_argument("--games", type=int, default=4)
-    evaluate.add_argument("--max-pieces", type=int, default=200)
-    evaluate.add_argument("--seed-base", type=int, default=1)
+    smoke = subparsers.add_parser("smoke", help="Run headless direct-placement games")
+    smoke.add_argument("--games", type=int, default=4)
+    smoke.add_argument("--max-pieces", type=int, default=200)
+    smoke.add_argument("--seed-base", type=int, default=1)
+
+    game = subparsers.add_parser("game", help="Open the Pygame client")
+    game.add_argument("--seed", type=int)
+    game.add_argument("--gravity-ms", type=int, default=700)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    with NodeTrainerClient() as client:
-        if args.command == "ping":
-            _print_json(client.ping())
-            return 0
-        if args.command == "describe":
-            _print_json(client.describe())
-            return 0
-        if args.command == "evaluate-flat":
-            weights = extract_flat_weights(read_json_file(args.profile))
-            result = client.evaluate_flat(
-                weights,
-                EvaluationConfig(
-                    games=args.games,
-                    max_pieces=args.max_pieces,
-                    seed_base=args.seed_base,
-                ),
-            )
-            _print_json(result)
-            return 0
+    if args.command == "info":
+        _print_json(engine_description())
+        return 0
+    if args.command == "smoke":
+        _print_json(run_random_batch(args.games, args.max_pieces, args.seed_base))
+        return 0
+    if args.command == "game":
+        game_args = ["--gravity-ms", str(args.gravity_ms)]
+        if args.seed is not None:
+            game_args.extend(["--seed", str(args.seed)])
+        game_main(game_args)
+        return 0
     return 1
 
 

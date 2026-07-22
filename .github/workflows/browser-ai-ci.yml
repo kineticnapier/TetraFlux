@@ -58,8 +58,11 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install Python trainer core
+      - name: Install pure-Python engine
         run: python -m pip install -e trainer
 
-      - name: Python and Node protocol fixture
-        run: python -m unittest discover -s trainer/tests -v
+      - name: Pure-Python engine fixtures
+        run: |
+          python -m tetraflux_trainer info
+          python -m tetraflux_trainer smoke --games 2 --max-pieces 20
+          python -m unittest discover -s trainer/tests -v

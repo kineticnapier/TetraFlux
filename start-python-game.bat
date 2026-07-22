@@ -15,17 +15,17 @@ if not exist "trainer\.venv\Scripts\python.exe" (
   if errorlevel 1 goto :failed
 )
 
-echo Installing or updating the Python game and lab...
-"trainer\.venv\Scripts\python.exe" -m pip install -e "trainer[ui]"
+echo Installing or updating the Python game...
+"trainer\.venv\Scripts\python.exe" -m pip install -e "trainer[game]"
 if errorlevel 1 goto :failed
 
-echo Starting TetraFlux Python Lab...
-"trainer\.venv\Scripts\python.exe" -m tetraflux_trainer.app
+echo Starting TetraFlux Python...
+"trainer\.venv\Scripts\python.exe" -m tetraflux_trainer.game
 if errorlevel 1 goto :failed
 exit /b 0
 
 :failed
 echo.
-echo Python lab startup failed.
+echo Python game startup failed.
 pause
 exit /b 1

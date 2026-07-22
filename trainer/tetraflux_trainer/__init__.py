@@ -1,6 +1,3 @@
-"""Python-side training tools for TetraFlux."""
+"""Pure-Python game, training, and experiment tools for TetraFlux."""
 
-from .node_client import NodeTrainerClient, NodeTrainerError
-
-__all__ = ["NodeTrainerClient", "NodeTrainerError"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
