@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tetraflux-trainer"
+version = "0.1.0"
+description = "Local Python training and experiment manager for TetraFlux"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+ui = [
+  "gradio>=6.14,<7",
+]
+rl = [
+  "gymnasium>=1.2,<2",
+  "numpy>=2,<3",
+]
+dev = [
+  "pytest>=8,<10",
+]
+
+[project.scripts]
+tetraflux-trainer = "tetraflux_trainer.app:main"
+tetraflux-trainer-check = "tetraflux_trainer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tetraflux_trainer*"]
